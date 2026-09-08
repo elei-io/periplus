@@ -9,7 +9,8 @@ from periplus.ingestion.objects.document import document_object_key
 from periplus.platform.catalogue import catalogue_from_env
 from periplus.platform.config import get_int
 from periplus.platform.messaging.leases import operation_leases, OperationLeaseLost
-from periplus.retention.identities import touch, retire, retired
+from periplus.retention.identities import write_claims, retire, retired
+from periplus.retention import store as retirement_store
 from periplus.retention.runtime import bounded_call, current_roots
 
 
@@ -41,22 +42,18 @@ async def cleanup_publications(settings, sessions, objects, leases, iterator=Non
                 roots, _ = current_roots(sessions, [identity], [])
                 if roots:
                     return
-                with catalogue_from_env(threads=1, memory_limit='512MB') as catalogue:
+                with write_claims({'observation': [str(identity)], 'content': [content_hash]}, allow_retired=True), catalogue_from_env(threads=1, memory_limit='512MB') as catalogue:
                     connection = catalogue.trusted_connection
                     durable = connection.execute('SELECT 1 FROM ingest.visits WHERE visit_id=? LIMIT 1', [identity]).fetchall()
-                    if not durable and not retired(catalogue, 'observation', str(identity)):
+                    if not durable and not retired('observation', str(identity)):
                         # An unfinished request with late evidence still protects
                         # an uploaded object. Ambiguous lineage is retained.
                         if connection.execute('SELECT 1 FROM ingest.fulfillments WHERE observation_id=? LIMIT 1', [identity]).fetchall():
                             return
                         keys = [(key, objects.size(key)) for key in (html_object_key(content_hash), document_object_key(content_hash)) if objects.exists(key)]
-                        with catalogue.transaction():
-                            touch(catalogue, 'observation', [str(identity)], create=True)
-                            touch(catalogue, 'content', [content_hash], create=True)
-                            retire(catalogue, 'observation', str(identity), now)
-                            for key, size in keys:
-                                if not connection.execute('SELECT 1 FROM material._periplus_retention_objects WHERE object_key=?', [key]).fetchall():
-                                    connection.execute('INSERT INTO material._periplus_retention_objects VALUES (?, ?, ?, ?, -1, NULL, uuid())', [key, content_hash, size, now])
+                        retire('observation', str(identity), now)
+                        for key, size in keys:
+                            retirement_store.enqueue(content_hash, key, size, now)
                     if guard.lost:
                         raise OperationLeaseLost('publication cleanup lost ownership')
                     release(objects, content_hash, identity)

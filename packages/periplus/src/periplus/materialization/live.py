@@ -10,6 +10,9 @@ from uuid import UUID, uuid5
 import duckdb
 
 from periplus.materialization.contracts import LiveBatchWork
+from periplus.materialization import state
+from periplus.materialization.state import ActiveGeneration
+from periplus.retention.identities import write_claims
 from periplus.materialization.registry import REGISTRY_DIGEST
 from periplus.materialization.sql import sql_string, sql_string_list
 from periplus.platform.catalogue import catalogue_from_env
@@ -32,14 +35,6 @@ _HEARTBEAT_SECONDS = 5.0
 
 class RegistryMismatch(RuntimeError):
     """The active material generation belongs to another deployment."""
-
-
-@dataclass(frozen=True, slots=True)
-class ActiveGeneration:
-    id: UUID
-    covered_snapshot: int
-    batch_size: int
-    registry_digest: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,20 +73,9 @@ class LiveCdcConnection:
         ).fetchall()
 
     def active_generation(self) -> ActiveGeneration | None:
-        rows = self.catalogue.trusted_remote_rows(
-            "SELECT generation_id::VARCHAR, covered_snapshot, batch_size, "
-            "registry_digest "
-            "FROM material._periplus_materialization_state "
-            "ORDER BY activated_at DESC LIMIT 1"
-        )
-        if not rows:
+        generation = state.active_generation()
+        if generation is None:
             return None
-        generation = ActiveGeneration(
-            UUID(str(rows[0][0])),
-            int(rows[0][1]),
-            int(rows[0][2]),
-            str(rows[0][3]),
-        )
         if generation.registry_digest != REGISTRY_DIGEST:
             raise RegistryMismatch(
                 "active generation registry differs from this worker; "
@@ -151,14 +135,7 @@ class LiveCdcConnection:
         )
 
     def applied(self, batch_ids: tuple[UUID, ...]) -> frozenset[UUID]:
-        if not batch_ids:
-            return frozenset()
-        rows = self.catalogue.trusted_remote_rows(
-            "SELECT batch_id::VARCHAR "
-            "FROM material._periplus_applied_batches "
-            f"WHERE batch_id IN ({sql_string_list({str(value) for value in batch_ids})})"
-        )
-        return frozenset(UUID(str(row[0])) for row in rows)
+        return state.applied_batches(batch_ids)
 
     def heartbeat(self, consumer: str) -> None:
         self.connection.execute(
@@ -173,20 +150,14 @@ class LiveCdcConnection:
         consumer: str,
         end_snapshot: int,
     ) -> bool:
-        with self.catalogue.remote_transaction():
-            current = self.active_generation()
-            if current is None or current.id != generation_id:
+        with write_claims({"generation": [str(generation_id)]}):
+            if not state.cover_snapshot(generation_id, end_snapshot):
                 return False
-            self.catalogue.trusted_remote_execute(
-                "UPDATE material._periplus_materialization_state "
-                f"SET covered_snapshot = {end_snapshot} "
-                f"WHERE generation_id = UUID {sql_string(str(generation_id))}"
-            )
-        self.connection.execute(
-            "SELECT * FROM cdc_commit("
-            f"{sql_string(self.catalogue.config.alias)}, "
-            f"{sql_string(consumer)}, {end_snapshot})"
-        ).fetchall()
+            self.connection.execute(
+                "SELECT * FROM cdc_commit("
+                f"{sql_string(self.catalogue.config.alias)}, "
+                f"{sql_string(consumer)}, {end_snapshot})"
+            ).fetchall()
         return True
 
     def release(self, consumer: str) -> None:

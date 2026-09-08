@@ -9,7 +9,8 @@ from pydantic import BaseModel, ConfigDict
 from periplus.materialization.registry import PROJECTIONS
 from periplus.platform.catalogue.client import Catalogue
 from periplus.ingestion.objects.store import ObjectStore
-from periplus.retention.identities import TABLE, touch, retire
+from periplus.retention.identities import write_claims, retire
+from periplus.retention import store as retirement_store
 from periplus.retention.policy import EXPIRED_SQL
 
 
@@ -71,12 +72,12 @@ class RetentionCatalogue:
     def purge_observation(self, candidate: Candidate, *, now: datetime) -> bool:
         """Caller must first exclude the bounded current frontier ownership roots."""
         identity = str(candidate.observation_id)
-        with self.catalogue.transaction():
+        with write_claims({"observation": [identity],
+                           "content": [candidate.content_sha256] if candidate.content_sha256 else []},
+                          allow_retired=True), self.catalogue.transaction():
             rows = self.connection.execute("SELECT document_id FROM ingest.visits WHERE visit_id=?", [identity]).fetchall()
             if not rows:
                 return False
-            # Conflict with a concurrent fulfillment or materialization commit.
-            touch(self.catalogue, "observation", [identity])
             protected = self.connection.execute(f"""
                 SELECT 1 FROM ingest.fulfillments f
                 LEFT JOIN ingest.collections c ON c.collection_id=f.collection_id
@@ -87,8 +88,7 @@ class RetentionCatalogue:
                 return False
             documents = self.connection.execute(
                 "SELECT content_sha256, object_key, stored_bytes FROM ingest.documents WHERE visit_id=?", [identity]).fetchall()
-            touch(self.catalogue, "content", [row[0] for row in documents])
-            retire(self.catalogue, "observation", identity, now)
+            retire("observation", identity, now)
             self._delete_projections("visit", "visit_id", identity)
             self.connection.execute("DELETE FROM ingest.steps WHERE attempt_id IN (SELECT attempt_id FROM ingest.attempts WHERE visit_id=?)", [identity])
             for table, column in (("attempts", "visit_id"), ("documents", "visit_id"),
@@ -99,9 +99,7 @@ class RetentionCatalogue:
                     self._delete_projections("content", "content_sha256", content_hash)
                 if self.connection.execute("SELECT 1 FROM ingest.documents WHERE object_key=? LIMIT 1", [key]).fetchall():
                     continue
-                if not self.connection.execute("SELECT 1 FROM material._periplus_retention_objects WHERE object_key=?", [key]).fetchall():
-                    self.connection.execute("INSERT INTO material._periplus_retention_objects VALUES (?, ?, ?, ?, ?, NULL, uuid())",
-                                            [key, content_hash, size, now, -1])
+                retirement_store.enqueue(content_hash, key, size, now)
         return True
 
     def _delete_projections(self, grain: str, column: str, identity: str) -> None:
@@ -131,18 +129,12 @@ class RetentionCatalogue:
     def purge_request(self, identity: UUID, *, now: datetime, limit: int = 100) -> bool:
         if not 1 <= limit <= 100:
             raise ValueError("invalid request retirement bound")
-        with self.catalogue.transaction():
+        with write_claims({"collection": [str(identity)]}, allow_retired=True), self.catalogue.transaction():
             if not self.connection.execute(f"""SELECT 1 FROM ingest.collections c
                 JOIN ingest.collection_outcomes o USING(collection_id)
                 WHERE c.collection_id=? AND {EXPIRED_SQL}""", [str(identity), now]).fetchall():
                 return False
-            rows = self.connection.execute(f"SELECT retired_at FROM {TABLE} WHERE kind='collection' AND identity=?", [str(identity)]).fetchall()
-            if len(rows) != 1:
-                raise RuntimeError("request retention identity missing or duplicated")
-            if rows[0][0] is None:
-                retire(self.catalogue, "collection", str(identity), now)
-            else:
-                self.connection.execute(f"UPDATE {TABLE} SET revision=revision+1 WHERE kind='collection' AND identity=?", [str(identity)])
+            retire("collection", str(identity), now)
             self.connection.execute("""DELETE FROM ingest.fulfillments WHERE record_id IN
                 (SELECT record_id FROM ingest.fulfillments WHERE collection_id=? ORDER BY record_id LIMIT ?)""", [str(identity), limit])
             if self.connection.execute("SELECT 1 FROM ingest.fulfillments WHERE collection_id=? LIMIT 1", [str(identity)]).fetchall():
@@ -153,6 +145,11 @@ class RetentionCatalogue:
 
     def reclaim_objects(self, store: ObjectStore, *, now: datetime, grace_seconds: int = 86400, limit: int = 50, content_hashes: tuple[str, ...], check_ownership: Callable[[], None]) -> int:
         """Remove only raw objects. Never delete registered Parquet or expire snapshots."""
+        with write_claims({"content": content_hashes}):
+            return self._reclaim_objects(store, now=now, grace_seconds=grace_seconds,
+                limit=limit, content_hashes=content_hashes, check_ownership=check_ownership)
+
+    def _reclaim_objects(self, store, *, now, grace_seconds, limit, content_hashes, check_ownership):
         from periplus.ingestion.objects.publication import begin_reclamation, end_reclamation
         if grace_seconds < 3600 or not 1 <= limit <= 100:
             raise ValueError("invalid physical reclamation bounds")
@@ -160,26 +157,17 @@ class RetentionCatalogue:
         # committed upper snapshot bound before that receipt can authorize GC.
         # Capture the pending keys first; concurrent retirements must not inherit
         # a snapshot boundary from before their own commit.
-        pending = self.connection.execute("SELECT retirement_id FROM material._periplus_retention_objects WHERE retired_snapshot=-1 AND content_sha256 IN (SELECT unnest(?)) ORDER BY retired_at LIMIT ?", [list(content_hashes), limit]).fetchall()
+        pending = retirement_store.pending_snapshots(content_hashes, limit)
         latest = self.catalogue.latest_snapshot()
         if latest is None:
             return 0
-        with self.catalogue.transaction():
-            for (episode,) in pending:
-                self.connection.execute("UPDATE material._periplus_retention_objects SET retired_snapshot=? WHERE retirement_id=? AND retired_snapshot=-1", [latest, episode])
+        retirement_store.anchor_snapshots(pending, latest)
         alias = '"' + self.catalogue.config.alias.replace('"', '""') + '"'
         oldest = self.connection.execute(f"SELECT min(snapshot_id) FROM {alias}.snapshots()").fetchone()[0]
         if oldest is None:
             return 0
-        # Readers already using an expired snapshot get a full grace period
-        # starting at our first confirmation of expiration, not at logical DELETE.
-        cleared = self.connection.execute("SELECT retirement_id FROM material._periplus_retention_objects WHERE retired_snapshot >= 0 AND retired_snapshot < ? AND snapshots_cleared_at IS NULL AND content_sha256 IN (SELECT unnest(?)) ORDER BY retired_at LIMIT ?", [oldest, list(content_hashes), limit]).fetchall()
-        with self.catalogue.transaction():
-            for (episode,) in cleared:
-                self.connection.execute("UPDATE material._periplus_retention_objects SET snapshots_cleared_at=? WHERE retirement_id=? AND snapshots_cleared_at IS NULL", [now, episode])
-        rows = self.connection.execute("""SELECT object_key, content_sha256, retirement_id FROM material._periplus_retention_objects
-            WHERE retired_snapshot >= 0 AND retired_snapshot < ? AND snapshots_cleared_at <= ? AND content_sha256 IN (SELECT unnest(?))
-            ORDER BY retired_at, object_key LIMIT ?""", [oldest, now - timedelta(seconds=grace_seconds), list(content_hashes), limit]).fetchall()
+        retirement_store.mark_snapshots_cleared(content_hashes, oldest, now, limit)
+        rows = retirement_store.reclaimable(content_hashes, oldest, now, grace_seconds, limit)
         removed = 0
         for key, content_hash, retirement_id in rows:
             if content_hash not in content_hashes:
@@ -188,20 +176,14 @@ class RetentionCatalogue:
             if not begin_reclamation(store, content_hash, now=now):
                 continue
             try:
-                # Publication claims cover writes not yet represented in the lake.
-                # The marker prevents new publishers until this operation ends.
-                with self.catalogue.transaction():
-                    touch(self.catalogue, "content", [content_hash])
-                    referenced = self.connection.execute("SELECT 1 FROM ingest.documents WHERE object_key=? LIMIT 1", [key]).fetchall()
-                    if referenced:
-                        # Cancel this episode atomically with the reference check.
-                        self.connection.execute("DELETE FROM material._periplus_retention_objects WHERE retirement_id=?", [retirement_id])
+                referenced = self.connection.execute(
+                    "SELECT 1 FROM ingest.documents WHERE object_key=? LIMIT 1", [key]).fetchall()
                 if referenced:
+                    retirement_store.remove(retirement_id)
                     continue
                 check_ownership()
                 store.delete(key)
-                with self.catalogue.transaction():
-                    self.connection.execute("DELETE FROM material._periplus_retention_objects WHERE retirement_id=?", [retirement_id])
+                retirement_store.remove(retirement_id)
                 removed += 1
             finally:
                 check_ownership()

@@ -96,7 +96,10 @@ class CollectionHistory:
 
     async def is_retired(self, identity: UUID) -> bool:
         from periplus.retention.identities import retired
-        return await self._read(lambda catalogue: retired(catalogue, "collection", str(identity)))
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(retired, "collection", str(identity)), timeout=10)
+        except Exception as exc:
+            raise HistoryUnavailable("Retirement state is unavailable") from exc
 
     async def get(self, identity: UUID) -> HistoricalCollection | None:
         return await self._read(lambda catalogue: read_collection(catalogue, identity))

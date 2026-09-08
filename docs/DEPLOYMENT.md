@@ -23,7 +23,7 @@ container names. This means one local Periplus Compose project may run on a Dock
 | `lake-s3-init` | One-shot creation of local `raw` and `lake` bucket directories | none |
 | `lake-s3` | VersityGW S3 endpoint over the local filesystem | `lake-s3-data` |
 | `lake-postgres` | DuckLake metadata only | `lake-postgres-data` |
-| `periplus-postgres` | Periplus editable control and current execution state only | `periplus-postgres-data` |
+| `periplus-postgres` | Periplus control, execution, retirement and materialization state | `periplus-postgres-data` |
 | `periplus-nats` | JetStream/KV delivery, presence, pacing, and leases | `periplus-nats-data` |
 | `periplus-crawler` | Shared frontier execution, page acquisition, and immutable raw-object writes | S3 `raw` namespace |
 | `periplus-ingestor` | Immutable crawl and visit evidence writes | none |
@@ -35,6 +35,10 @@ container names. This means one local Periplus Compose project may run on a Dock
 | `periplus-janitor` | Transient cleanup; opt-in logical retention and raw-object reclamation | Postgres current roots, DuckLake writer, NATS operation leases, S3 `raw` namespace |
 | `periplus-setup` | One-shot schema and catalogue installation | none |
 
+Periplus requires PostgreSQL 17+ for control and metadata connections. Worker-owned
+connections enforce a 240-second server transaction timeout as part of bounded write
+ownership. This does not change LakeDucktor-owned connection settings.
+
 `PERIPLUS_CONTROL_DATABASE_URL` always identifies Periplus Postgres.
 `PERIPLUS_DUCKLAKE_METADATA_PATH` independently identifies the DuckLake metadata store. They must
 never target the same database in the maintained Compose deployment.
@@ -43,7 +47,9 @@ For platform integration, `PERIPLUS_DUCKLAKE_METADATA_PATH` accepts either DuckL
 standard URLs to the native DuckLake form at its configuration boundary.
 
 Deleting `periplus-postgres-data` loses collections, crawler controls, policies, and current execution
-state without deleting lake history. Deleting `lake-postgres-data` loses the DuckLake catalogue;
+state, retirement tombstones, deletion queues and generation/batch receipts without deleting
+lake history. Preserve control Postgres with the lake when backing up or restoring;
+losing tombstones would invalidate delayed-job retirement protection. Deleting `lake-postgres-data` loses the DuckLake catalogue;
 the objects alone are not a usable lake. Deleting `lake-s3-data` loses local raw objects and lake
 files. Keep the catalogue and its objects together when backing up or restoring development state.
 

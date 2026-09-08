@@ -4,7 +4,7 @@ A request protects the observations that fulfill it. `retention_seconds: null` m
 forever and is the default. A positive duration starts at the request's terminal
 outcome time, including cancellation or failure. Active and paused requests do not
 expire. `expires_at` and `retention_expired` are returned on request details; the
-public SQL relation `web.collection` exposes the duration and expiry timestamp.
+request API exposes the duration and expiry timestamp.
 Retention is part of frozen request intent. Changing or extending it requires a
 future explicit contract; submitting the same identity with different intent is
 not an extension.
@@ -19,8 +19,9 @@ request are eligible for eviction after the processing grace period.
 ## Ownership
 
 - Postgres keeps bounded current work and frozen intent until the existing outbox,
-  evidence receipts, selection and interests have settled. Retention adds no
-  per-observation history or lifetime reference counts to Postgres.
+  evidence receipts, selection and interests have settled. Postgres also owns exact
+  write claims, retirement tombstones and the resumable object-deletion queue.
+  Tombstones contain identities and retirement times, never crawl history.
 - DuckLake holds retained results, request definitions, terminal outcomes and
   fulfillment relationships. Evidence remains immutable while retained. The
   retention repository is the sole exception permitted to DELETE result rows.
@@ -46,48 +47,50 @@ Do not use that number as a capacity meter.
    collection rows block retirement, including pending outbox delivery. Normal
    result reuse requires an existing operational acquisition, so an absent
    acquisition cannot become the target of a newly admitted reuse later.
-3. In one lake transaction, touch the exact observation and content lifecycle
-   identities and recheck request protection. Mark the observation retired; delete
-   its visit, attempts, steps, document, fulfillments, acquisition reasons and
-   visit-owned projections. Delete content-owned projections only after the last
-   document reference disappears. Include active, rebuilding and retired registry
-   generations, so generation activation cannot restore retired rows.
-4. Expired request retirement removes fulfillments in bounded batches, then its
-   outcome and definition. Request retirement is independent of physical object
-   reclamation. A retired request ID cannot be resubmitted; creation returns 410.
-   A deleted request's detail route returns the normal not-found response.
-5. Enqueue each unreferenced raw object key in the same transaction. Establish a
-   committed snapshot upper bound after deletion. Wait until *all* snapshots at
-   or below that boundary have expired, then start a fresh raw-reader grace period
-   (one day by default, minimum one hour). LakeDucktor must actually expire
-   snapshots for reclamation to advance.
-6. Under the existing exact-content NATS operation lease, write an object-store
-   retirement marker, check publication claims and recheck lake references. Delete
-   raw bytes, remove the queue receipt, then release the marker. Never delete a
-   registered lake file from Periplus.
+3. Acquire exact observation/content write claims in control Postgres, then recheck
+   request protection in a lake transaction. Record the retirement decision in
+   Postgres before deleting evidence and all owned projections in the lake.
+   Delete content-owned projections only after the last document reference disappears.
+   Include active, rebuilding and retired generations. A crash between these steps
+   leaves a durable decision and evidence that the next sweep can finish deleting.
+4. Expired collection retirement uses its exact collection claim, deletes fulfillments
+   in bounded batches, then its outcome and definition. The retirement tombstone
+   prevents delayed ingestion from recreating the collection.
+5. Enqueue unreferenced raw keys in Postgres before committing the lake deletion.
+   Under the same exact content claims, record a committed snapshot upper bound
+   after deletion. Wait until no retained snapshot predates that boundary, then
+   start a fresh raw-reader grace period (one day by default, minimum one hour).
+   Every new deletion episode resets its snapshot boundary and grace timestamp.
+6. Under the content claim and existing NATS lease, create an object-store retirement
+   marker, check publication claims and recheck current lake references. Delete raw
+   bytes, remove the Postgres queue receipt, then release the marker. Never delete
+   registered lake files from Periplus.
 
-`material._periplus_retention_identities` stores `(kind, identity, revision,
-retired_at)`. Ingestion, materialization and retirement update the exact same row
-inside their result transaction, so concurrent writers conflict and retry their
-checks. Initial creation is serialized by the ingestion operation lease for that
-identity. Retired observation/request identities remain as compact replay receipts;
-they contain no URL or content. These receipts are an explicit bookkeeping
-exception to result retention. Deleting them would allow arbitrarily delayed jobs
-to resurrect removed results. Their future compaction needs a bounded replay
-contract. Content guards remain usable when the same content hash is observed anew.
+Control Postgres owns these tables:
 
-`material._periplus_retention_objects` stores `object_key`, `content_sha256`,
-`stored_bytes`, `retired_at`, `retired_snapshot`, `snapshots_cleared_at`, and
-`retirement_id` (a unique deletion episode preventing stale updates to a later
-retirement of the same key). It is a
-resumable deletion queue, removed after physical reclamation. A snapshot value of
--1 is a conservative, not-yet-established boundary and never authorizes deletion.
+- `lake_write_claims`: composite primary key `(kind, identity)`, owner token and expiry.
+  Kinds are observation, content, collection and generation. Completed claims are
+  removed; the janitor removes expired claims. No live-identity revision history remains.
+- `retired_evidence`: composite primary key `(kind, identity)` and `retired_at`.
+  Tombstones prevent delayed jobs from resurrecting retired observations/collections.
+  Removing them requires a separately established bounded replay contract.
+- `retention_objects`: `object_key`, `content_sha256`, `stored_bytes`, `retired_at`,
+  `retired_snapshot`, `snapshots_cleared_at`, and unique `retirement_id`.
+  A snapshot of -1 never authorizes deletion. Episode IDs reject stale queue updates.
 
-Materializers exclude retired observation IDs even when preparing against an older
-pinned snapshot. They touch lifecycle identities before registering files. A
-retirement invalidating already prepared files causes fresh preparation, not a
-replay of removed evidence. Insert-only live CDC remains the only materialization
-cursor; retirement performs its projection deletions directly.
+Claim acquisition uses short Postgres transactions and database time. No Postgres
+transaction or advisory lock spans lake I/O. Workers fail-stop after 300 seconds
+inside a claim; Periplus connections require PostgreSQL 17+ and bound remote
+transactions to 240 seconds. Claims last 600 seconds, covering both bounds plus
+60 seconds. Definite rollback releases a claim; ambiguous failures retain it until
+expiry. This assumes bounded worker/server execution, not arbitrary process
+suspension followed by an unfenced stale write.
+
+Materializers exclude Postgres-retired observations during preparation and recheck
+under exact claims before committing. Retirement of prepared input causes fresh
+preparation. Insert-only CDC remains the only live cursor; retention deletes its
+owned projections directly. Generation claims serialize batch commits and activation;
+parsing and Parquet preparation remain parallel.
 
 ## Object publication and recovery
 
@@ -141,8 +144,7 @@ This command always forces dry-run, even when the environment says purge. The
 janitor logs candidate/blocked/retired counts and reports `lake_retention` health.
 Failures leave resumable receipts; no failure permits skipping a protection check.
 
-Physical contract 6.0.0 requires a coordinated greenfield reset/setup of disposable
-5.x state and updated ingestor, materializer, API and janitor processes. There is no
-legacy dual-write or migration bridge. Existing 5.x results have no lifecycle
-fences and must not be used with these writers. This implementation does not reset
-local data, deploy new processes or enable purge automatically.
+The lake contains no Periplus operational tables. Batch completion receipts and
+published generation state also live in control Postgres; see [LIFECYCLE.md](LIFECYCLE.md).
+Native DuckLake metadata and its CDC cursor remain owned by DuckLake in its metadata
+Postgres. Rebuild/retired projection tables contain dataset rows, not operational state.

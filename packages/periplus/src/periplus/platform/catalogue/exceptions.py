@@ -19,3 +19,7 @@ class CatalogueConflictError(CatalogueError):
 
 class CatalogueValidationError(CatalogueError, ValueError):
     """Raised when a catalogue write violates Periplus repository invariants."""
+
+
+class CatalogueOutcomePending(CatalogueError):
+    """Lake output may be durable while control-state acknowledgement is pending."""

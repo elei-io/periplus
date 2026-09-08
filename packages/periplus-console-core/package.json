@@ -3,7 +3,8 @@
   "version": "0.1.0",
   "type": "module",
   "files": [
-    "dist"
+    "dist",
+    "NOTICE"
   ],
   "exports": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -11,5 +12,6 @@
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build --silent && node --test dist/*.test.js"
-  }
+  },
+  "license": "AGPL-3.0-only"
 }

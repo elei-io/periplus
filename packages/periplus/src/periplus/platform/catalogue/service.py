@@ -10,7 +10,7 @@ from uuid import UUID
 import pyarrow as pa
 
 from periplus.platform.catalogue.client import Catalogue
-from periplus.retention.identities import touch
+from periplus.retention.identities import write_claims
 from periplus.platform.catalogue.exceptions import (
     CatalogueConflictError,
     CatalogueValidationError,
@@ -61,9 +61,10 @@ class CatalogueService:
             identity=lambda value: value.visit.visit_id,
         )
         created: dict[UUID, bool] = {}
-        with self.catalogue.transaction():
-            touch(self.catalogue, "observation", [str(entry.visit.visit_id) for entry in unique], create=True)
-            touch(self.catalogue, "content", [entry.document.content_sha256 for entry in unique if entry.document], create=True)
+        with write_claims({
+            "observation": [str(entry.visit.visit_id) for entry in unique],
+            "content": [entry.document.content_sha256 for entry in unique if entry.document],
+        }), self.catalogue.transaction():
             existing = self.get_visit_evidence(
                 [entry.visit.visit_id for entry in unique]
             )
@@ -132,9 +133,10 @@ class CatalogueService:
             return []
         unique = _unique_records(entries, identity=lambda value: (value.kind, value.record_id))
         created = {}
-        with self.catalogue.transaction():
-            touch(self.catalogue, "collection", [str(entry.collection_id) for entry in unique if getattr(entry, "collection_id", None)], create=True)
-            touch(self.catalogue, "observation", [str(entry.observation_id) for entry in unique if getattr(entry, "observation_id", None)], create=True)
+        with write_claims({
+            "collection": [str(entry.collection_id) for entry in unique if getattr(entry, "collection_id", None)],
+            "observation": [str(entry.observation_id) for entry in unique if getattr(entry, "observation_id", None)],
+        }), self.catalogue.transaction():
             for kind, relation in _LINEAGE_RELATIONS.items():
                 group = [entry for entry in unique if entry.kind == kind]
                 durable = {

@@ -1,3 +1,4 @@
+from operational_state_fixture import operational_state
 import unittest
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -14,6 +15,9 @@ from periplus.materialization.registry import PROJECTIONS
 
 
 class DocumentProjectionTests(unittest.TestCase):
+    def setUp(self):
+        operational_state(self)
+
     def test_ducklake_bucket_uses_iceberg_murmur3(self) -> None:
         self.assertEqual(
             ducklake_varchar_bucket("foo", 64),
@@ -125,7 +129,7 @@ class DocumentProjectionTests(unittest.TestCase):
                         else []
                     )
                 if "min(document_id::VARCHAR)" in sql:
-                    return [(content_hash, first_document)]
+                    return [(content_hash, first_document, first_visit)]
                 rows = [
                     (
                         first_document,
@@ -196,8 +200,8 @@ class DocumentProjectionTests(unittest.TestCase):
         self.assertEqual(later_owned, frozenset())
         self.assertEqual(first_owned, frozenset({content_hash}))
 
-        # Once the root marker commits, a future document is never allowed
-        # to become a second owner even if its UUID sorts before the first.
+        # Replaying the same pinned snapshot chooses the same owner, even
+        # after its output has committed.
         catalogue.content_exists = True
         _sources, repeated_owned, _documents = _document_sources(
             catalogue,

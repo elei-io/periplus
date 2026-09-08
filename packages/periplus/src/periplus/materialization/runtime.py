@@ -11,6 +11,8 @@ from typing import Literal
 from uuid import UUID
 
 from periplus.ingestion.objects.html import RawHtmlRepository
+from periplus.materialization import state
+from periplus.retention.identities import write_claims
 from periplus.materialization.batch import (
     BatchResult,
     commit_prepared_batch,
@@ -577,38 +579,18 @@ async def _recover_corrupt_generation(
 def _generation_recovery_context(
     generation_id: UUID,
 ) -> tuple[int, int] | None:
+    current = state.active_generation()
+    if current is None or current.id != generation_id:
+        return None
+    if current.registry_digest != REGISTRY_DIGEST:
+        raise RuntimeError("corrupt generation belongs to a different registry")
     with catalogue_from_env(threads=1, memory_limit="512MB") as catalogue:
-        rows = catalogue.trusted_remote_rows(
-            "SELECT covered_snapshot, batch_size, registry_digest "
-            "FROM material._periplus_materialization_state "
-            f"WHERE generation_id = UUID {sql_string(str(generation_id))} "
-            "LIMIT 1"
-        )
-        if not rows:
-            return None
-        if str(rows[0][2]) != REGISTRY_DIGEST:
-            raise RuntimeError(
-                "corrupt generation belongs to a different registry"
-            )
-        latest = catalogue.latest_snapshot() or int(rows[0][0])
-        return int(latest), int(rows[0][1])
+        return int(catalogue.latest_snapshot() or current.covered_snapshot), current.batch_size
 
 
 def _invalidate_generation(generation_id: UUID) -> bool:
-    with catalogue_from_env(threads=1, memory_limit="512MB") as catalogue:
-        with catalogue.remote_transaction():
-            rows = catalogue.trusted_remote_rows(
-                "SELECT 1 FROM material._periplus_materialization_state "
-                f"WHERE generation_id = UUID {sql_string(str(generation_id))} "
-                "LIMIT 1"
-            )
-            if not rows:
-                return False
-            catalogue.trusted_remote_execute(
-                "DELETE FROM material._periplus_materialization_state "
-                f"WHERE generation_id = UUID {sql_string(str(generation_id))}"
-            )
-    return True
+    with write_claims({"generation": [str(generation_id)]}):
+        return state.invalidate_generation(generation_id)
 
 
 def _execute_batch(html_repository, run, batch):
@@ -764,7 +746,9 @@ async def _handle_activation(message, jetstream, store) -> None:
 def _activate_or_catch_up(
     run: MaterializationRun,
 ) -> int | tuple[int, list[list[str]]]:
-    with catalogue_from_env(threads=1, memory_limit="2GB") as catalogue:
+    current = state.active_generation()
+    generations = [str(run.id)] + ([str(current.id)] if current else [])
+    with write_claims({"generation": generations}), catalogue_from_env(threads=1, memory_limit="2GB") as catalogue:
         if run.registry_digest != REGISTRY_DIGEST:
             raise RuntimeError(
                 "rebuild registry digest no longer matches the running worker"
@@ -813,8 +797,8 @@ def _activate_or_catch_up(
                         ],
                     )
                 _validate_generation(catalogue, run)
-                if PROJECTIONS:
-                    catalogue.activate_materialization_generations(
+            if PROJECTIONS and (hidden_generation_exists or current is None or current.id != run.id):
+                catalogue.activate_materialization_generations(
                         {
                             RELATIONS[stage]: table
                             for stage, table in run.generation_tables.items()
@@ -822,18 +806,9 @@ def _activate_or_catch_up(
                         activation_id=run.id.hex,
                         transaction=False,
                     )
-                install_public_catalogue(catalogue, transaction=False)
-            catalogue.trusted_remote_execute(
-                "DELETE FROM material._periplus_materialization_state"
-            )
-            catalogue.trusted_remote_execute(
-                "INSERT INTO material._periplus_materialization_state "
-                "(generation_id, covered_snapshot, batch_size, "
-                "registry_digest, activated_at) VALUES ("
-                f"UUID {sql_string(str(run.id))}, {latest}, "
-                f"{run.batch_size}, {sql_string(REGISTRY_DIGEST)}, now())"
-            )
+            install_public_catalogue(catalogue, transaction=False)
         activated = catalogue.last_committed_snapshot() or latest
+        state.publish_generation(run, latest)
         return activated
 
 
@@ -935,12 +910,8 @@ def _validate_generation(
 
 
 def _verify_active_generation(catalogue, run: MaterializationRun) -> None:
-    state = catalogue.trusted_remote_rows(
-        "SELECT registry_digest "
-        "FROM material._periplus_materialization_state "
-        f"WHERE generation_id = UUID {sql_string(str(run.id))}"
-    )
-    if state != [(REGISTRY_DIGEST,)]:
+    current = state.active_generation()
+    if current is None or current.id != run.id or current.registry_digest != REGISTRY_DIGEST:
         raise RuntimeError("active generation state does not match this registry")
     validate_public_catalogue(catalogue)
     for spec in PROJECTIONS:

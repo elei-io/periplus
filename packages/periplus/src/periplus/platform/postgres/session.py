@@ -2,6 +2,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from functools import lru_cache
 
+from periplus.platform.config.performance import POSTGRES_TRANSACTION_OPTIONS
+
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -22,6 +24,7 @@ def get_engine() -> Engine:
     engine = create_engine(
         get_database_url(),
         pool_pre_ping=True,
+        connect_args={"options": POSTGRES_TRANSACTION_OPTIONS},
         pool_size=get_int("PERIPLUS_CONTROL_POSTGRES_POOL_SIZE"),
         max_overflow=0,
         pool_timeout=get_float("PERIPLUS_CONTROL_POSTGRES_POOL_TIMEOUT_SECONDS"),

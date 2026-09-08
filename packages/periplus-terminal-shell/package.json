@@ -3,7 +3,8 @@
   "version": "0.1.0",
   "type": "module",
   "files": [
-    "dist"
+    "dist",
+    "NOTICE"
   ],
   "bin": {
     "periplus": "dist/main.js"
@@ -15,5 +16,6 @@
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json && chmod +x dist/main.js",
     "check": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build --silent && test -x dist/main.js && node --test dist/*.test.js"
-  }
+  },
+  "license": "AGPL-3.0-only"
 }

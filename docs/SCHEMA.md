@@ -62,7 +62,8 @@ The fixed projection registry is authoritative. The registry declares the follow
 ### `material.html_nodes`
 
 One row per `(content_sha256, node_index)` containing the complete parsed document
-node tree. It shares the parse context and position space with elements and links.
+node tree, including stored integer depth (document root = 0). It shares the
+parse context and position space with elements and links.
 The `node_index = 0` document row is the generation content-presence marker.
 
 ### `material.html_elements`
@@ -73,25 +74,17 @@ One row per `(content_sha256, element_index)`:
 content_sha256, element_index
 parent_index, subtree_end_index, depth, child_index
 tag, namespace, attributes
-text_direct, text_tail
+text_direct
 ```
 
 The private `element_index` column uses the complete node position space: element
 positions may have gaps. `child_index` counts all sibling nodes. `text_direct`
-concatenates immediate text children; the private `text_tail` field is empty.
+concatenates immediate text children.
 Rows are depth-first. `subtree_end_index` is exclusive. The document root in `material.html_nodes` is the content-projection
 presence marker; no content manifest or statistics row is maintained. That marker permanently
-prevents later visits from re-emitting content-grain HTML or JSON-LD rows, while a deterministic
+prevents later visits from re-emitting content-grain HTML rows, while a deterministic
 minimum document identity selects one owner when genuinely new content first appears in parallel
 batches.
-
-### `material.jsonld_values`
-
-One successfully parsed JSON-LD script per `(content_sha256, element_index)`:
-
-```text
-content_sha256, element_index, type_terms, value
-```
 
 ### `material.link_occurrences`
 
@@ -108,9 +101,10 @@ source_url, target_url, relation_scope
 convenience for the normalized directed URL pair. It is not a mutable identity record.
 `relation_scope` is `self`, `same_origin`, `same_host`, `same_site`, or `external`.
 
-Material relations accept immutable Parquet-file appends only. Rebuilds create the complete
-discovered hidden relation set and activate it together. Live batches register new final files.
-There is no `MERGE`, `UPDATE`, `DELETE`, keyed replacement, head table, or stored aggregate.
+Material batches write immutable Parquet and atomically replace their deterministic owned
+identities before registering files. Rebuilds create the complete hidden relation set and
+activate it together. Postgres receipts make completed redelivery a no-op; replacement
+makes a lost receipt safe to replay. There is no head table or stored aggregate.
 
 Each file under `materialization/projections/` declares one relation's ownership grain, identity,
 Arrow and DuckLake schema, partitioning, sort order, projector, validation, and description. One
@@ -164,11 +158,15 @@ requires no physical rewrite or materialization rebuild.
 ### `public_v1.html_node` and `public_v1.html_element`
 
 Both relations share `content_id VARCHAR`, `node_index INTEGER`,
-`parent_index INTEGER`, `subtree_end_index INTEGER`, `sibling_index INTEGER`.
+`parent_index INTEGER`, `subtree_end_index INTEGER`, `sibling_index INTEGER`,
+`depth INTEGER`.
 Identity is `(content_id, node_index)` within the returned catalogue snapshot.
 Positions are zero-based depth-first positions across **all** nodes, including the
 document root. Subtree end is exclusive. Parent is null only for the document
-root. Sibling positions count all node kinds.
+root. Sibling positions count all node kinds. Depth counts parent edges from the
+document root: document = 0, html = 1, and each child is one deeper than its parent.
+The same element has the same depth in both relations; depth is structural, not
+heading rank or visual importance.
 
 `html_node` adds `node_type VARCHAR`, `name VARCHAR`, `namespace VARCHAR`, and
 `value VARCHAR`. Kinds are `document`, `doctype`, `element`, `text`, `comment`, and
@@ -701,12 +699,13 @@ contain a challenge or incomplete content. Immutable source bytes support later 
 
 ## Retention lifecycle
 
-Evidence is append-only while retained. The janitor can explicitly retire request and
-observation evidence and its owned projections. `material._periplus_retention_identities`
-holds exact transaction fences and replay receipts; `material._periplus_retention_objects`
-holds pending raw-object retirements. These internal tables are mutable bookkeeping,
-not public corpus relations. See [RETENTION.md](RETENTION.md) for each column, ownership,
-expiry semantics and the snapshot/reader guarantees.
+Evidence is append-only while retained. The janitor can retire collection and observation
+rows and their projections. Control Postgres owns `lake_write_claims`, `retired_evidence`
+and `retention_objects`; it also owns `materialization_state` and
+`materialization_applied_batches`. No Periplus operational data tables live in DuckLake.
+The lake contains evidence and derived dataset generations. Native catalogue metadata
+and the CDC cursor remain DuckLake-owned. See [RETENTION.md](RETENTION.md) for claims,
+episode identities, expiry and snapshot/reader guarantees.
 
 ## Request schedule controls
 

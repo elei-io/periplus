@@ -102,3 +102,13 @@ def _cgroup_memory_limit() -> int | None:
         if 0 < value < 1 << 60:
             return value
     return None
+
+# Bound remote transactions after a worker loses its connection. PostgreSQL 17+.
+LAKE_WRITE_TIMEOUT_SECONDS = 300
+REMOTE_TRANSACTION_TIMEOUT_SECONDS = 240
+LAKE_WRITE_CLAIM_SECONDS = LAKE_WRITE_TIMEOUT_SECONDS + REMOTE_TRANSACTION_TIMEOUT_SECONDS + 60
+POSTGRES_TRANSACTION_OPTIONS = (
+    f"-c transaction_timeout={REMOTE_TRANSACTION_TIMEOUT_SECONDS * 1000} "
+    f"-c statement_timeout={REMOTE_TRANSACTION_TIMEOUT_SECONDS * 1000} "
+    f"-c idle_in_transaction_session_timeout={REMOTE_TRANSACTION_TIMEOUT_SECONDS * 1000}"
+)

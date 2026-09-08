@@ -1,4 +1,5 @@
 from __future__ import annotations
+from operational_state_fixture import operational_state
 
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -66,15 +67,15 @@ from periplus.platform.catalogue.schema import expected_columns
 
 
 class MaterializationRegistryTests(unittest.TestCase):
+    def setUp(self):
+        self.sessions = operational_state(self)
+
     def test_legacy_active_generation_scopes_startup_validation_to_ingest(
         self,
     ) -> None:
         legacy = SimpleNamespace(
-            trusted_remote_rows=lambda sql: (
-                [("registry_digest",)]
-                if sql.startswith("DESCRIBE")
-                else [(None,)]
-            )
+            config=SimpleNamespace(alias='periplus'),
+            trusted_remote_rows=lambda sql: [('html_nodes', 'content_sha256')],
         )
         self.assertFalse(Catalogue._active_registry_matches(legacy))
 
@@ -242,32 +243,6 @@ class MaterializationRegistryTests(unittest.TestCase):
                 violations.append(path.name)
         self.assertEqual(violations, [])
 
-    def test_semantic_material_commit_path_contains_no_replacement_dml(
-        self,
-    ) -> None:
-        source = (
-            Path(__file__).parents[1]
-            / "src"
-            / "periplus"
-            / "materialization"
-            / "batch.py"
-        ).read_text(encoding="utf-8").upper()
-        for prohibited in ("MERGE INTO", "UPDATE MATERIAL.", "DELETE FROM MATERIAL."):
-            self.assertNotIn(prohibited, source)
-
-    def test_active_state_insert_names_columns_for_in_place_cutover(
-        self,
-    ) -> None:
-        source = (
-            Path(__file__).parents[1]
-            / "src"
-            / "periplus"
-            / "materialization"
-            / "runtime.py"
-        ).read_text(encoding="utf-8")
-        self.assertIn("(generation_id, covered_snapshot, batch_size, ", source)
-        self.assertIn('"registry_digest, activated_at) VALUES ("', source)
-
     @patch("periplus.materialization.runtime.catalogue_from_env")
     def test_rebuild_catches_up_visits_inserted_after_its_snapshot(
         self,
@@ -351,7 +326,9 @@ class MaterializationRegistryTests(unittest.TestCase):
             catalogue,
             transaction=False,
         )
-        self.assertEqual(catalogue.trusted_remote_execute.call_count, 2)
+        self.assertEqual(catalogue.trusted_remote_execute.call_count, 0)
+        from periplus.materialization.state import active_generation
+        self.assertEqual(active_generation().id, run.id)
         self.assertFalse(inside_transaction)
 
     @patch("periplus.materialization.runtime.catalogue_from_env")
@@ -365,11 +342,11 @@ class MaterializationRegistryTests(unittest.TestCase):
         catalogue.remote_transaction.side_effect = _transaction
         catalogue.trusted_remote_rows.return_value = [(1,)]
 
+        from periplus.materialization.state import publish_generation, active_generation
+        publish_generation(SimpleNamespace(id=generation_id, batch_size=50, registry_digest=REGISTRY_DIGEST), 10)
         self.assertTrue(_invalidate_generation(generation_id))
-
-        delete_sql = catalogue.trusted_remote_execute.call_args.args[0]
-        self.assertIn("DELETE FROM material._periplus_materialization_state", delete_sql)
-        self.assertNotIn("RETURNING", delete_sql.upper())
+        self.assertIsNone(active_generation())
+        catalogue_from_env.assert_not_called()
 
 
 class MaterializationDeliveryTests(unittest.IsolatedAsyncioTestCase):
@@ -829,6 +806,9 @@ class MaterializationDeliveryTests(unittest.IsolatedAsyncioTestCase):
 
 
 class MaterializationParquetTests(unittest.TestCase):
+    def setUp(self):
+        self.sessions = operational_state(self)
+
     def test_every_registry_partition_layout_registers_with_ducklake(
         self,
     ) -> None:
@@ -1151,6 +1131,8 @@ class MaterializationParquetTests(unittest.TestCase):
             def trusted_remote_rows(self, _sql):
                 return [(3, 10, 20, 30)]
 
+        from periplus.materialization.state import record_applied
+        record_applied(uuid4(), batch_id, 10, SimpleNamespace(source_items=3, source_bytes=10, output_rows=20, output_bytes=30))
         result = _applied_result(Catalogue(), batch_id)
         self.assertIsNotNone(result)
         assert result is not None
@@ -1228,6 +1210,8 @@ class MaterializationParquetTests(unittest.TestCase):
             ]
         )
 
+        from periplus.materialization.state import publish_generation
+        publish_generation(SimpleNamespace(id=uuid4(), batch_size=50, registry_digest="different-registry"), 10)
         with self.assertRaises(RegistryMismatch):
             cdc.active_generation()
 

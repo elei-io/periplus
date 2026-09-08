@@ -97,33 +97,7 @@ class Catalogue:
                     "CREATE SCHEMA IF NOT EXISTS "
                     f"{_qualified(self.config.alias, schema)}"
                 )
-            self.trusted_remote_execute(
-                "CREATE TABLE IF NOT EXISTS "
-                f"{_qualified(self.config.alias, MATERIAL_SCHEMA, '_periplus_applied_batches')} "
-                "(run_id UUID NOT NULL, batch_id UUID NOT NULL, "
-                "source_snapshot BIGINT NOT NULL, source_items BIGINT NOT NULL, "
-                "source_bytes BIGINT NOT NULL, output_rows BIGINT NOT NULL, "
-                "output_bytes BIGINT NOT NULL, committed_at TIMESTAMPTZ NOT NULL)"
-            )
-            self.trusted_remote_execute(
-                "CREATE TABLE IF NOT EXISTS "
-                f"{_qualified(self.config.alias, MATERIAL_SCHEMA, '_periplus_materialization_state')} "
-                "(generation_id UUID NOT NULL, covered_snapshot BIGINT NOT NULL, "
-                "batch_size INTEGER NOT NULL, "
-                "registry_digest VARCHAR NOT NULL, "
-                "activated_at TIMESTAMPTZ NOT NULL)"
-            )
-        from periplus.materialization.registry import REGISTRY_DIGEST
-
-        active_rows = self.trusted_remote_rows(
-            "SELECT registry_digest "
-            "FROM material._periplus_materialization_state "
-            "ORDER BY activated_at DESC LIMIT 1"
-        )
-        active_registry_matches = (
-            not active_rows
-            or str(active_rows[0][0] or "") == REGISTRY_DIGEST
-        )
+        active_registry_matches = self._active_registry_matches()
         existing_tables = {
             (str(schema_name), str(table_name))
             for schema_name, table_name in self.trusted_remote_rows(
@@ -317,29 +291,20 @@ class Catalogue:
             validate_public_catalogue(self)
 
     def _active_registry_matches(self) -> bool:
-        """Return whether active material state belongs to this deployment."""
+        """Inspect the native dataset schema without reading operational state.
 
-        from periplus.materialization.registry import REGISTRY_DIGEST
-
-        try:
-            columns = {
-                str(row[0])
-                for row in self.trusted_remote_rows(
-                    "DESCRIBE material._periplus_materialization_state"
-                )
-            }
-            if "registry_digest" not in columns:
-                return False
-            rows = self.trusted_remote_rows(
-                "SELECT registry_digest "
-                "FROM material._periplus_materialization_state "
-                "ORDER BY activated_at DESC LIMIT 1"
-            )
-        except Exception:
-            # Setup owns reconciliation. Preserve strict validation for
-            # fresh/test catalogues that do not have generation state.
-            return True
-        return not rows or str(rows[0][0] or "") == REGISTRY_DIGEST
+        A query-only process has no control Postgres credentials. Workers use
+        Postgres's generation digest separately to gate live materialization.
+        """
+        from periplus.materialization.registry import PROJECTIONS
+        rows = self.trusted_remote_rows(
+            "SELECT table_name, column_name FROM duckdb_columns() "
+            f"WHERE database_name = {_quote_literal(self.config.alias)} AND schema_name = 'material'")
+        actual: dict[str, set[str]] = {}
+        for table, column in rows:
+            actual.setdefault(str(table), set()).add(str(column))
+        return all(spec.name not in actual or actual[spec.name] == set(spec.physical_columns)
+                   for spec in PROJECTIONS)
 
     def create_materialization_generation(
         self,

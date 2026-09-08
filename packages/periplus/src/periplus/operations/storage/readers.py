@@ -5,6 +5,7 @@ import time
 
 import psycopg
 from sqlalchemy import text
+from periplus.platform.postgres.session import session_scope
 
 from periplus.platform.catalogue.config import CatalogueConfig
 from periplus.ingestion.objects.store import ObjectStore
@@ -61,19 +62,20 @@ def lake(config: CatalogueConfig) -> tuple[Evidence, list[LakeTable], bool, Rete
                                    bytes=data_bytes + delete_bytes, data_bytes=data_bytes,
                                    delete_bytes=delete_bytes, files=files, delete_files=delete_files))
         # Snapshot/grace state is authoritative; API environment settings need not match the janitor.
-        stages = connection.execute("""
-            SELECT CASE WHEN retired_snapshot < 0 THEN 'boundary'
-                        WHEN snapshots_cleared_at IS NULL THEN 'snapshots'
-                        ELSE 'grace' END AS stage,
-                   count(*), coalesce(sum(stored_bytes), 0), min(retired_at)
-            FROM material._periplus_retention_objects GROUP BY stage
-        """).fetchall()
+        with session_scope() as session:
+            stages = session.execute(text("""
+                SELECT CASE WHEN retired_snapshot < 0 THEN 'boundary'
+                            WHEN snapshots_cleared_at IS NULL THEN 'snapshots'
+                            ELSE 'grace' END AS stage,
+                       count(*), coalesce(sum(stored_bytes), 0), min(retired_at)
+                FROM retention_objects GROUP BY stage
+            """)).all()
+            receipts = session.execute(text("""
+                SELECT count(*) FILTER (WHERE kind='observation'),
+                       count(*) FILTER (WHERE kind='collection'), max(retired_at)
+                FROM retired_evidence
+            """)).one()
         stage_rows = {row[0]: row[1:] for row in stages}
-        receipts = connection.execute("""
-            SELECT count(*) FILTER (WHERE kind='observation'),
-                   count(*) FILTER (WHERE kind='collection'), max(retired_at)
-            FROM material._periplus_retention_identities WHERE retired_at IS NOT NULL
-        """).fetchone()
         snapshots = connection.execute(f"SELECT count(*), min(snapshot_time) FROM {_identifier(config.alias)}.snapshots()").fetchone()
         retention = Retention(
             stages=[RetirementStage(id=key, name=label,

@@ -35,3 +35,4 @@ COPY packages/periplus/ ./
 RUN UV_PROJECT_ENVIRONMENT=/opt/periplus-venv uv sync --frozen --no-editable --no-dev
 
 FROM base AS final
+COPY LICENSE NOTICE LICENSING.md THIRD_PARTY_NOTICES.md /usr/share/licenses/periplus/

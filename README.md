@@ -1,21 +1,47 @@
 # Periplus
 
+Query observed websites with SQL. Periplus captures web pages, preserves their
+source evidence, and exposes a shared corpus of HTML structure and links.
+
+For example, inspect a small sample of captured pages:
+
+```sql
+SELECT capture_id, requested_url, effective_url
+FROM public_v1.capture
+LIMIT 10;
+```
+
+Periplus is in research preview. Public crawl submissions, their details, and
+collected evidence are shared; do not submit private information. Collection
+completion and query readiness are separate milestones. Coverage, freshness,
+and retention depend on the deployment's policies. SQL and parameters are
+recorded privately for up to 30 days; query results are not stored in that history.
+
+To query an existing deployment, open its public web application or use the
+[Python SDK](packages/periplus-python-sdk/README.md). Self-hosting creates your
+own corpus; it does not copy another deployment's data. The current SQL contract
+is [public_v1](docs/SCHEMA.md); historical audit documents may describe older
+contracts.
+
+## How it works
+
 Periplus acquires web documents, retains immutable content-addressed bytes, records observed evidence
 in DuckLake, and maintains rebuildable structural and URL relations.
 
 Manual and scheduled finite requests feed one shared crawler:
 
 ```text
-collections + background -> shared frontier -> CDP -> immutable bytes -> ingest.* -> material.* -> web.* / content.*
+manual + scheduled collections -> shared frontier -> CDP -> immutable bytes -> ingest.* -> material.* -> public_v1.*
 ```
 
 Compatible queued requests share acquisition while retaining independent traversal and budgets.
 Seed SQL selects bounded starting URLs from the corpus; follow SQL reads only the captured page's
 navigation package. Postgres owns current execution, NATS owns delivery and domain permits, and
-DuckLake retains observations and their durable collection/background lineage.
+DuckLake retains observations and their durable collection lineage.
 
-The public catalogue exposes observations, link occurrences, collections, fulfillments, acquisition
-reasons, immutable content objects and HTML elements. The Python query service validates bounded
+The public SQL catalogue exposes captures, immutable content, HTML structure,
+and observed links. Collection progress and lineage are available through the
+collection APIs. The Python query service validates bounded
 read-only SQL over standard DuckDB. The separately pinned DuckLake CDC extension is used only by
 live materialization. Physical `ingest.*` and `material.*` remain implementation details.
 
@@ -46,6 +72,12 @@ Copy `.env.example` and supply three distinct API service secrets before startin
 Generate each secret with
 `openssl rand -hex 32`; the required names are in `.env.example`.
 
+Before starting Compose, configure `PERIPLUS_CDP_URL` for host-side crawling and
+`PERIPLUS_COMPOSE_CDP_URL` for the endpoint reachable from containers. A browser
+service is not included. The default container address assumes Docker Desktop;
+on other hosts, supply an address reachable from the Compose network. Keep CDP
+private and enforce browser egress restrictions as described in [SECURITY.md](SECURITY.md).
+
 ```sh
 cp .env.example .env
 make sync
@@ -56,6 +88,14 @@ make compose-up
 The core image installs CDC from the DuckDB community repository and verifies its version and
 source revision against the pinned DuckDB runtime. No native extension build or sibling checkout
 is required. Later application builds reuse the cached extension installation.
+
+Open [the local public app](http://localhost:8080) and submit one page with depth
+0 and the smallest available budget. Wait for query readiness, then run the example SQL above.
+Assistant and text-discovery features require their optional provider settings;
+URL submissions and direct SQL do not. An empty corpus returns no capture rows.
+The default stack runs multiple writer replicas, two databases, NATS, and S3;
+browser capacity and storage add to its resource use. No validated minimum RAM
+or sustained-throughput guarantee is published yet.
 
 If a greenfield baseline replacement leaves either local database or another disposable service
 with a superseded contract, reset the complete development state and start again:
@@ -70,12 +110,12 @@ This resets both Postgres authorities, all local raw and lake objects, and JetSt
 Run one query from the terminal:
 
 ```sh
-npm run periplus -- 'SELECT count(*) FROM web.observation'
+npm run periplus -- 'SELECT capture_id FROM public_v1.capture LIMIT 10'
 ```
 
 Run `npm run periplus` without SQL to open the interactive terminal. Set `PERIPLUS_QUERY_URL` and `PERIPLUS_QUERY_API_TOKEN` when the query server
 is not available at `http://127.0.0.1:8010`. Inside either shell, `.tables` lists the public
-catalogue, `.describe content.object` shows an object's columns, and `.history` shows recent input.
+catalogue, `.describe public_v1.content` shows an object's columns, and `.history` shows recent input.
 `.help` lists all local commands. The terminal uses `PERIPLUS_QUERY_API_TOKEN`. The Python SDK uses the public application URL
 (`PERIPLUS_PUBLIC_URL`) and needs no service token; see [its README](packages/periplus-python-sdk/README.md).
 
@@ -85,11 +125,13 @@ Compose exposes public on port 8080 and admin on port 8081. Admin has no built-i
 production access to its UI and API gateway is enforced by Cloudflare Access.
 Use TLS at the ingress in production.
 
-Public collection submission accepts a URL or description, depth 0–2, link scope, allowed sections,
-and a budget of up to 1,000 pages. All public request details are public. Save the returned request
+Public collection submission accepts a URL or description, depth, link scope, allowed sections,
+and a page budget. Available values come from the deployment's public access policy.
+For the smoke test, choose depth 0 and the smallest available budget; one starting
+URL with depth 0 acquires at most one page. All public request details are public. Save the returned request
 URL to inspect current progress and durable historical arrivals. Settlement and verified query
 readiness are separate milestones. Ingress owns deployment-wide request/body limits. Operators
-control global/domain pacing and concurrency, priorities, exclusions and background allocation;
+control global/domain pacing and concurrency, priorities, exclusions and scheduled requests;
 configured speed is an upper bound rather than guaranteed throughput.
 
 Useful commands:
@@ -114,3 +156,10 @@ The canonical product and data contracts are:
 - [query](docs/QUERY.md)
 - [DuckDB extension development](docs/EXTENSION_DEVELOPMENT.md)
 - [vision](docs/VISION.md)
+
+## License and contributions
+
+Copyright (c) 2026 Ekku Leivonen (elei.io). The platform is AGPL-3.0-only;
+the standalone Python SDK is Apache-2.0. See [LICENSING.md](LICENSING.md) for
+package boundaries and third-party content rights, [CONTRIBUTING.md](CONTRIBUTING.md)
+for development expectations, and [SECURITY.md](SECURITY.md) for private reports.

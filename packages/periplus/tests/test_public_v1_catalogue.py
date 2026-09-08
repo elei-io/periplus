@@ -17,10 +17,10 @@ class PublicV1CatalogueTests(unittest.TestCase):
         db.execute('''CREATE TABLE material.html_nodes (
             content_sha256 VARCHAR, node_index INTEGER, parent_index INTEGER,
             subtree_end_index INTEGER, sibling_index INTEGER, node_type VARCHAR,
-            name VARCHAR, namespace VARCHAR, value VARCHAR)''')
+            name VARCHAR, namespace VARCHAR, value VARCHAR, depth INTEGER)''')
         nodes, elements = parse_document('<p>Hello <strong>world</strong>!<!--omit--></p><p>outside</p>')
         from dataclasses import astuple
-        db.executemany('INSERT INTO material.html_nodes VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        db.executemany('INSERT INTO material.html_nodes VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                        [('fixture', *astuple(n)) for n in nodes])
         root = files('periplus.platform.catalogue').joinpath('sql/public_v1')
         db.execute(root.joinpath('views/html_node.sql').read_text())
@@ -31,6 +31,32 @@ class PublicV1CatalogueTests(unittest.TestCase):
         result = db.execute('SELECT * FROM public_v1.subtree_text(?, ?, max_chars := 5)', ['fixture', paragraph.element_index]).fetchone()
         self.assertEqual(result[:3], ('Hello', True, 12))
         self.assertEqual(db.execute("SELECT * FROM public_v1.subtree_text('absent', 0)").fetchall(), [])
+
+    def test_depth_counts_parent_edges_for_every_node_kind(self):
+        from dataclasses import astuple
+        from periplus.materialization.registry import PROJECTIONS
+        projection = next(p for p in PROJECTIONS if p.name == "html_nodes")
+
+        nodes, elements = parse_document('<!doctype html><!--before--><p>A<b>B</b>C<!--inside--></p>')
+        by_index = {n.node_index: n for n in nodes}
+        self.assertEqual(nodes[0].depth, 0)
+        self.assertEqual({n.node_type for n in nodes},
+                         {'document', 'doctype', 'comment', 'element', 'text'})
+        for node in nodes[1:]:
+            self.assertEqual(node.depth, by_index[node.parent_index].depth + 1)
+        for element in elements:
+            self.assertEqual(element.depth, by_index[element.element_index].depth)
+        db = duckdb.connect()
+        self.addCleanup(db.close)
+        db.execute('CREATE SCHEMA material; CREATE SCHEMA public_v1')
+        columns = ', '.join(f'{c.name} {c.duckdb_type}' for c in projection.columns)
+        db.execute(f'CREATE TABLE material.html_nodes ({columns})')
+        db.executemany('INSERT INTO material.html_nodes VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                       [('fixture', *astuple(n)) for n in nodes])
+        root = files('periplus.platform.catalogue').joinpath('sql/public_v1')
+        db.execute(root.joinpath('views/html_node.sql').read_text())
+        self.assertEqual(db.execute('SELECT node_index, depth FROM public_v1.html_node ORDER BY node_index').fetchall(),
+                         [(n.node_index, n.depth) for n in nodes])
 
     def test_capture_request_ids_preserve_capture_grain(self):
         from uuid import UUID

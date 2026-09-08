@@ -88,11 +88,8 @@ async def reclaim_pass(settings, objects, leases, after=None):
         return 0, after
 
     def candidates():
-        with catalogue_from_env(threads=1, memory_limit="512MB") as catalogue:
-            anchor = "WHERE (retired_at, object_key) > (?, ?)" if after else ""
-            return catalogue.trusted_connection.execute(
-                f"SELECT content_sha256, retired_at, object_key FROM material._periplus_retention_objects {anchor} ORDER BY retired_at, object_key LIMIT ?",
-                [*after, settings.batch_size] if after else [settings.batch_size]).fetchall()
+        from periplus.retention.store import candidates as pending_objects
+        return pending_objects(settings.batch_size, after)
     rows = await bounded_call(candidates)
     hashes = tuple(row[0] for row in rows)
     cursor = (rows[-1][1], rows[-1][2]) if len(rows) == settings.batch_size else None

@@ -129,3 +129,28 @@ class MaterializationBatchRecord(Base):
     completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+
+class MaterializationStateRecord(Base):
+    __tablename__ = "materialization_state"
+    __table_args__ = (CheckConstraint("id = 1", name="ck_materialization_state_singleton"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    generation_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True))
+    covered_snapshot: Mapped[int] = mapped_column(BigInteger)
+    batch_size: Mapped[int] = mapped_column(Integer)
+    registry_digest: Mapped[str] = mapped_column(Text)
+    activated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class MaterializationAppliedBatchRecord(Base):
+    __tablename__ = "materialization_applied_batches"
+
+    batch_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    run_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), index=True)
+    source_snapshot: Mapped[int] = mapped_column(BigInteger)
+    source_items: Mapped[int] = mapped_column(BigInteger)
+    source_bytes: Mapped[int] = mapped_column(BigInteger)
+    output_rows: Mapped[int] = mapped_column(BigInteger)
+    output_bytes: Mapped[int] = mapped_column(BigInteger)
+    committed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

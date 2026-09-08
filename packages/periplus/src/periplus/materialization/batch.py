@@ -18,7 +18,6 @@ from periplus.materialization.document_projection import (
 )
 from periplus.materialization.registry import (
     BY_NAME,
-    CONTENT_PRESENCE_PROJECTION,
     PROJECTIONS,
 )
 from periplus.materialization.sql import sql_string, sql_string_list
@@ -30,7 +29,9 @@ from periplus.platform.catalogue.storage import (
     storage_protocol,
 )
 from periplus.urls import normalize_url
-from periplus.retention.identities import touch
+from periplus.retention.identities import retired_ids, write_claims
+from periplus.materialization import state
+from periplus.platform.catalogue.exceptions import CatalogueOutcomePending
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +68,7 @@ class PreparedBatch:
     files: dict[str, tuple[PreparedFile, ...]]
     retained_visit_ids: tuple[str, ...] = ()
     retained_content_hashes: tuple[str, ...] = ()
+    owned_content_hashes: tuple[str, ...] = ()
 
 
 def prepare_batch(
@@ -100,9 +102,8 @@ def prepare_batch(
         content_output_hashes=owned_hashes,
     )
     source_bytes = sum(source.content_bytes for source in sources)
-    project_seconds = time.perf_counter() - project_started
-
     outputs = {spec.name: spec.rows(context) for spec in PROJECTIONS}
+    project_seconds = time.perf_counter() - project_started
     parquet_started = time.perf_counter()
     files: dict[str, tuple[PreparedFile, ...]] = {}
     file_set_id = uuid4().hex
@@ -119,6 +120,7 @@ def prepare_batch(
     return PreparedBatch(
         retained_visit_ids=tuple(str(row[0]) for row in visits),
         retained_content_hashes=tuple(source.content_sha256 for source in sources),
+        owned_content_hashes=tuple(sorted(owned_hashes)),
         source_items=len(visits),
         source_bytes=source_bytes,
         output_rows=sum(table.num_rows for table in outputs.values()),
@@ -141,40 +143,47 @@ def commit_prepared_batch(
     *,
     active_generation: bool = False,
 ) -> BatchResult:
-    """Register final files and the replay marker in one DuckLake transaction."""
+    """Replace deterministic batch identities, then acknowledge in Postgres.
 
+    A crash between the two commits is safe: replay replaces the same rows in
+    one lake transaction. No lake bookkeeping table is needed for deduplication.
+    """
     commit_started = time.perf_counter()
     storage = _catalogue_storage(catalogue)
-    with catalogue.remote_transaction():
+    with write_claims({
+        "generation": [str(run.id)],
+        "observation": prepared.retained_visit_ids,
+        "content": prepared.retained_content_hashes,
+    }):
         if active_generation and not _is_active_generation(catalogue, run.id):
             return _result(prepared, commit_started, superseded=True)
         if _is_applied(catalogue, batch.id):
             return _result(prepared, commit_started, already_applied=True)
-        touch(catalogue, "observation", prepared.retained_visit_ids)
-        touch(catalogue, "content", prepared.retained_content_hashes)
-        for spec in PROJECTIONS:
-            for file in prepared.files[spec.name]:
-                catalogue.trusted_remote_execute(
-                    "CALL ducklake_add_data_files("
-                    f"{sql_string(catalogue.config.alias)}, "
-                    f"{sql_string(run.generation_tables[spec.name])}, "
-                    f"{sql_string(storage.registration_path(file.path))}, "
-                    "schema => 'material')"
-                )
-        catalogue.trusted_remote_execute(
-            "INSERT INTO material._periplus_applied_batches VALUES ("
-            f"UUID {sql_string(str(run.id))}, "
-            f"UUID {sql_string(str(batch.id))}, "
-            f"{batch.snapshot}, {prepared.source_items}, "
-            f"{prepared.source_bytes}, {prepared.output_rows}, "
-            f"{prepared.output_bytes}, now())"
-        )
-    result = _result(prepared, commit_started)
+        with catalogue.remote_transaction():
+            for spec in PROJECTIONS:
+                identities = (prepared.owned_content_hashes if spec.ownership_grain == "content"
+                              else prepared.retained_visit_ids)
+                column = "content_sha256" if spec.ownership_grain == "content" else "visit_id"
+                if identities:
+                    catalogue.trusted_remote_execute(
+                        f"DELETE FROM material.{_quote_identifier(run.generation_tables[spec.name])} "
+                        f"WHERE {column} IN ({sql_string_list(set(identities))})")
+                for file in prepared.files[spec.name]:
+                    catalogue.trusted_remote_execute(
+                        "CALL ducklake_add_data_files("
+                        f"{sql_string(catalogue.config.alias)}, "
+                        f"{sql_string(run.generation_tables[spec.name])}, "
+                        f"{sql_string(storage.registration_path(file.path))}, "
+                        "schema => 'material')")
+        result = _result(prepared, commit_started)
+        try:
+            state.record_applied(run.id, batch.id, batch.snapshot, result)
+        except Exception as exc:
+            raise CatalogueOutcomePending('lake batch committed; Postgres receipt must be retried') from exc
     from periplus.platform.telemetry import event
     event("materialization_batch_committed", operation_id=str(batch.id),
           rows=result.output_rows, bytes=result.output_bytes,
           elapsed_ms=(result.project_seconds + result.parquet_seconds + result.commit_seconds)*1000)
-
     return result
 
 
@@ -216,17 +225,18 @@ def _visit_rows(
 ) -> list[tuple]:
     if not batch.visit_ids:
         return []
+    excluded = retired_ids("observation", batch.visit_ids)
+    retained = set(batch.visit_ids) - excluded
+    if not retained:
+        return []
     return catalogue.trusted_remote_rows(
         f"""
         SELECT visit_id::VARCHAR, document_id,
                coalesce(effective_url, requested_url),
                coalesce(finished_at, observed_at, started_at, admitted_at)
         FROM ingest.visits AT (VERSION => {batch.snapshot})
-        WHERE visit_id IN ({sql_string_list(set(batch.visit_ids))})
+        WHERE visit_id IN ({sql_string_list(retained)})
           AND coalesce(effective_url, requested_url) IS NOT NULL
-          AND visit_id::VARCHAR NOT IN (
-              SELECT identity FROM material._periplus_retention_identities
-              WHERE kind='observation' AND retired_at IS NOT NULL)
         ORDER BY visit_id
         """
     )
@@ -282,40 +292,36 @@ def _document_sources(
                 )
             )
     hashes = set(by_hash)
-    existing_hashes: set[str] = set()
-    presence = CONTENT_PRESENCE_PROJECTION
-    if hashes and presence is not None:
-        destination = run.generation_tables.get(presence.name)
-        if destination is None:
-            raise RuntimeError(
-                "material generation has no content-presence relation"
-            )
-        existing_hashes = {
-            str(row[0])
-            for row in catalogue.trusted_remote_rows(
-                "SELECT DISTINCT content_sha256 "
-                f"FROM material.{_quote_identifier(destination)} "
-                f"WHERE {presence.content_presence_predicate} "
-                f"AND content_sha256 IN ({sql_string_list(hashes)})"
-            )
-        }
-    new_hashes = hashes - existing_hashes
-    owners = (
-        catalogue.trusted_remote_rows(
-            f"""
-            SELECT content_sha256, min(document_id::VARCHAR)
+    # Ownership is deterministic even on replay after a lost acknowledgement.
+    # Fetch one candidate owner per hash, excluding retired candidates in bounded
+    # rounds rather than joining operational Postgres into analytical SQL.
+    owners = []
+    excluded_owners: set[str] = set()
+    remaining = set(hashes)
+    for _ in range(100):
+        if not remaining:
+            break
+        exclusion = (f"AND visit_id::VARCHAR NOT IN ({sql_string_list(excluded_owners)})"
+                     if excluded_owners else "")
+        candidates = catalogue.trusted_remote_rows(f"""
+            SELECT content_sha256, min(document_id::VARCHAR),
+                   arg_min(visit_id::VARCHAR, document_id::VARCHAR)
             FROM ingest.documents AT (VERSION => {batch.snapshot})
-            WHERE content_sha256 IN ({sql_string_list(new_hashes)})
-              AND lower(detected_media_type) = 'text/html'
-              AND visit_id::VARCHAR NOT IN (
-                  SELECT identity FROM material._periplus_retention_identities
-                  WHERE kind='observation' AND retired_at IS NOT NULL)
+            WHERE content_sha256 IN ({sql_string_list(remaining)})
+              AND lower(detected_media_type) = 'text/html' {exclusion}
             GROUP BY content_sha256
-            """
-        )
-        if new_hashes
-        else []
-    )
+        """)
+        excluded = retired_ids("observation", [str(row[2]) for row in candidates])
+        next_remaining = set()
+        for content_hash, document_id, visit_id in candidates:
+            if str(visit_id) in excluded:
+                next_remaining.add(str(content_hash))
+            else:
+                owners.append((content_hash, document_id))
+        excluded_owners.update(excluded)
+        remaining = next_remaining
+    if remaining:
+        raise RuntimeError("retired content-owner lookup exceeded its bounded rounds")
     owned_hashes = frozenset(
         str(content_hash)
         for content_hash, owner_id in owners
@@ -459,42 +465,18 @@ def _column_type(value) -> str:
 
 
 def _is_applied(catalogue: Catalogue, batch_id: UUID) -> bool:
-    return bool(
-        catalogue.trusted_remote_rows(
-            "SELECT 1 FROM material._periplus_applied_batches "
-            f"WHERE batch_id = UUID {sql_string(str(batch_id))} LIMIT 1"
-        )
-    )
+    return state.applied_batch(batch_id) is not None
 
 
 def _is_active_generation(catalogue: Catalogue, generation_id: UUID) -> bool:
-    return bool(
-        catalogue.trusted_remote_rows(
-            "SELECT 1 FROM material._periplus_materialization_state "
-            f"WHERE generation_id = UUID {sql_string(str(generation_id))} "
-            "LIMIT 1"
-        )
-    )
+    current = state.active_generation()
+    return current is not None and current.id == generation_id
 
 
-def _applied_result(
-    catalogue: Catalogue,
-    batch_id: UUID,
-) -> BatchResult | None:
-    rows = catalogue.trusted_remote_rows(
-        "SELECT source_items, source_bytes, output_rows, output_bytes "
-        "FROM material._periplus_applied_batches "
-        f"WHERE batch_id = UUID {sql_string(str(batch_id))} LIMIT 1"
-    )
-    if not rows:
+def _applied_result(catalogue: Catalogue, batch_id: UUID) -> BatchResult | None:
+    row = state.applied_batch(batch_id)
+    if row is None:
         return None
     return BatchResult(
-        source_items=int(rows[0][0]),
-        source_bytes=int(rows[0][1]),
-        output_rows=int(rows[0][2]),
-        output_bytes=int(rows[0][3]),
-        project_seconds=0,
-        parquet_seconds=0,
-        commit_seconds=0,
-        already_applied=True,
-    )
+        source_items=row[0], source_bytes=row[1], output_rows=row[2], output_bytes=row[3],
+        project_seconds=0, parquet_seconds=0, commit_seconds=0, already_applied=True)

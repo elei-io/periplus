@@ -35,6 +35,7 @@ class DatabaseSessionTests(unittest.TestCase):
         create_engine.assert_called_once_with(
             "postgresql+psycopg://periplus",
             pool_pre_ping=True,
+            connect_args={"options": db_session.POSTGRES_TRANSACTION_OPTIONS},
             pool_size=3,
             max_overflow=0,
             pool_timeout=2.5,

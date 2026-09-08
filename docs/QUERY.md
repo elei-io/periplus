@@ -453,3 +453,154 @@ was [154, 161), ending at Product Information; its parent was heading 112.
 This validates filtered local use, not unfiltered corpus-scale performance.
 Fixtures verify that a heading filter retains the surrounding headings needed
 to compute its parent and end, plus all six ranks and empty passages.
+
+### Link sort-order comparison (2026-09-08)
+
+Classification: potential physical-layout mismatch, not an established optimizer
+failure. Public joins select links by capture identity, whereas stored links lead
+with source URL. No schema, compiler rewrite, or sort-order change was made.
+
+Exported all 141,612 current link rows (2,100 visits) once and wrote two local
+Parquet files with identical columns and 16,384-row groups: current order
+`source_url, target_url, observed_at, occurrence_id` and candidate order
+`visit_id, element_index`. The current corpus fits a single observed month;
+this experiment isolates ordering, not multi-month partition pruning or remote I/O.
+The files were 6,990,818 and 9,622,669 bytes respectively.
+
+A paired warm-cache comparison used one DuckDB thread, 20 deterministic random
+samples per workload (Python random seed 42 over sorted distinct identities),
+one warm-up and five measured repetitions, alternating order each repetition.
+Queries returned `count(*), sum(length(target_url)), sum(element_index)`;
+results matched for both layouts. Medians in milliseconds:
+
+| Predicate | Current source order | Candidate visit order |
+| --- | ---: | ---: |
+| One capture | 0.608 | 0.693 |
+| Ten captures | 3.817 | 5.823 |
+| One source URL | 0.574 | 0.688 |
+
+A separate full-row extraction comparison also checked equal returned rows.
+These small local measurements do not justify a rewrite or establish billion-row
+performance. Retain the current layout. Revisit with larger, multi-month data,
+remote file/row-group pruning evidence, and representative capture joins before
+changing it. Millisecond differences should not be interpreted as production SLAs.
+
+Structure-first discovery (for example, finding salary tables or phone-number
+form controls before identifying their pages) remains valid public SQL. Content
+hash partitioning and content/node ordering optimize document-local extraction;
+they do not promise pruning for text, tag, or attribute predicates across the
+corpus. Measure a recurring reverse-discovery workload before adding a feature
+projection or changing the common primitive ordering.
+
+A structure-first diagnostic selected distinct content IDs from
+`html_form_control WHERE tag = 'input' AND lower(type) = 'tel' AND required`,
+then joined captures. It reached the public 20-second deadline during a concurrent
+rebuild. The corresponding primitive attribute search finished in 2.127 seconds
+and returned no rows. EXPLAIN retained the form view's owner-resolution joins and
+window despite ownership not being selected (12 join nodes versus 3 in the
+primitive query, including capture expansion). This is evidence of avoidable
+view/optimizer work, not evidence that hash partitioning must change. Timing was
+not isolated; investigate projection/join elimination before considering stored
+form projections. No rewrite or physical change was made for this diagnostic.
+A repeat of the primitive query with the explicit HTML namespace predicate took
+14.811 seconds under rebuild load, again returning no rows. This reinforces that
+the timings are contention-sensitive; the retained unnecessary owner joins in
+EXPLAIN, rather than the timing ratio, motivate the optimizer investigation.
+
+The physical cleanup rebuild additionally exposed per-identity retention-fence
+round trips: a worker stack sample was inside `retention.identities.touch` during
+commit. This is writer execution overhead, not a reason to alter the public
+schema or node/link ordering. Fence reads and writes now use set-based batches of
+the same identities, preserving validation order, revision increments, and the
+same transactional write conflicts. Tests cover mixed creation/update, duplicates,
+missing/retired identities, and existing retirement races. The local rebuild was
+restarted with 50 visits per batch after the 500-visit run encountered high memory
+use and a worker restart; no default batch-size or physical partition change was
+made. Shared-host load and swap also affected the rebuild, so its elapsed time is
+not an isolated layout benchmark.
+
+### Depth rebuild performance investigation (2026-09-08)
+
+Classification: observed writer/coordination overhead and host contention; no
+public-schema or HTML node sort-order defect established. Run
+edb7f64a-c96d-47b2-b8e9-23d85c076793 uses 213 ten-visit batches. This smaller
+operator-selected batch size reduces peak memory but multiplies fixed work.
+
+An early scrape across four materializers covered 55 committed batches: mean
+recorded preparation was 10.4 seconds, Parquet writing 5.9 seconds, and successful
+commit 6.8 seconds. Workers reported 167 transaction conflicts and 17 outer retries.
+These are cumulative concurrent-worker measurements, not additive wall time. The
+phase metrics exclude connection setup, projection-to-Arrow conversion (currently
+between timers), failed commit attempts, and backoff. Preparation includes source
+SQL and raw-object reads, not just parsing.
+
+A read-only probe over ten documents (374,378 source bytes) measured catalogue
+connection setup at 7.34 seconds, visit selection at 5.99 seconds cold / 3.39 warm,
+and source resolution at 34.44 seconds cold / 5.59 warm. Source resolution on this
+already-committed batch skips new-content ownership lookup, so it does not exactly
+reproduce an uncommitted batch. Measurements were under concurrent rebuild/build
+load: host load average around 38 and swap usage about 4.5 GB.
+
+A short worker profile frequently sampled retention identity SELECT/UPDATE, plus
+source selection and Parquet writes. Sampling fell behind schedule under load, so
+it supports locations, not precise CPU percentages. The active guard table had
+16 data files (325,940 bytes) and 31 delete files (57,123 bytes); visits had two
+files, documents 48, and the old active HTML node/element tables eight each. These
+counts do not by themselves prove a file-layout problem.
+
+A bounded one-replica experiment retained the normal two writer lanes. Over about
+121 seconds it progressed from 62 to 70 completed batches and the surviving
+worker's conflict counter rose from 46 to 51. Four replicas were restored. Mixed
+batch sizes in bytes, changing host load, and other writers prevent treating this
+as a controlled throughput comparison or evidence that one replica is optimal.
+
+Next investigations should account for complete batch wall time, classify actual
+transaction conflict reasons, measure reusable per-lane connection/cache benefits,
+and balance batch bytes against per-file registration overhead. Each batch opens
+a fresh catalogue connection, emits one file per populated projection partition,
+and registers files one at a time inside the transaction. Do not change public
+relations or node ordering to conceal these writer costs.
+
+Later metadata-Postgres logs identified concrete concurrent-commit collisions:
+`ducklake_snapshot_pkey` violations for snapshot IDs 8162, 8163, 8164, 8168, and
+8170 around 12:50–12:51 UTC. These are DuckLake snapshot allocation conflicts,
+not duplicate Periplus retention identities. They establish that not all retry
+cost can be attributed specifically to guards. Moving operational state out does
+not eliminate native lake commit contention; batching and writer concurrency
+still matter. The frequency alone does not establish an upstream defect.
+
+### Operational-state cutover measurements (2026-09-08)
+
+Classification: catalogue/storage write design, not a public SQL optimizer issue.
+The four Periplus bookkeeping data tables were removed after their durable state
+was transferred to control Postgres. Generation commits now use exact Postgres
+claims and deterministic derived-identity replacement; there is no SQL rewrite
+intended to hide the previous bookkeeping cost.
+
+Replacement rebuild `31cf5645-c380-472a-8e1d-9d5d4ab3edf4` uses 50-visit batches.
+It reached 40/43 batches (1,973 visits) in roughly three minutes. At a later sample,
+the surviving worker metrics covered 36 completed batches: zero transaction
+conflicts, 147.247 seconds total commit phase, averaging 4.09 seconds per batch,
+including claim acquisition/waiting. These are not a controlled comparison with
+the earlier 10-visit sample (55 completions, 167 conflicts, 6.8-second mean
+successful commit): batch composition, host load and worker lifetimes differ.
+
+The final two large batches required retries and substantial preparation time.
+NATS logged 5–11-second control-request delays around 13:23:53 UTC; ingestor
+observation tasks subsequently timed out and the processes restarted. A materializer
+also restarted. Do not attribute all elapsed-time differences to the Postgres move,
+or infer that removing lake bookkeeping solves parser memory and batch-size costs.
+
+
+The replacement run completed and activated in 632.73 seconds (10m33s), with
+44 batches including catch-up, 2,124 visits and 8,728,033 rows. This is a modest
+wall-clock improvement over the earlier roughly 12-minute 50-visit run, not a
+controlled speedup claim. The largest batches dominate the tail despite the
+reduction in commit contention.
+
+The new commit protocol performs identity-scoped replacement of derived rows on
+each batch, then records its receipt in Postgres. That is a deliberate correctness
+trade-off for safe replay across the two stores. This small corpus does not prove
+its billion-row cost: content predicates match the HTML sort key, while visit-ID
+replacement on link occurrences still deserves partition-pruning measurements
+before freezing a large-scale physical layout. Public relations are unchanged.

@@ -104,9 +104,11 @@ unreferenced physical data.
 Every Python module under `materialization/projections/` is one complete fixed projection
 declaration. Discovery is the registry: adding, editing, or deleting a materialization means
 adding, editing, or deleting that one module, followed by redeployment and a complete rebuild.
-Workers build one shared parse context and append registry-validated files; there is no keyed
-replacement or target-specific commit path. File registration and the applied-batch marker commit
-in one DuckLake transaction, making commit-before-ACK redelivery a no-op.
+Workers build one shared parse context and prepare registry-validated files in parallel.
+Under exact Postgres claims, each batch replaces its deterministic derived identities
+and registers files atomically in DuckLake, then records its applied receipt in control
+Postgres. Lost acknowledgement replays the same replacement without duplicate output.
+No Periplus operational tables live in the lake. See [LIFECYCLE.md](LIFECYCLE.md).
 
 Every rebuild creates every discovered hidden material table, catches up visits inserted after the
 pinned source snapshot, validates the registry digest, and renames the complete generation
@@ -120,8 +122,9 @@ that connection then holds the DuckLake consumer's owner-token lease. A failed h
 after lease expiry without moving or resetting the DuckLake cursor. The elected coordinator
 publishes deterministic visit batches to the same JetStream subject used by rebuild workers.
 Workers apply each batch directly to the active generation and record the same applied-batch
-marker in the material transaction. The coordinator advances the CDC cursor only after every
-marker is visible. There is one outstanding CDC window and no Periplus Postgres live-work ledger.
+receipt in control Postgres after the lake transaction. The coordinator advances the
+native CDC cursor only after every receipt is durable. There is one outstanding CDC
+window; its durable cursor remains exclusively in DuckLake metadata Postgres.
 
 An unreadable registered material file invalidates the complete active generation. The worker
 durably reuses or creates one Periplus Postgres rebuild, removes the active-generation marker to stop CDC,

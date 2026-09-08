@@ -1,3 +1,4 @@
+from operational_state_fixture import operational_state
 import asyncio
 from datetime import UTC, datetime
 import os
@@ -22,6 +23,7 @@ from periplus.platform.catalogue.connection import DuckLakeConnectionFactory
 
 class StorageReadersTests(unittest.TestCase):
     def setUp(self):
+        self.sessions = operational_state(self)
         directory = TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         root = Path(directory.name)
@@ -31,10 +33,17 @@ class StorageReadersTests(unittest.TestCase):
             connection.execute("USE lake; CREATE SCHEMA ingest; CREATE SCHEMA material")
             connection.execute("CREATE TABLE ingest.visits (visit_id INTEGER); INSERT INTO ingest.visits VALUES (1), (2), (3)")
             connection.execute("CREATE TABLE ingest.documents (visit_id INTEGER, object_key VARCHAR, stored_bytes BIGINT); INSERT INTO ingest.documents VALUES (1, 'html/shared', 100), (2, 'html/shared', 100)")
-            connection.execute("CREATE TABLE material._periplus_retention_objects (retired_snapshot BIGINT, snapshots_cleared_at TIMESTAMPTZ, stored_bytes BIGINT, retired_at TIMESTAMPTZ)")
-            connection.execute("INSERT INTO material._periplus_retention_objects VALUES (-1, NULL, 10, now()), (1, NULL, 20, now()), (1, now(), 30, now())")
-            connection.execute("CREATE TABLE material._periplus_retention_identities (kind VARCHAR, retired_at TIMESTAMPTZ); INSERT INTO material._periplus_retention_identities VALUES ('observation', now()), ('collection', now()), ('content', NULL)")
             connection.execute("CREATE TABLE material._periplus_rebuild_html_test (id INTEGER); CREATE TABLE material._periplus_retired_html_test (id INTEGER)")
+
+        from periplus.retention.models import RetentionObjectRecord, RetiredEvidenceRecord
+        from uuid import uuid4
+        with self.sessions.begin() as session:
+            for index, (snapshot, cleared, size) in enumerate([(-1, None, 10), (1, None, 20), (1, datetime.now(UTC), 30)]):
+                session.add(RetentionObjectRecord(object_key=str(index), content_sha256=str(index),
+                    retired_snapshot=snapshot, snapshots_cleared_at=cleared, stored_bytes=size,
+                    retired_at=datetime.now(UTC), retirement_id=uuid4()))
+            for kind in ['observation', 'collection']:
+                session.add(RetiredEvidenceRecord(kind=kind, identity='a', retired_at=datetime.now(UTC)))
 
     def test_deduplicates_content_and_preserves_retention_stage_semantics(self):
         evidence, tables, complete, retention = readers.lake(self.config)

@@ -1,3 +1,4 @@
+from operational_state_fixture import operational_state
 from capture_policy_fixture import capture_policy
 from datetime import UTC, datetime
 import unittest
@@ -27,6 +28,9 @@ from periplus.ingestion.queue import (
 
 
 class IngestionEvidenceTests(unittest.TestCase):
+    def setUp(self):
+        self.sessions = operational_state(self)
+
     def test_native_policy_is_required(self):
         evidence = _visit_evidence()
         values = evidence.visit.model_dump(mode="json")
@@ -138,10 +142,16 @@ class IngestionEvidenceTests(unittest.TestCase):
 
 
 class AppendOnlyIngestionServiceTests(unittest.TestCase):
+    def setUp(self):
+        self.sessions = operational_state(self)
+
     def test_identical_visit_redelivery_is_a_noop(self) -> None:
         evidence = _visit_evidence()
         catalogue = MagicMock()
-        catalogue.trusted_connection.execute.return_value.fetchall.return_value = [(None,)]
+        catalogue.trusted_connection.execute.return_value.fetchall.side_effect = [
+            [(str(evidence.visit.visit_id), None)],
+            [(evidence.document.content_sha256, None)],
+        ]
         catalogue.transaction.return_value.__enter__.return_value = catalogue
         catalogue.latest_snapshot.return_value = 42
         service = CatalogueService(catalogue)
@@ -165,7 +175,10 @@ class AppendOnlyIngestionServiceTests(unittest.TestCase):
             }
         )
         catalogue = MagicMock()
-        catalogue.trusted_connection.execute.return_value.fetchall.return_value = [(None,)]
+        catalogue.trusted_connection.execute.return_value.fetchall.side_effect = [
+            [(str(evidence.visit.visit_id), None)],
+            [(evidence.document.content_sha256, None)],
+        ]
         catalogue.transaction.return_value.__enter__.return_value = catalogue
         service = CatalogueService(catalogue)
         service.get_visit_evidence = MagicMock(
@@ -192,7 +205,10 @@ class AppendOnlyIngestionServiceTests(unittest.TestCase):
             }
         )
         catalogue = MagicMock()
-        catalogue.trusted_connection.execute.return_value.fetchall.return_value = [(None,)]
+        catalogue.trusted_connection.execute.return_value.fetchall.side_effect = [
+            [(str(evidence.visit.visit_id), None)],
+            [(evidence.document.content_sha256, None)],
+        ]
         service = CatalogueService(catalogue)
 
         with self.assertRaisesRegex(

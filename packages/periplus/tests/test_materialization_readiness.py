@@ -1,3 +1,4 @@
+from operational_state_fixture import operational_state
 """Real DuckLake proof membership and atomic materialization commit checks."""
 from capture_policy_fixture import capture_policy
 from datetime import UTC, datetime
@@ -19,6 +20,7 @@ from periplus.platform.catalogue.service import CatalogueService
 
 class MaterializationReadinessTests(unittest.TestCase):
     def setUp(self):
+        self.sessions = operational_state(self)
         temporary = TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -33,8 +35,8 @@ class MaterializationReadinessTests(unittest.TestCase):
         self.connection = self.catalogue.trusted_connection
 
     def activate(self, digest=REGISTRY_DIGEST):
-        self.connection.execute('INSERT INTO material._periplus_materialization_state VALUES (?, ?, ?, ?, ?)',
-            [self.generation, self.catalogue.latest_snapshot(), 20, digest, self.now])
+        from periplus.materialization.state import publish_generation
+        publish_generation(SimpleNamespace(id=self.generation, batch_size=20, registry_digest=digest), self.catalogue.latest_snapshot())
 
     def proof(self, *, public_only=True):
         return observation_readiness(self.catalogue, [self.identity])[self.identity]
@@ -64,7 +66,7 @@ class MaterializationReadinessTests(unittest.TestCase):
         commit_prepared_batch(self.catalogue, run, batch, prepared, active_generation=True)
         self.assertTrue(read().query_ready)
         self.assertEqual(read().generation_id, self.generation)
-        self.connection.execute("UPDATE material._periplus_materialization_state SET registry_digest = 'other'")
+        self.activate('other')
         self.assertIsNone(read().query_ready)
         self.assertEqual(read().reason, 'active_generation_registry_mismatch')
 
@@ -94,16 +96,16 @@ class MaterializationReadinessTests(unittest.TestCase):
         prepared = prepare_batch(self.catalogue, SimpleNamespace(store=None), run, batch)
         self.assertEqual(prepared.source_items, 1)
         self.assertEqual(prepared.output_rows, 1)
-        execute = self.catalogue.trusted_remote_execute
-        def fail_marker(sql):
-            if 'INSERT INTO material._periplus_applied_batches' in sql:
-                raise RuntimeError('injected marker failure')
-            return execute(sql)
-        with patch.object(self.catalogue, 'trusted_remote_execute', side_effect=fail_marker):
-            with self.assertRaisesRegex(RuntimeError, 'injected'):
+        from periplus.platform.catalogue.exceptions import CatalogueOutcomePending
+        from periplus.retention.models import LakeWriteClaimRecord
+        from sqlalchemy import delete
+        with patch('periplus.materialization.state.record_applied', side_effect=RuntimeError('injected marker failure')):
+            with self.assertRaises(CatalogueOutcomePending):
                 commit_prepared_batch(self.catalogue, run, batch, prepared, active_generation=True)
-        self.assertFalse(self.proof().query_ready)
-        self.assertEqual(self.connection.execute('SELECT count(*) FROM material.visit_readiness').fetchone()[0], 0)
+        # The lake commit survived; a missing Postgres receipt cannot duplicate it.
+        self.assertEqual(self.connection.execute('SELECT count(*) FROM material.visit_readiness').fetchone()[0], 1)
+        with self.sessions.begin() as session:
+            session.execute(delete(LakeWriteClaimRecord))  # simulate safe claim expiry
         commit_prepared_batch(self.catalogue, run, batch, prepared, active_generation=True)
         self.assertTrue(self.proof().query_ready)
         self.assertEqual(self.proof().generation_id, self.generation)
@@ -199,20 +201,42 @@ class MaterializationReadinessTests(unittest.TestCase):
         self.assertFalse(self.proof().query_ready)
         self.connection.execute('INSERT INTO material.visit_readiness VALUES (?, ?)', [self.identity, self.now])
         self.assertTrue(self.proof().query_ready)
-        self.connection.execute("UPDATE material._periplus_materialization_state SET registry_digest = 'old-registry'")
+        self.activate('old-registry')
         self.assertIsNone(self.proof().query_ready)
         self.assertEqual(self.proof().reason, 'active_generation_registry_mismatch')
-        self.connection.execute('UPDATE material._periplus_materialization_state SET registry_digest = ?', [REGISTRY_DIGEST])
+        self.activate()
         self.assertTrue(self.proof().query_ready)
 
     def test_duplicate_state_or_proof_and_oversized_requests_fail_closed(self):
-        self.activate()
-        self.activate()
-        self.assertEqual(self.proof().reason, 'readiness_state_inconsistent')
-        self.connection.execute('DELETE FROM material._periplus_materialization_state')
         self.activate()
         self.connection.execute('INSERT INTO material.visit_readiness VALUES (?, ?), (?, ?)',
             [self.identity, self.now, self.identity, self.now])
         self.assertEqual(self.proof().reason, 'readiness_state_inconsistent')
         with self.assertRaises(ValueError):
             observation_readiness(self.catalogue, [uuid4() for _ in range(101)])
+
+    def test_activation_recovers_a_lost_postgres_acknowledgement(self):
+        from contextlib import nullcontext
+        from sqlalchemy import delete
+        from periplus.retention.models import LakeWriteClaimRecord
+        from periplus.materialization import state
+        from periplus.materialization.runtime import _activate_or_catch_up
+        from periplus.materialization.runtime import generation_table
+        run = SimpleNamespace(id=uuid4(), batch_size=50, registry_digest=REGISTRY_DIGEST)
+        run.generation_tables = {spec.name: generation_table(spec.name, run.id) for spec in PROJECTIONS}
+        for spec in PROJECTIONS:
+            self.catalogue.create_materialization_generation(spec.relation, run.generation_tables[spec.name])
+        run.covered_snapshot = self.catalogue.latest_snapshot()
+        with patch('periplus.materialization.runtime.catalogue_from_env', return_value=nullcontext(self.catalogue)):
+            with patch.object(state, 'publish_generation', side_effect=RuntimeError('lost ack')):
+                with self.assertRaisesRegex(RuntimeError, 'lost ack'):
+                    _activate_or_catch_up(run)
+            self.assertIsNone(state.active_generation())
+            with self.sessions.begin() as session:
+                session.execute(delete(LakeWriteClaimRecord))  # simulate safe claim expiry
+            _activate_or_catch_up(run)
+        self.assertEqual(state.active_generation().id, run.id)
+        names = {row[0] for row in self.connection.execute("SELECT table_name FROM duckdb_tables() WHERE schema_name='material'").fetchall()}
+        self.assertTrue(all(name not in names for name in run.generation_tables.values()))
+        self.assertFalse(any(name in names for name in ['_periplus_retention_identities', '_periplus_retention_objects',
+            '_periplus_applied_batches', '_periplus_materialization_state']))

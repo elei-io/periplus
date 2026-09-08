@@ -1,4 +1,6 @@
 [project]
+license = "AGPL-3.0-only"
+license-files = ["LICENSE", "NOTICE"]
 name = "periplus"
 version = "0.1.0"
 description = "Web acquisition and normalization for SQL-centric data pipelines"
@@ -38,7 +40,7 @@ periplus-setup = "periplus.entrypoints.setup:main"
 periplus-worker = "periplus.entrypoints.worker:main"
 
 [build-system]
-requires = ["setuptools"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]

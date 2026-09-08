@@ -23,6 +23,7 @@ _TREE_COLUMNS = (
     ("parent_index", "Parent node position; null for the document root."),
     ("subtree_end_index", "Exclusive end of this node's subtree."),
     ("sibling_index", "Zero-based position among all sibling nodes."),
+    ("depth", "Number of parent edges from the document root; root is zero."),
 )
 
 PUBLIC_OBJECTS = (

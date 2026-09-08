@@ -3,7 +3,8 @@
   "version": "0.1.0",
   "type": "module",
   "files": [
-    "dist"
+    "dist",
+    "NOTICE"
   ],
   "exports": {
     ".": {
@@ -29,5 +30,6 @@
   "scripts": {
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json && node -e \"require('node:fs').copyFileSync('src/styles.css','dist/styles.css')\"",
     "check": "tsc -p tsconfig.json --noEmit"
-  }
+  },
+  "license": "AGPL-3.0-only"
 }

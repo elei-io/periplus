@@ -45,7 +45,6 @@ def project(context: VisitBatchContext) -> pa.Table:
                     ),
                     list(element.attributes.items()),
                     element.text_direct,
-                    element.text_tail,
                 )
             )
     return table_from_rows(PROJECTION.arrow_schema, rows)
@@ -97,10 +96,6 @@ PROJECTION = ProjectionSpec(
         ProjectionColumn(
             "text_direct", pa.string(), "VARCHAR",
             "Concatenation of immediate child text nodes in order.", False,
-        ),
-        ProjectionColumn(
-            "text_tail", pa.string(), "VARCHAR",
-            "Text following this element within its parent.", False,
         ),
     ),
     partitioning=(PartitionTransform("bucket", "content_sha256", buckets=8),),

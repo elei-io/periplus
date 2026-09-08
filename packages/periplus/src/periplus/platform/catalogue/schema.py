@@ -14,21 +14,21 @@ from periplus.platform.catalogue.physical import (
     TableLayout,
     VISITS,
 )
-from periplus.platform.catalogue.physical import ingest, lineage, retention
+from periplus.platform.catalogue.physical import ingest, lineage
 from periplus.platform.catalogue.schema_types import ColumnDef
 from periplus.materialization.registry import PROJECTIONS
 
 
-TABLE_COLUMNS = ingest.TABLE_COLUMNS | lineage.TABLE_COLUMNS | retention.TABLE_COLUMNS | {
+TABLE_COLUMNS = ingest.TABLE_COLUMNS | lineage.TABLE_COLUMNS | {
     spec.relation: spec.physical_columns for spec in PROJECTIONS
 }
-TABLE_LAYOUTS = ingest.TABLE_LAYOUTS | lineage.TABLE_LAYOUTS | retention.TABLE_LAYOUTS | {
+TABLE_LAYOUTS = ingest.TABLE_LAYOUTS | lineage.TABLE_LAYOUTS | {
     spec.relation: spec.layout for spec in PROJECTIONS
 }
-TABLE_COMMENTS = ingest.TABLE_COMMENTS | lineage.TABLE_COMMENTS | retention.TABLE_COMMENTS | {
+TABLE_COMMENTS = ingest.TABLE_COMMENTS | lineage.TABLE_COMMENTS | {
     spec.relation: spec.description for spec in PROJECTIONS
 }
-COLUMN_COMMENTS = ingest.COLUMN_COMMENTS | lineage.COLUMN_COMMENTS | retention.COLUMN_COMMENTS | {
+COLUMN_COMMENTS = ingest.COLUMN_COMMENTS | lineage.COLUMN_COMMENTS | {
     spec.relation: spec.column_comments for spec in PROJECTIONS
 }
 

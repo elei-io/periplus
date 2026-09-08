@@ -3,7 +3,7 @@
 This cutoff establishes one immutable lake contract:
 
 ```text
-shared frontier -> immutable bytes -> ingest.* -> append-only material.* -> public_v1.*
+shared frontier -> immutable bytes -> ingest.* -> derived material.* -> public_v1.*
 ```
 
 ## Required outcome
@@ -16,7 +16,6 @@ Periplus must:
 3. Rebuild the registered semantic projections:
    - `material.html_nodes`
    - `material.html_elements`
-   - `material.jsonld_values`
    - `material.link_occurrences`
 4. Append only immutable final files and activate complete registry generations atomically.
 5. Recover from retries, restarts, catch-up ingestion, and unreadable material files without
@@ -39,11 +38,11 @@ projection registry. Each arrow below is currently implemented by one self-conta
 ingest.visits
     -> optional immutable HTML document
     -> material.html_elements
-    -> material.jsonld_values
     -> material.link_occurrences
 ```
 
-Workers acknowledge only after final file registration and the applied marker commit together.
+Workers acknowledge only after the atomic lake identity replacement/file registration and
+the subsequent control-Postgres receipt both commit. Lost receipts replay safely.
 Rebuild, live CDC, activation, recovery, status, and UI lifecycle iterate the registry; they do not
 branch by relation.
 
@@ -67,8 +66,8 @@ registrations retain their complete immutable object URI.
 ## Exit criteria
 
 - Repository checks and catalogue validation pass.
-- Static tests reject replacement DML against ingestion or semantic material relations.
-- Repeated content and parallel batches produce one DOM/JSON-LD projection and distinct
+- Ingestion stays append-only; derived batch replacement is bounded to its deterministic identities.
+- Repeated content and parallel batches produce one DOM projection and distinct
   visit-owned link occurrences.
 - Rebuild and live incremental output are logically equal at the same snapshot.
 - A low-depth, low-concurrency crawl produces correct ingestion evidence and all applicable

@@ -146,3 +146,10 @@ class CollectionHistoryTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await history.observation_lineage(identity,  limit=101, cursor=None)
         control.run.assert_not_awaited()
+
+class RetirementHistoryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_unavailable_control_state_uses_the_history_error_contract(self):
+        from unittest.mock import patch
+        with patch('periplus.retention.identities.retired', side_effect=OSError('unavailable')):
+            with self.assertRaises(HistoryUnavailable):
+                await CollectionHistory(None).is_retired(uuid4())

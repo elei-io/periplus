@@ -27,7 +27,8 @@ to encode around one accidental optimizer plan.
   migration.
 - Periplus Postgres owns editable control state and current frontier execution: collections, shared acquisitions,
   interests, selection checkpoints, admission deduplication, budgets, progress counters, policies,
-  catalogue definitions, and the transactional frontier outbox.
+  catalogue definitions, materialization publication and batch receipts, retirement
+  decisions, raw-object deletion work, exact lake-write claims, and the transactional frontier outbox.
 - NATS JetStream/KV owns frontier, ingestion, and materialization work delivery, worker presence,
   operation leases, and per-domain crawl pacing/concurrency. It is not authoritative frontier state.
 - Crawl history belongs only in DuckLake; never reintroduce it into Periplus Postgres.
@@ -51,7 +52,9 @@ to encode around one accidental optimizer plan.
   Public views and macros belong to the separate public-catalogue registry. A planner pins a source
   snapshot and publishes bounded visit-ID batches to JetStream. Horizontally scalable materializers
   build one shared parse context, register final Parquet using each projection's partition policy,
-  record the applied batch in the same DuckLake transaction, and ACK only after commit. All
+  replace deterministic derived identities in one DuckLake transaction, then record the applied
+  batch in control Postgres and ACK only after both commits. Exact Postgres claims serialize
+  generation commits and protect evidence retirement; no Postgres transaction spans lake I/O. All
   discovered relations belong to one
   registry-digested hidden generation, catch up inserted visits to a source high-water mark, and
   activate atomically. After activation, one insert-only DuckLake CDC consumer publishes

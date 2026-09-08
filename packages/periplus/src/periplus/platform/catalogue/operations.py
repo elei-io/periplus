@@ -9,6 +9,8 @@ from typing import TypeVar
 
 import duckdb
 import psycopg
+from sqlalchemy.exc import OperationalError as SqlAlchemyOperationalError
+from periplus.platform.catalogue.exceptions import CatalogueOutcomePending
 
 from periplus.platform.config.performance import (
     CATALOGUE_OPERATION_MAX_ATTEMPTS,
@@ -50,16 +52,21 @@ def is_catalogue_data_corruption(exc: BaseException) -> bool:
 def is_retryable_catalogue_unavailability(exc: BaseException) -> bool:
     """Return whether durable work must remain live across this failure."""
 
+    from periplus.retention.identities import WriteClaimUnavailable
+
     return not is_catalogue_data_corruption(exc) and isinstance(
         exc,
-        (duckdb.IOException, psycopg.OperationalError),
+        (duckdb.IOException, psycopg.OperationalError, SqlAlchemyOperationalError,
+         CatalogueOutcomePending, WriteClaimUnavailable),
     )
 
 
 def is_retryable_catalogue_transaction_conflict(exc: BaseException) -> bool:
     """Return whether DuckLake rejected a transaction due to concurrent work."""
 
-    if isinstance(exc, duckdb.TransactionException):
+    from periplus.retention.identities import WriteClaimUnavailable
+
+    if isinstance(exc, (duckdb.TransactionException, WriteClaimUnavailable)):
         return True
     if not isinstance(exc, duckdb.Error):
         return False

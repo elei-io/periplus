@@ -6,6 +6,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 import duckdb
+from psycopg.conninfo import conninfo_to_dict, make_conninfo
+from periplus.platform.config.performance import POSTGRES_TRANSACTION_OPTIONS
 
 from periplus.platform.catalogue.cdc_extension import load_cdc_extension
 from periplus.platform.catalogue.config import CatalogueConfig
@@ -97,8 +99,13 @@ class DuckLakeConnectionFactory:
             options.append("OVERRIDE_DATA_PATH true")
         if read_only:
             options.append("READ_ONLY")
+        metadata_path = self.config.metadata_path
+        if metadata_path.startswith("postgres:"):
+            info = conninfo_to_dict(metadata_path.removeprefix("postgres:"))
+            info["options"] = (info.get("options", "") + " " + POSTGRES_TRANSACTION_OPTIONS).strip()
+            metadata_path = "postgres:" + make_conninfo(**info)
         return (
-            f"ATTACH {_literal('ducklake:' + self.config.metadata_path)} "
+            f"ATTACH {_literal('ducklake:' + metadata_path)} "
             f"AS {_identifier(self.config.alias)} "
             f"({', '.join(options)})"
         )

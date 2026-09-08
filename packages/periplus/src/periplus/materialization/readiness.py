@@ -5,6 +5,7 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
+from periplus.materialization import state
 from periplus.materialization.registry import CONTENT_PRESENCE_PROJECTION, REGISTRY_DIGEST
 from periplus.platform.catalogue.connection import _identifier
 
@@ -38,17 +39,20 @@ def observation_readiness(catalogue, identities: list[UUID]) -> dict[UUID, Obser
     try:
         tables = connection.execute("""SELECT table_name FROM duckdb_tables()
             WHERE database_name = ? AND schema_name = 'material'
-              AND table_name IN ('visit_readiness', '_periplus_materialization_state', ?)""",
+              AND table_name IN ('visit_readiness', ?)""",
             [catalogue.config.alias, presence.name]).fetchall()
-        if {row[0] for row in tables} != {'visit_readiness', '_periplus_materialization_state', presence.name}:
+        if {row[0] for row in tables} != {'visit_readiness', presence.name}:
             return result
+        generation = state.readable_generation()
+        if generation is None:
+            return {identity: value.model_copy(update={"reason": "active_generation_unavailable"})
+                    for identity, value in result.items()}
         values = ', '.join('(?::UUID)' for _ in identities)
-        # One statement observes both the active state and the atomically renamed
-        # active proof table. A concurrent generation swap cannot mix the two.
+        # Postgres publication state is checked on both sides of one lake read.
+        # An activation in progress never yields a readiness proof.
         rows = connection.execute(f"""
             WITH wanted(id) AS (VALUES {values}),
-            active AS (SELECT generation_id, registry_digest
-                       FROM {alias}.material._periplus_materialization_state LIMIT 2)
+            active AS (SELECT ?::UUID AS generation_id, ?::VARCHAR AS registry_digest)
             SELECT wanted.id, visit.visit_id, active.generation_id, active.registry_digest, proof.visit_id,
                    visit.document_id, document.document_id, document.detected_media_type,
                    content.content_sha256
@@ -62,7 +66,10 @@ def observation_readiness(catalogue, identities: list[UUID]) -> dict[UUID, Obser
                        WHERE {presence.content_presence_predicate}) content
               ON content.content_sha256 = document.content_sha256
             LIMIT 201
-        """, identities).fetchmany(201)
+        """, [*identities, generation.id, generation.registry_digest]).fetchmany(201)
+        if state.readable_generation() != generation:
+            return {identity: value.model_copy(update={"reason": "active_generation_changed"})
+                    for identity, value in result.items()}
         if len(rows) != len(identities) or len({row[0] for row in rows}) != len(identities):
             return {identity: value.model_copy(update={"reason": "readiness_state_inconsistent"})
                     for identity, value in result.items()}
@@ -120,14 +127,17 @@ def collection_readiness(catalogue, identities: list[UUID]) -> dict[UUID, Collec
     try:
         tables = connection.execute("""SELECT table_name FROM duckdb_tables()
             WHERE database_name = ? AND schema_name = 'material'
-              AND table_name IN ('visit_readiness', '_periplus_materialization_state', ?)""",
+              AND table_name IN ('visit_readiness', ?)""",
             [catalogue.config.alias, presence.name]).fetchall()
-        if {row[0] for row in tables} != {'visit_readiness', '_periplus_materialization_state', presence.name}:
+        if {row[0] for row in tables} != {'visit_readiness', presence.name}:
             return result
+        generation = state.readable_generation()
+        if generation is None:
+            return {identity: value.model_copy(update={"reason": "active_generation_unavailable"})
+                    for identity, value in result.items()}
         values = ', '.join('(?::UUID)' for _ in identities)
-        # Scalar/count checks protect against duplicate immutable identities and
-        # join multiplication. All proof rows and the active generation are read
-        # in this single statement, including during atomic generation swaps.
+        # Proof rows share one lake snapshot. Recheck Postgres publication after
+        # reading, so a generation change is reported as unknown rather than ready.
         rows = connection.execute(f"""
             WITH wanted(id) AS (VALUES {values}),
             definitions AS (
@@ -159,8 +169,7 @@ def collection_readiness(catalogue, identities: list[UUID]) -> dict[UUID, Collec
                            WHERE {presence.content_presence_predicate}) content ON content.content_sha256 = doc.content_sha256
                 GROUP BY f.collection_id
             ), active AS (
-                SELECT count(*) AS n, first(generation_id) AS generation_id, first(registry_digest) AS digest
-                FROM {alias}.material._periplus_materialization_state
+                SELECT 1 AS n, ?::UUID AS generation_id, ?::VARCHAR AS digest
             )
             SELECT w.id, d.n, d.valid, o.n, o.supplied, o.failed,
                    coalesce(r.n, 0), coalesce(r.unique_records, 0), coalesce(r.unique_observations, 0),
@@ -169,7 +178,10 @@ def collection_readiness(catalogue, identities: list[UUID]) -> dict[UUID, Collec
             FROM wanted w LEFT JOIN definitions d ON d.collection_id = w.id
             LEFT JOIN outcomes o ON o.collection_id = w.id LEFT JOIN results r ON r.collection_id = w.id
             CROSS JOIN active a
-        """, identities).fetchmany(101)
+        """, [*identities, generation.id, generation.registry_digest]).fetchmany(101)
+        if state.readable_generation() != generation:
+            return {identity: value.model_copy(update={"reason": "active_generation_changed"})
+                    for identity, value in result.items()}
         if len(rows) != len(identities):
             raise ValueError("collection readiness result cardinality is inconsistent")
         for (identity, definitions, valid, outcomes, supplied, failed, total, unique_records,

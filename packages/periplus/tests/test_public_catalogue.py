@@ -182,9 +182,9 @@ class PublicCatalogueTests(unittest.TestCase):
 
             INSERT INTO material.html_elements VALUES
                 ('content-a', 0, NULL, 2, 0, 0, 'html', 'HTML',
-                 MAP {}, '', ''),
+                 MAP {}, ''),
                 ('content-a', 1, 0, 2, 1, 0, 'a', 'HTML',
-                 MAP {'href': '/next'}, 'Next', '');
+                 MAP {'href': '/next'}, 'Next');
 
             INSERT INTO material.link_occurrences VALUES (
                 '30000000-0000-0000-0000-000000000001',
@@ -216,11 +216,11 @@ class PublicCatalogueTests(unittest.TestCase):
         self.assertEqual(
             self.catalogue.connection.execute(
                 "SELECT content_id, node_index, parent_index, tag, "
-                "text_direct FROM public_v1.html_element ORDER BY node_index"
+                "text_direct, depth FROM public_v1.html_element ORDER BY node_index"
             ).fetchall(),
             [
-                ("content-a", 0, None, "html", ""),
-                ("content-a", 1, 0, "a", "Next"),
+                ("content-a", 0, None, "html", "", 0),
+                ("content-a", 1, 0, "a", "Next", 1),
             ],
         )
         self.assertEqual(

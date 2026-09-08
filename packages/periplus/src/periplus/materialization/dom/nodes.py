@@ -19,6 +19,7 @@ class NodeRow:
     name: str | None
     namespace: str | None
     value: str | None
+    depth: int
 
 
 def parse_document(source: str | bytes) -> tuple[tuple[NodeRow, ...], tuple[ElementRow, ...]]:
@@ -55,7 +56,7 @@ def parse_document(source: str | bytes) -> tuple[tuple[NodeRow, ...], tuple[Elem
         kind = kinds[node.nodeType]
         name = (node.localName or node.nodeName) if kind in {"element", "doctype", "processing_instruction"} else None
         nodes.append(NodeRow(index, parent, index + 1, sibling, kind, name,
-                             node.namespaceURI, node.nodeValue))
+                             node.namespaceURI, node.nodeValue, depth))
         if kind == "element":
             attributes = {}
             for attribute in node.attributes.values():

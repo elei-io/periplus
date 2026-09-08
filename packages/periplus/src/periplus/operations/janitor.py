@@ -110,6 +110,8 @@ async def _run(stop: asyncio.Event, monitor: HealthMonitor) -> None:
                 def reclaim():
                     frontier.cleanup_collections(cutoff=cutoff)
                     frontier.cleanup_acquisitions(cutoff=cutoff)
+                    from periplus.retention.identities import cleanup_expired_claims
+                    cleanup_expired_claims()
                 cleaning = asyncio.create_task(asyncio.to_thread(reclaim))
                 try:
                     await asyncio.shield(cleaning)

@@ -12,6 +12,7 @@ from periplus.ingestion.objects.document import (
     ExactDocumentRepository,
 )
 from periplus.ingestion.objects.html import HtmlIdentity, RawHtmlRepository
+from periplus.materialization import state
 from periplus.materialization.registry import PROJECTIONS, REGISTRY_DIGEST
 from periplus.materialization.runtime import _drop_unregistered_material_relations
 from periplus.platform.catalogue import Catalogue
@@ -136,12 +137,8 @@ def preflight(
 def verify_cutover(catalogue: Catalogue) -> dict[str, int]:
     """Validate active registry relations and the matching public contract."""
 
-    state = catalogue.trusted_remote_rows(
-        "SELECT registry_digest "
-        "FROM material._periplus_materialization_state "
-        "ORDER BY activated_at DESC LIMIT 1"
-    )
-    if state != [(REGISTRY_DIGEST,)]:
+    current = state.active_generation()
+    if current is None or current.registry_digest != REGISTRY_DIGEST:
         raise RuntimeError("active material generation has the wrong registry")
     validate_public_catalogue(catalogue)
     counts: dict[str, int] = {}

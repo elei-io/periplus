@@ -67,13 +67,14 @@ Use `aclose()` when managing an async client's lifetime explicitly.
 
 ## Installation and verification
 
-Install from PyPI:
+Install the current public-v1 client from this checkout:
 
 ```sh
-python -m pip install periplus-python-sdk==0.2.0
+python -m pip install ./packages/periplus-python-sdk
 ```
 
-For local development: `python -m pip install ./packages/periplus-python-sdk`.
+The published 0.2.0 package predates the current public-v1 contract; use the
+checkout until a matching SDK release is published.
 Run the installed package against an available public app:
 
 ```sh
@@ -99,3 +100,9 @@ that GitHub environment with required reviewers before the first release.
 ## Public v1
 
 Install the updated SDK from this checkout with `python -m pip install ./packages/periplus-python-sdk` from the repository root. The previously published 0.2.0 release predates this contract. `prepare` and `execute` accept keyword-only `schema_version="public_v1"` (the default); responses preserve `schema_version` separately from `source_snapshot`. Unavailable versions are rejected by the server.
+
+## License
+
+Copyright (c) 2026 Ekku Leivonen (elei.io). Licensed under [Apache-2.0](LICENSE);
+see [NOTICE](NOTICE). The server and other repository packages have separate
+licensing described in the root LICENSING.md.

@@ -28,6 +28,7 @@ PROJECTION = ProjectionSpec(
         ProjectionColumn("name", pa.string(), "VARCHAR", "Local element name, doctype name or instruction target."),
         ProjectionColumn("namespace", pa.string(), "VARCHAR", "Namespace URI when applicable."),
         ProjectionColumn("value", pa.string(), "VARCHAR", "Text, comment or instruction value."),
+        ProjectionColumn("depth", pa.int32(), "INTEGER", "Number of parent edges from the document root; root is zero.", False),
     ),
     partitioning=(PartitionTransform("bucket", "content_sha256", buckets=8),),
     sort_order=("content_sha256 ASC", "node_index ASC"),

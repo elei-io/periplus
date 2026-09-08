@@ -60,7 +60,7 @@ class RepositoryIngestor:
     def prepare(self, job: IngestionJob) -> PreparedIngestion:
         if job.kind == "visit":
             assert job.visit is not None
-            if retired(self.catalogue, "observation", str(job.visit.visit.visit_id)):
+            if retired("observation", str(job.visit.visit.visit_id)):
                 raise EvidenceRetired("observation has been retired")
             if job.visit.document is not None:
                 claim(self.html_repository.store, job.visit.document.content_sha256, job.visit.visit.visit_id)

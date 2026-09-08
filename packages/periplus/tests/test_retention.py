@@ -1,3 +1,4 @@
+from operational_state_fixture import operational_state
 """Retention correctness against disposable real DuckLake catalogues."""
 from capture_policy_fixture import capture_policy
 from datetime import UTC, datetime, timedelta
@@ -13,13 +14,14 @@ from periplus.platform.catalogue.service import CatalogueService
 from periplus.platform.catalogue.records import VisitEvidence, VisitRecord
 from periplus.platform.catalogue.lineage import CollectionDefinition, CollectionOutcome, FulfillmentRecord, AcquisitionReason
 from periplus.retention.catalogue import RetentionCatalogue
-from periplus.retention.identities import EvidenceRetired, retired, touch
+from periplus.retention.identities import EvidenceRetired, retired, write_claims
 from periplus.retention.runtime import RetentionSettings, RetentionSweep
 from periplus.crawl.control.collections.schemas import CollectionSpec
 
 
 class RetentionTests(unittest.TestCase):
     def setUp(self):
+        self.sessions = operational_state(self)
         tmp = TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         root = Path(tmp.name)
@@ -122,7 +124,7 @@ class RetentionTests(unittest.TestCase):
         self.assertFalse(self.retention.purge_request(identity, now=self.now))
         with self.assertRaises(EvidenceRetired): self.service.record_lineage([CollectionDefinition(
             record_id=identity, collection_id=identity, recorded_at=self.now,  specification={})])
-        self.assertTrue(retired(self.catalogue, 'observation', str(visit.visit.visit_id)))
+        self.assertTrue(retired('observation', str(visit.visit.visit_id)))
 
     def test_new_fulfillment_between_plan_and_delete_is_rechecked(self):
         visit = self.visit()
@@ -188,7 +190,7 @@ class RetentionTests(unittest.TestCase):
         key = first.document.object_key
         objects.put_if_absent(key, BytesIO(b'raw'))
         self.retention.purge_observation(next(item for item in self.candidates() if item.observation_id == first.visit.visit_id), now=self.old)
-        self.assertEqual(self.catalogue.trusted_connection.execute('SELECT count(*) FROM material._periplus_retention_objects').fetchone()[0], 0)
+        self.assertEqual(self.object_count(), 0)
         self.retention.purge_observation(self.candidates()[0], now=self.old)
         kwargs = dict(now=self.now, grace_seconds=3600, content_hashes=('a'*64,), check_ownership=lambda:None)
         self.assertEqual(self.retention.reclaim_objects(objects, **kwargs), 0)
@@ -205,28 +207,13 @@ class RetentionTests(unittest.TestCase):
         self.document_visit(key='raw/first')
         self.document_visit(key='raw/second')
         for item in self.candidates(): self.retention.purge_observation(item, now=self.old)
-        self.assertEqual(self.catalogue.trusted_connection.execute('SELECT count(*) FROM material._periplus_retention_objects').fetchone()[0], 2)
+        self.assertEqual(self.object_count(), 2)
 
-    def test_transaction_fence_conflicts_with_concurrent_retirement(self):
-        import duckdb
-        visit = self.visit()
-        connection = self.catalogue.trusted_connection.cursor()
-        self.addCleanup(connection.close)
-        other = SimpleNamespace(trusted_connection=connection)
-        connection.execute('USE periplus')
-        connection.execute('BEGIN TRANSACTION')
-        touch(other, 'observation', [str(visit.visit.visit_id)])
-        try:
-            # Both update exactly the same row; the loser must retry and recheck.
-            try:
-                self.retention.purge_observation(self.candidates()[0], now=self.now)
-            except duckdb.TransactionException:
-                connection.execute('COMMIT')
-            else:
-                with self.assertRaises(duckdb.TransactionException): connection.execute('COMMIT')
-        finally:
-            try: connection.execute('ROLLBACK')
-            except duckdb.TransactionException: pass
+    def object_count(self):
+        from sqlalchemy import select, func
+        from periplus.retention.models import RetentionObjectRecord
+        with self.sessions() as session:
+            return session.scalar(select(func.count()).select_from(RetentionObjectRecord))
 
     def test_materializer_reprepares_after_retirement_instead_of_failing_batch(self):
         from unittest.mock import patch
@@ -253,11 +240,11 @@ class RetentionTests(unittest.TestCase):
         self.document_visit()
         self.document_visit()
         connection = self.catalogue.trusted_connection
-        tables = ['jsonld_values', '_periplus_rebuild_jsonld_values_test', '_periplus_retired_jsonld_values_test']
+        tables = ['html_nodes', '_periplus_rebuild_html_nodes_test', '_periplus_retired_html_nodes_test']
         for table in tables:
-            if table != 'jsonld_values':
-                connection.execute(f'CREATE TABLE material.{table} AS SELECT * FROM material.jsonld_values WHERE false')
-            connection.execute(f'INSERT INTO material.{table} VALUES (?, 0, [], ?)', ['a'*64, '{}'])
+            if table != 'html_nodes':
+                connection.execute(f'CREATE TABLE material.{table} AS SELECT * FROM material.html_nodes WHERE false')
+            connection.execute(f'INSERT INTO material.{table} (content_sha256, node_index, subtree_end_index, sibling_index, node_type, depth) VALUES (?, 0, 1, 0, ?, 0)', ['a'*64, 'document'])
         candidates = self.candidates()
         self.retention.purge_observation(candidates[0], now=self.now)
         for table in tables:
@@ -280,7 +267,7 @@ class RetentionTests(unittest.TestCase):
                 'periplus.retention.runtime.current_roots', return_value=(set(), set())):
             report = RetentionSweep(RetentionSettings(mode='dry_run'), None).run(now=self.now)
         self.assertEqual(report['candidates'], [str(visit.visit.visit_id)])
-        self.assertFalse(retired(self.catalogue, 'observation', str(visit.visit.visit_id)))
+        self.assertFalse(retired('observation', str(visit.visit.visit_id)))
 
     def test_abandoned_publication_is_retired_before_claim_release(self):
         import asyncio
@@ -315,10 +302,10 @@ class RetentionTests(unittest.TestCase):
                 'periplus.retention.publications.current_roots', return_value=(set(), set())), patch(
                 'periplus.retention.publications.operation_leases', lease):
             asyncio.run(cleanup_publications(settings, None, objects, None))
-        self.assertTrue(retired(self.catalogue, 'observation', str(identity)))
+        self.assertTrue(retired('observation', str(identity)))
         self.assertFalse(objects.exists(claim_key(content_hash, identity)))
         self.assertTrue(objects.exists(html_object_key(content_hash)))
-        self.assertEqual(self.catalogue.trusted_connection.execute('SELECT count(*) FROM material._periplus_retention_objects').fetchone()[0], 1)
+        self.assertEqual(self.object_count(), 1)
         with self.assertRaises(EvidenceRetired):
             self.service.record_visits([VisitEvidence(visit=VisitRecord(capture_policy=capture_policy(), visit_id=identity,
                 requested_url='https://example.com/', admitted_at=self.old, finished_at=self.old, outcome='failed'), attempts=())])

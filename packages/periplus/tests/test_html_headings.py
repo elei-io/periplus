@@ -16,7 +16,7 @@ class HtmlHeadingTests(unittest.TestCase):
         self.db.execute('''CREATE TABLE public_v1.html_node (
             content_id VARCHAR, node_index INTEGER, parent_index INTEGER,
             subtree_end_index INTEGER, sibling_index INTEGER, node_type VARCHAR,
-            name VARCHAR, namespace VARCHAR, value VARCHAR)''')
+            name VARCHAR, namespace VARCHAR, value VARCHAR, depth INTEGER)''')
         self.db.execute('''CREATE TABLE public_v1.html_element (
             content_id VARCHAR, node_index INTEGER, parent_index INTEGER,
             subtree_end_index INTEGER, tag VARCHAR, namespace VARCHAR)''')
@@ -25,7 +25,7 @@ class HtmlHeadingTests(unittest.TestCase):
 
     def load(self, html, content='fixture'):
         nodes, elements = parse_document(html)
-        self.db.executemany('INSERT INTO public_v1.html_node VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        self.db.executemany('INSERT INTO public_v1.html_node VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                            [(content, *astuple(n)) for n in nodes])
         self.db.executemany('INSERT INTO public_v1.html_element VALUES (?, ?, ?, ?, ?, ?)',
                            [(content, e.element_index, e.parent_index, e.subtree_end_index,

@@ -13,6 +13,7 @@ COPY packages/periplus-admin/ packages/periplus-admin/
 RUN npm run build:admin
 
 FROM nginx:1.27-alpine
+COPY LICENSE NOTICE LICENSING.md THIRD_PARTY_NOTICES.md /usr/share/licenses/periplus/
 ENV PERIPLUS_API_HOST=periplus-api PERIPLUS_API_PORT=8000
 COPY docker/admin/nginx.conf /etc/nginx/templates/default.conf.template
 COPY docker/admin/15-config.sh /docker-entrypoint.d/15-config.sh

@@ -16,6 +16,7 @@ RUN npm run build:public
 
 FROM node:24-alpine
 WORKDIR /app
+COPY LICENSE NOTICE LICENSING.md THIRD_PARTY_NOTICES.md /usr/share/licenses/periplus/
 ENV NODE_ENV=production HOSTNAME=0.0.0.0 PORT=3000
 COPY --from=build --chown=node:node /app/packages/periplus-public/.next/standalone/ ./
 COPY --from=build --chown=node:node /app/packages/periplus-public/.next/static/ ./packages/periplus-public/.next/static/

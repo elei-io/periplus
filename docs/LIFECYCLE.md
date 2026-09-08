@@ -36,29 +36,27 @@ physical-schema declaration. Add one file, edit one file, or delete one file; th
 a complete rebuild. The generation digest includes the complete source of every discovered
 projection file, so an implementation-only edit cannot silently reuse the previous generation.
 
-The current files project structural HTML and JSON-LD at content grain, plus link occurrences
+The current files project structural HTML at content grain, plus link occurrences
 and readiness membership at visit grain. HTML readiness also requires the active content root
 marker because a separate batch may own shared-content output.
 
-A visit batch loads its visits and documents, groups unique HTML content sources, and builds one
-shared projection context. Each content body is read and parsed once in that batch. Node zero
-in the generation's HTML node projection is the durable presence marker for a content identity. If the
-marker already exists, no later visit can emit DOM or JSON-LD rows for that content, even when its
-`document_id` sorts before the document that first projected it.
+A visit batch loads visits and documents from a pinned snapshot, groups unique HTML
+sources, and parses each body once. The batch containing the minimum retained HTML
+`document_id` for each content hash owns its DOM output. The decision is deterministic
+for that snapshot, including replay; every observation emits its own link occurrences.
 
-For content without a presence marker, the batch containing the lexicographically minimum HTML
-`document_id` in the pinned ingestion snapshot owns the initial DOM and JSON-LD output. That
-decision is made before workers commit, so parallel batches for genuinely new content select one
-owner without racing on a uniqueness constraint. If the owning batch fails, its deterministic
-redelivery remains the owner. Every document observation still emits its own link occurrences.
-
-Registry callbacks produce Arrow tables only. Generic lifecycle code validates their schemas,
-writes partitioned and sorted final Parquet, registers those files, records progress, and commits the
-applied-batch marker. Every preparation gets a fresh immutable file set, so a crash before commit
-leaves only unreferenced files; a redelivery after commit reads the marker and is a no-op.
+Registry callbacks produce Arrow tables. Generic lifecycle code writes partitioned,
+sorted immutable Parquet outside the commit claim. Under exact generation, observation
+and content claims in Postgres, one lake transaction replaces the batch's visit-owned
+and content-owned identities and registers its files. It then records completion in
+Postgres `materialization_applied_batches`, and only then ACKs delivery. A missing receipt
+after a successful lake commit causes the same identity replacement, so replay cannot
+append duplicates. A durable receipt makes redelivery a no-op. Preparation remains
+parallel; commits within one generation are serialized. See [RETENTION.md](RETENTION.md)
+for bounded claim ownership and uncertain-commit handling.
 
 Partition transforms are declared per registry entry; there is no global material partition
-policy. Content-owned HTML and JSON-LD currently use eight content-hash buckets because exact
+policy. Content-owned HTML currently use eight content-hash buckets because exact
 content lookup is their dominant access path. Visit-owned link occurrences use
 `month(observed_at)` to keep chronological appends coherent without multiplying every batch into
 many small URL-bucket files; they are sorted by source URL, target URL, time, and occurrence
@@ -76,11 +74,14 @@ URI. Materialization code does not branch by storage backend.
 
 1. Periplus Postgres records the source snapshot, registry digest, and visit batch identities.
 2. The planner creates every discovered hidden relation from the registry.
-3. Horizontally scalable workers append final files and applied markers.
+3. Workers prepare files in parallel, commit deterministic identity replacements, and
+   record applied receipts in control Postgres.
 4. Activation checks the exact registry, validates every hidden relation, and catches up visits
    inserted after the pinned snapshot.
-5. One DuckLake transaction swaps the complete discovered relation set and writes matching
-   generation state.
+5. Under old/new generation claims, one DuckLake transaction swaps every relation and
+   public view. Postgres `materialization_state` then records the published generation.
+   Retired table names identify a completed swap if its Postgres acknowledgement was lost.
+   Readiness is unknown while activation is in progress.
 6. Retired tables remain until completion is durably recorded and post-activation checks pass.
 
 A registry/schema change cannot be applied to a running or active generation with a different

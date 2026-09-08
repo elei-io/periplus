@@ -1,4 +1,6 @@
 [project]
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 name = "periplus-python-sdk"
 version = "0.2.0"
 description = "Read-only Python client for the public Periplus query API"

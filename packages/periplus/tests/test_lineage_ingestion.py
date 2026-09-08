@@ -1,3 +1,4 @@
+from operational_state_fixture import operational_state
 """Real DuckLake append/replay checks for late collection fulfillment."""
 from capture_policy_fixture import capture_policy
 from datetime import UTC, datetime
@@ -11,13 +12,13 @@ from periplus.platform.catalogue.config import CatalogueConfig
 from periplus.platform.catalogue.exceptions import CatalogueConflictError
 from periplus.platform.catalogue.lineage import CollectionDefinition, CollectionOutcome, FulfillmentRecord
 from periplus.platform.catalogue.physical.lineage import TABLE_COLUMNS
-from periplus.platform.catalogue.physical.retention import TABLE_COLUMNS as RETENTION_COLUMNS
 from periplus.platform.catalogue.service import CatalogueService
 from periplus.ingestion.queue import IngestionJob, lineage_ingestion_job
 
 
 class LineageIngestionTests(unittest.TestCase):
     def setUp(self):
+        self.sessions = operational_state(self)
         directory = TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         root = Path(directory.name)
@@ -27,7 +28,7 @@ class LineageIngestionTests(unittest.TestCase):
         self.addCleanup(self.catalogue.close)
         self.catalogue.trusted_remote_execute("CREATE SCHEMA ingest")
         self.catalogue.trusted_remote_execute("CREATE SCHEMA material")
-        for relation, columns in (TABLE_COLUMNS | RETENTION_COLUMNS).items():
+        for relation, columns in TABLE_COLUMNS.items():
             definitions = ", ".join(f'"{name}" {_column_type(column)}' for name, column in columns.items())
             self.catalogue.trusted_remote_execute(f"CREATE TABLE {relation.qualified} ({definitions})")
         self.service = CatalogueService(self.catalogue)

@@ -209,3 +209,100 @@ the same content identity semantics; captures do not wait for DOM readiness.
 Public hash downloads apply the same HTML filter; private document access is
 unchanged. This edit is local; no catalogue deployment is performed by the side
 conversation.
+
+## Physical projection cleanup (2026-09-08)
+
+Removed the unused `material.jsonld_values` projection; public `html_jsonld`
+continues deriving complete scripts and parse errors from the HTML primitives.
+Removed the stored `html_elements.text_tail` column after checking all 3,039,462
+current elements (zero nonempty values) and the materialization parser's constant
+empty assignment. The separate page-local ElementRow parser still uses tail text
+and is unchanged. Kept physical depth pending an explicit public use case.
+Registry activation requires a complete rebuild; no public schema change is needed.
+See QUERY.md for the link ordering comparison and its scale limitations.
+
+The first cleanup rebuild encountered pre-existing duplicate retention guards.
+Snapshot 7770 (before this cleanup) and snapshot 7800 each contained 39 redundant
+rows: 20 observation identities and 19 content identities, each with two different
+revision values and no retirement timestamp. Run
+6c2a3b64-7ceb-46d8-8f6b-df50d32751fc failed after 22 of 43 batches when the exact
+identity guard rejected a duplicate. Subsequent missing-generation-table errors
+came after failed-run cleanup.
+
+With operator approval and the evidence writers, materializers, and janitor
+stopped, one transaction reconciled those 39 keys to their highest revisions,
+preserving retirement state. Guard rows fell from 3,655 to 3,616, with zero
+duplicate keys. No source observations or raw bytes were changed. Duplicate
+validation remains enforced; the historical cause is not established.
+
+Replacement run 986ba7e6-4677-48c7-9a17-b3c9c82b8cdd completed all 43 batches
+from source snapshot 7871 and activated at snapshot 7960. It processed 2,123
+visits and wrote 8,727,999 projection rows. All four materializers, four ingestors,
+the crawler, and janitor were restored. The active physical generation no longer
+contains jsonld_values or html_elements.text_tail; physical depth remains.
+Post-activation validation passed: catalogue check, all 16 documentation queries
+(including the 517-row book dataset), 3,039,462 retained elements, zero duplicate
+guards, and healthy services. The full make check had passed before the operational
+repair; the repair itself changed only existing guard records.
+
+## Public tree depth (2026-09-08)
+
+Both html_node and html_element expose INTEGER depth, counting parent edges from
+the document root (zero). Elements retain their existing stored depth; html_nodes
+now stores the parser's depth directly for every node kind. Public views simply
+project the value. Node identity, parent/sibling positions, partitioning and
+sort order are unchanged. Tests cover root depth, parent increments across
+document/doctype/element/text/comment nodes, and matching element depths.
+
+The full make check passed (612 Python tests, 33 skipped, SDK and frontend checks).
+Local rebuild edb7f64a-c96d-47b2-b8e9-23d85c076793 was stopped at the user’s
+request, at 154/213 batches, before moving operational state out of the lake.
+Replacement run 31cf5645-c380-472a-8e1d-9d5d4ab3edf4 uses 50-visit batches
+from snapshot 8246. See QUERY.md for the concurrent performance investigation.
+
+
+## Operational state moved to control Postgres (2026-09-08)
+
+Stopped materializers before changing the protocol; quiesced API, crawler,
+ingestors and janitor for the data transfer. Alembic 20260908_0012 creates the
+Postgres claim, retirement, deletion-queue, generation and applied-batch tables.
+Transferred and compared all 524 applied receipts and the single published
+generation record. There were no retired identity tombstones or pending object
+deletions. The 3,616 live identity/revision rows were superseded by transient
+uniquely keyed Postgres write claims, not copied as a corpus mirror.
+
+Backed up the original four operational tables to
+`/tmp/periplus-ops-cutover/operational-lake-before.json`, then dropped them in one
+lake transaction. Source evidence and projection rows were preserved. There is
+no runtime dual-write, fallback table or migration bridge. Native CDC metadata
+remains in DuckLake's metadata Postgres. The workers were redeployed with the
+new protocol; the failed rebuild's hidden data tables are reclaimed by normal
+recovery cleanup.
+
+Recovery tests cover lost batch acknowledgements, lost activation acknowledgement,
+retirement, snapshot grace, concurrent Postgres first-claim acquisition and late
+replay rejection. Postgres 17.10 accepted the required transaction bounds.
+
+
+Replacement rebuild completed at 13:33:07 UTC: 44/44 batches, 2,124 visits,
+8,728,033 output rows, source snapshot 8246, covered snapshot 8326, activation
+snapshot 8328. Elapsed time was 632.73 seconds (10m33s). The extra catch-up batch
+included collection `50449094-53b7-4cc0-8f9f-e19ab8d10741`, a fresh example.com
+capture requested with depth zero, page limit one and no reuse.
+
+
+Final live checks: the lake contains exactly eight ingestion evidence tables and
+four active projection tables, with no hidden operational or rebuild tables.
+The fresh collection reports `query_ready=true` / `active_generation_committed`.
+All 16 documented SQL examples returned successfully (the code-snippet example
+needed a retry after a query time limit under concurrent check load); the book
+query returned 517 rows. A public node/element check on the documented book content
+returned 552 nodes, depths 0–14, zero invalid parent-depth increments and zero
+node/element depth mismatches. Catalogue validation passed after activation.
+
+The final Python check passed 613 tests (34 optional tests skipped), plus five
+SDK tests. The opt-in real-Postgres first-claim race test passed separately.
+
+The complete final `make check` passed, including Python, SDK, shared packages,
+public/admin typechecks, lint, tests and production builds. All services were
+healthy after the final core rollout. No retention policy was enabled or changed.

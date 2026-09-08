@@ -13,6 +13,8 @@ wheels/
 
 .env
 .env.extra
+.env.*
+!.env.example
 
 .cache
 .artifacts
