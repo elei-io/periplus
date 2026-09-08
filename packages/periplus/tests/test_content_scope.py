@@ -1,5 +1,6 @@
 """Differential checks over real public views and materialization parsers."""
 from collections import Counter
+from itertools import permutations
 import json
 import unittest
 
@@ -78,6 +79,8 @@ class ContentScopeTests(unittest.TestCase):
                 with self.subTest(view=item.name, pattern=pattern):
                     _, rows = self.assertEquivalent(
                         f'SELECT e.* FROM prose p JOIN {item.name} e USING (content_id) WHERE p.text ILIKE ?', [pattern])
+                    self.assertEquivalent(
+                        f'SELECT e.* FROM {item.name} e JOIN prose p USING (content_id) WHERE p.text ILIKE ?', [pattern])
                     if pattern == '%robot%':
                         self.assertTrue(rows, item.name)
 
@@ -92,6 +95,35 @@ class ContentScopeTests(unittest.TestCase):
           WHERE c.effective_url LIKE '%/a'""")
         self.assertEquivalent("""SELECT s.* FROM html_element e JOIN html_section s USING (content_id)
           WHERE e.tag = 'p' AND e.text_direct = 'robot'""")
+
+    def test_join_orders_preserve_rows_parameters_and_complete_partitions(self):
+        for order in permutations(('html_heading h', 'capture c', 'prose p')):
+            relations = ' JOIN '.join([order[0], *(t + ' USING (content_id)' for t in order[1:])])
+            with self.subTest(order=order):
+                _, rows = self.assertEquivalent(
+                    'SELECT ? AS marker, c.effective_url AS url, h.level, h.text AS heading FROM '
+                    + relations + ' WHERE p.text ILIKE ? AND h.level = ?', ['marker', '%robot%', 1])
+                self.assertEqual(len(rows), 2)  # Both captures of the same content.
+                self.assertEquivalent('SELECT * FROM ' + relations + " WHERE p.text ILIKE '%robot%'")
+        self.assertEquivalent("""SELECT h.*, s.* FROM html_heading h
+          JOIN html_section s ON h.content_id = s.content_id
+          JOIN capture c ON c.content_id = h.content_id
+          JOIN prose p ON p.content_id = s.content_id
+          WHERE p.text ILIKE '%robot%' AND h.level = 1""")
+        self.assertEquivalent("""SELECT s.* FROM html_section s
+          JOIN html_node n ON s.content_id = n.content_id WHERE n.value = 'robot'""")
+        self.assertEquivalent("""SELECT m.* FROM html_metadata m
+          JOIN capture c USING (content_id) WHERE c.effective_url LIKE '%/a'""")
+        self.assertEquivalent("""SELECT s.* FROM html_section s JOIN html_element e USING (content_id)
+          WHERE e.tag = 'p' AND e.text_direct = 'robot'""")
+
+    def test_joined_driver_does_not_relax_safety_rules(self):
+        base = "SELECT h.* FROM html_heading h JOIN prose p USING (content_id) WHERE p.text ILIKE '%robot%'"
+        for sql in (base.replace(' JOIN ', ' LEFT JOIN '), base.replace(' JOIN ', ' FULL JOIN '),
+                    base.replace('USING (content_id)', 'ON true'), base + ' LIMIT 1',
+                    base.replace("p.text ILIKE '%robot%'", "p.text ILIKE '%robot%' OR h.level = 1")):
+            with self.subTest(sql=sql):
+                self.assertIsNone(content_scope(sql))
 
     def test_parameters_identifiers_and_output_contract(self):
         self.assertEquivalent("""SELECT ? AS marker, m.value AS title, '?' AS literal

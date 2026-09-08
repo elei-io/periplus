@@ -86,6 +86,20 @@ class QueryServiceTests(unittest.TestCase):
         with self.assertRaises(duckdb.BinderException):
             self.service.prepare(QueryRequest(sql=request.sql.replace('m.value', 'm.missing'), parameters=request.parameters))
 
+    def test_joined_prose_activates_in_prepare_and_execute(self):
+        request = QueryRequest(sql="""SELECT c.requested_url AS url, m.value AS title
+            FROM html_metadata m JOIN capture c USING (content_id)
+            JOIN prose p USING (content_id) WHERE p.text ILIKE ? AND m.name = ?""",
+            parameters=['%robot%', 'title'])
+        prepared = self.service.prepare(request)
+        result = self.service.execute(request)
+        for response in (prepared, result):
+            self.assertIn('content_scope', [d.code for d in response.diagnostics])
+        self.assertEqual(prepared.sql, result.sql)
+        self.assertEqual(result.rows, [['https://example.com/inline', 'start']])
+        self.assertEqual(result.columns, ['url', 'title'])
+        self.assertEqual(result.parameters, request.parameters)
+
     def test_content_scope_definition_mismatch_keeps_original(self):
         request = QueryRequest(sql="""SELECT m.* FROM prose p JOIN html_metadata m USING (content_id)
             WHERE p.text ILIKE '%robot%'""")

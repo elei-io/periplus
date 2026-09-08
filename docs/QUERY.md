@@ -732,8 +732,9 @@ heading never removes the other headings needed to compute its section boundary.
 
 Eligibility is intentionally syntactic and bounded, rather than a general lineage engine:
 
-- The FROM source is `prose`, `capture`, `html_node`, or `html_element`, with at least
-  one qualified source-only WHERE conjunct. Supported expressions include comparisons,
+- A source in FROM or any JOIN is `prose`, `capture`, `html_node`, or `html_element`,
+  with at least one qualified source-only WHERE conjunct. Prep selects the first eligible
+  filtered source in written order and preserves the original join order. Supported expressions include comparisons,
   LIKE/ILIKE, IN lists, Boolean combinations, and lower/upper/coalesce; arbitrary
   functions and explicit casts do not qualify.
 - Up to eight ordinary inner joins connect registered sources by exactly
@@ -764,14 +765,18 @@ that returned SQL. Inspection statements such as EXPLAIN remain unchanged; use t
 response to inspect the automatically chosen plan.
 
 Validation covers all 13 opted-in views using real parser/projection fixtures at selective,
-empty, and full domains, plus duplicate captures and driver nodes, complete section
+empty, and full domains in both join directions, plus all six prose/capture/heading
+join orders, duplicate captures and driver nodes, complete section
 partitions, multiple extraction targets, parameter order, output labels/types, definition
 mismatches, unsupported syntax, and the locked read-only QueryService. Nineteen additional
 read-only comparisons on corpus snapshot 8458 preserved complete result multisets and
 column descriptions. For `%wild robot%`, title groups fell from 1,478 to 8, and heading
 extraction/section windows from 39,457 to 91. For `%robot%`, these fell to 289 and 7,968.
 The title query retains `name = 'title'`, including metadata declarations bearing that
-name, and returned the same 334 rows.
+name, and returned the same 334 rows. A subsequent read-only comparison on snapshot
+8458 checked all six prose/capture/heading join orders for `%wild robot%`, including
+`FROM html_heading h JOIN capture c USING (content_id) JOIN prose p USING (content_id)`.
+All returned the same 182 rows and reduced heading extraction from 39,457 to 91 groups.
 
 This rule reduces work behind extraction barriers; it is not a cost model or a guarantee
 of file pruning or lower latency. Full-domain searches retained full extraction work and

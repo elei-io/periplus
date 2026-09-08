@@ -96,17 +96,14 @@ def content_scope(sql: str) -> ContentScope | None:
     source = tree.args.get('from_')
     if source is None or not isinstance(source.this, exp.Table):
         return None
-    driver = source.this
     joins = tree.args.get('joins') or []
     if not joins or len(joins) > 8:
         return None
-    tables = [driver, *(j.this for j in joins)]
+    tables = [source.this, *(j.this for j in joins)]
     registry = {o.name: o for o in public_objects() if o.kind == 'view'}
     if any(not isinstance(t, exp.Table) or t.name not in registry or t.catalog
            or t.db not in ('', 'public_v1') or t.args.get('pivots')
            or t.args.get('sample') or t.args.get('version') for t in tables):
-        return None
-    if driver.name not in _DRIVERS:
         return None
     aliases = [t.alias_or_name for t in tables]
     if any(not re.fullmatch(r'[a-zA-Z_][a-zA-Z_0-9]*', a) for a in aliases):
@@ -139,18 +136,25 @@ def content_scope(sql: str) -> ContentScope | None:
         seen.add(alias)
     if any(t.name not in _DRIVERS and not registry[t.name].content_local for t in tables):
         return None
-    # Only qualified, driver-only AND conjuncts may form the candidate filter.
-    filters = []
-    remaining = []
-    for predicate in tree.args['where'].this.flatten() if isinstance(tree.args['where'].this, exp.And) else [tree.args['where'].this]:
-        columns = list(predicate.find_all(exp.Column))
-        if columns and all(c.table == aliases[0] and c.name in registry[driver.name].columns for c in columns):
-            filters.append(predicate.copy())
-        else:
-            remaining.append(predicate.copy())
-    if not filters:
+    # The filtered source can occur anywhere in this connected inner-join
+    # chain. Select one eligible driver without changing the user's join order.
+    where = tree.args['where'].this
+    predicates = list(where.flatten()) if isinstance(where, exp.And) else [where]
+    for driver in tables:
+        if driver.name not in _DRIVERS:
+            continue
+        filters, remaining = [], []
+        for predicate in predicates:
+            columns = list(predicate.find_all(exp.Column))
+            if columns and all(c.table == driver.alias_or_name and c.name in registry[driver.name].columns for c in columns):
+                filters.append(predicate.copy())
+            else:
+                remaining.append(predicate.copy())
+        if filters:
+            break
+    else:
         return None
-    targets = [t for t in tables[1:] if registry[t.name].content_local]
+    targets = [t for t in tables if t is not driver and registry[t.name].content_local]
     if not targets:
         return None
     # No names from the request may be captured by generated CTEs, including
@@ -162,7 +166,7 @@ def content_scope(sql: str) -> ContentScope | None:
     selected, keys = prefix+'selected', prefix+'keys'
     definitions = {driver.name: _source(registry[driver.name].resource)}
     ctes = []
-    candidate = exp.select(exp.Column(this=exp.Star(), table=exp.to_identifier(aliases[0], quoted=True))).from_(driver.copy()).where(exp.and_(*filters))
+    candidate = exp.select(exp.Column(this=exp.Star(), table=exp.to_identifier(driver.alias_or_name, quoted=True))).from_(driver.copy()).where(exp.and_(*filters))
     ctes.append(exp.CTE(this=candidate, alias=exp.TableAlias(this=exp.to_identifier(selected)), materialized=True))
     ctes.append(exp.CTE(this=exp.select('content_id').distinct().from_(selected),
                        alias=exp.TableAlias(this=exp.to_identifier(keys))))
@@ -194,7 +198,7 @@ def content_scope(sql: str) -> ContentScope | None:
             table.replace(expand(table.name).subquery(alias=exp.TableAlias(this=exp.to_identifier(table.alias_or_name, quoted=True))))
     except (KeyError, ValueError):
         return None
-    driver.replace(exp.Table(this=exp.to_identifier(selected), alias=exp.TableAlias(this=exp.to_identifier(aliases[0], quoted=True))))
+    driver.replace(exp.Table(this=exp.to_identifier(selected), alias=exp.TableAlias(this=exp.to_identifier(driver.alias_or_name, quoted=True))))
     # Selected rows already satisfy these predicates. Leaving them above the
     # CTE would force it to carry large prose text solely to test it a second time.
     tree.set('where', exp.Where(this=exp.and_(*remaining)) if remaining else None)
