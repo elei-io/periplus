@@ -93,9 +93,10 @@ async def create(payload: CreateCollection, request: Request):
 
 @router.get("", response_model=CollectionPage)
 async def list_collections(request: Request, status: Literal["active", "paused", "settled"] | None = None,
+                     request_class: Literal["public", "system", "admin"] | None = None,
                      limit: Annotated[int, Query(ge=1, le=100)] = 20,
                      offset: Annotated[int, Query(ge=0, le=10000)] = 0):
-    views = await _views(request, status=status, limit=limit, offset=offset)
+    views = await _views(request, status=status, request_class=request_class, limit=limit, offset=offset)
     views = await enrich_collection_readiness(views, request.app.state.collection_history)
     return CollectionPage(items=views, limit=limit, offset=offset)
 

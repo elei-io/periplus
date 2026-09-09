@@ -83,6 +83,29 @@ class CollectionApiTests(unittest.TestCase):
         self.assertEqual(admin.json()['specification']['request_class'], 'admin')
         self.assertEqual(len(self.client.get('/collections').json()['items']), 2)
 
+    def test_request_class_filters_before_pagination(self):
+        from datetime import UTC, datetime, timedelta
+        from periplus.crawl.control.collections.schemas import CollectionSpec
+
+        from periplus.crawl.control.collections.models import CollectionRecord
+
+        expected = []
+        now = datetime.now(UTC)
+        for index, request_class in enumerate(["public"] * 7 + ["admin"] * 6 + ["system"] * 6):
+            identity = uuid4()
+            self.client.app.state.frontier.create_collection(
+                identity, CollectionSpec(seed_urls=("https://example.com/",), request_class=request_class))
+            with self.sessions.begin() as session:
+                session.get(CollectionRecord, identity).created_at = now + timedelta(seconds=index)
+            if request_class == "public":
+                expected.insert(0, str(identity))
+        unfiltered = self.client.get("/collections?limit=6").json()["items"]
+        self.assertEqual([item["specification"]["request_class"] for item in unfiltered], ["system"] * 6)
+        for offset in (0, 5):
+            response = self.client.get(f"/collections?request_class=public&limit=5&offset={offset}")
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual([item["id"] for item in response.json()["items"]], expected[offset:offset + 5])
+
     def test_retired_request_cannot_be_recreated_and_retention_defaults_forever(self):
         self.history.is_retired.return_value = True
         self.assertEqual(self.client.post("/collections", json=self.payload).status_code, 410)
