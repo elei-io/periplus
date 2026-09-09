@@ -3,6 +3,21 @@
 Periplus deployment names distinguish infrastructure authorities, executable process roles, and
 domain capabilities.
 
+## Python runtime
+
+Backend services require Python 3.14.7 or later. The container pins Python 3.14.7
+and runs `tests/test_python_runtime.py` during the build. Local development and
+backend CI use the same patch release.
+
+CPython [gh-152569](https://github.com/python/cpython/issues/152569) caused
+`asyncio.wait(FIRST_COMPLETED)` to retain completed caller tasks on a still-pending
+future. Playwright races protocol replies against its process-lived transport-error
+future, so affected runtimes retain completed Periplus capture results and HTML.
+The upstream fix removes the await-graph references when the wait exits. Increasing
+worker memory, adding replicas or collecting garbage does not fix that ownership
+bug. Rebuild and roll out the backend image to replace an affected interpreter;
+changing application settings cannot repair an already-running Python runtime.
+
 ## Naming
 
 - Infrastructure uses ownership-first names: `lake-s3`, `lake-postgres`,
