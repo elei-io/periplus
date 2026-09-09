@@ -134,6 +134,11 @@ jobs:
             ${{ matrix.app == 'public' && format('PERIPLUS_PUBLIC_ORIGIN={0}', vars.PERIPLUS_PUBLIC_ORIGIN) || '' }}
             ${{ matrix.app == 'public' && format('NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN={0}', vars.NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN) || '' }}
             ${{ matrix.app == 'public' && format('NEXT_PUBLIC_POSTHOG_HOST={0}', vars.NEXT_PUBLIC_POSTHOG_HOST) || '' }}
+            ${{ matrix.app == 'public' && 'NEXT_PUBLIC_ANALYTICS_ENVIRONMENT=production' || '' }}
+            ${{ matrix.app == 'public' && format('NEXT_PUBLIC_RELEASE={0}', github.sha) || '' }}
+            ${{ matrix.app == 'public' && format('POSTHOG_PROJECT_ID={0}', vars.POSTHOG_PROJECT_ID) || '' }}
+          secrets: |
+            posthog_api_key=${{ matrix.app == 'public' && secrets.POSTHOG_API_KEY || '' }}
           platforms: linux/amd64
           push: true
           tags: ${{ steps.tags.outputs.value }}

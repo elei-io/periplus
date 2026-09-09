@@ -58,18 +58,17 @@ Production ingress owns aggregate traffic limits; the agent bounds concurrent ru
 
 ## Product analytics
 
-PostHog starts in `src/instrumentation-client.ts` when both
-`NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN` and `NEXT_PUBLIC_POSTHOG_HOST` are configured.
-The wizard stores local values in `.env.local`. Production builds receive them
-through Docker build arguments and the matching GitHub repository variables;
-see [deployment configuration](../../docs/DEPLOYMENT.md#public-analytics).
+PostHog starts in `src/instrumentation-client.ts` only when the public token,
+host, and `NEXT_PUBLIC_ANALYTICS_ENVIRONMENT=production` are configured at build
+time. Local builds do not capture events. Production releases include a Git SHA
+and upload source maps through a BuildKit secret.
 
-In addition to automatic pageviews and error capture, product events cover dataset
-launches, discovery starts and examples, SQL runs and sharing, result exports,
-assistant opening, schema inspection, and successful coverage submissions.
-Custom event properties contain lengths, counts, formats and identifiers rather
-than SQL, prompts or result rows. Coverage submissions use the browser's PostHog
-session after the API succeeds, without delaying the server response for analytics.
+See the [analytics operating guide](../../docs/ANALYTICS.md) for the event contract,
+privacy settings, dashboards, scout thresholds, and weekly review procedure.
+Custom events record outcomes, counts, durations and correlation IDs. SQL,
+parameters, prompts and result rows are excluded; sensitive workspace regions are
+blocked from session replay. Coverage readiness is observed by the submitting
+browser and is not an authoritative backend completion metric.
 
 ## Collection requests and Live
 

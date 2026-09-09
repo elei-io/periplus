@@ -24,8 +24,8 @@ const state = (globalTelemetry.periplusTelemetry ??= {
   tokens: { input: 0, output: 0 },
 });
 
-export function beginOperation(operation: Operation) {
-  const id = crypto.randomUUID(),
+export function beginOperation(operation: Operation, suppliedId?: string | null) {
+  const id = suppliedId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(suppliedId) ? suppliedId : crypto.randomUUID(),
     started = performance.now();
   state.active[operation]++;
   let finished = false;

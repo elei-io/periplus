@@ -1,7 +1,8 @@
 "use client"
 
 import { useState } from "react"
-import posthog from "posthog-js"
+import { rememberCoverageSubmission } from "@/lib/coverage-analytics"
+import { captureAnalytics } from "@/lib/analytics"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { ArrowUpRight, Globe, MessageSquare } from "lucide-react"
 import { toast } from "sonner"
@@ -47,7 +48,8 @@ export function CollectionForm({ onCreated }: { onCreated: (id: string) => void 
       void cache.invalidateQueries({ queryKey: ["collections"] })
       onCreated(result.id)
       toast.success("Coverage request submitted. Keep its link to follow progress.")
-      posthog.capture("coverage_request_submitted", {
+      rememberCoverageSubmission(result.id)
+      captureAnalytics("coverage_request_submitted", {
         request_id: result.id,
         kind: payload.specification.seed_description ? "description" : "url",
       })

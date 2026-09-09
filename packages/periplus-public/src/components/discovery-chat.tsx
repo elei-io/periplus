@@ -17,7 +17,8 @@ import { DatasetSpecification } from "@/components/dataset-specification"
 import { analysisHistory, analysisView } from "@/lib/analysis-view"
 import { extractApiError } from "@/lib/api"
 import type { DiscoveryMessage } from "@/types/assistant"
-import posthog from "posthog-js"
+import { captureAnalytics, startAnalyticsOperation, finishAnalyticsOperation, analyticsErrorCategory } from "@/lib/analytics"
+import type { AnalyticsOperation } from "@/types/analytics"
 
 const starters = [
   { label: "Source directory", text: "List websites in Periplus, with one row per hostname, distinct page counts, and first and last observation dates. Show a small sample first." },
@@ -35,11 +36,13 @@ function latestPresentation(messages: DiscoveryMessage[]) {
 }
 
 export function DiscoveryChat({ initialPrompt, autoRun = false }: { initialPrompt?: string; autoRun?: boolean }) {
+  const operation = useRef<AnalyticsOperation | null>(null)
+  const previewed = useRef(new Set<string>())
   const composer = useRef<HTMLTextAreaElement>(null)
   const access = usePublicAccess("assistant")
   const { onDenied } = access
   const transport = useMemo(() => new DefaultChatTransport<DiscoveryMessage>({ api:"/api/assistant",
-    prepareSendMessagesRequest:({messages, body}) => ({body:{messages:analysisHistory(messages), approval: body?.approval}}),
+    prepareSendMessagesRequest:({messages, body}) => ({headers: { "x-periplus-operation-id": typeof body?.operation_id === "string" ? body.operation_id : "" }, body:{messages:analysisHistory(messages), approval: body?.approval}}),
     fetch: async (input, init) => {
       const response = await fetch(input, init)
       if (!response.ok) { try { await responseJson(response.clone()) } catch(error) { onDenied(error); throw error } }
@@ -47,21 +50,40 @@ export function DiscoveryChat({ initialPrompt, autoRun = false }: { initialPromp
     },
   }), [onDenied])
   const [prompt, setPrompt] = useState(autoRun ? "" : initialPrompt ?? "")
-  const { messages, sendMessage, status, stop, error, setMessages } = useChat<DiscoveryMessage>({ transport, onError: error => toast.error(extractApiError(error)) })
+  const { messages, sendMessage, status, stop, error, setMessages } = useChat<DiscoveryMessage>({ transport, onError: error => {
+    if (operation.current) finishAnalyticsOperation(operation.current, "discovery_finished", { flow: "discovery", outcome: "failed", error_category: analyticsErrorCategory(error) })
+    toast.error(extractApiError(error))
+  }, onFinish: ({ message, isAbort, isError, isDisconnect }) => {
+    if (!operation.current) return
+    const presentation = analysisView(message).presentation
+    const outcome = isAbort ? "cancelled" : isError || isDisconnect ? "failed" : presentation?.status === "ready" ? "success" : presentation?.needs_sources ? "blocked" : presentation?.status ?? "blocked"
+    finishAnalyticsOperation(operation.current, "discovery_finished", {
+      flow: "discovery", outcome, row_count: presentation?.dataset?.rows.length ?? 0,
+      truncated: presentation?.dataset?.truncated ?? false, model: message.metadata?.model,
+      input_tokens: message.metadata?.input_tokens, output_tokens: message.metadata?.output_tokens,
+      result_id: message.id,
+    })
+  } })
   useEffect(() => {
-    if (access.enabled && autoRun && initialPrompt?.trim() && consumeDiscoveryLaunch()) void sendMessage({ text: initialPrompt })
+    if (access.enabled && autoRun && initialPrompt?.trim() && consumeDiscoveryLaunch()) {
+      operation.current = startAnalyticsOperation("discovery_started", { flow: "discovery", stage: "sample", entry: "landing" })
+      void sendMessage({ text: initialPrompt }, { body: { operation_id: operation.current.id } })
+    }
   }, [autoRun, initialPrompt, sendMessage, access.enabled])
   const busy = status === "submitted" || status === "streaming"
   const send = useCallback((text: string, approval?: string) => {
     if (!access.enabled || !text.trim() || busy) return
     if (text.length > 7800) { toast.error("The definition is too long. Shorten field descriptions before building."); return }
-    if (messages.length === 0 && !approval) {
-      posthog.capture("discovery_dataset_started", { prompt_length: text.length })
-    }
-    void sendMessage({ text }, { body: { approval } }); setPrompt("")
-  }, [access.enabled, busy, messages.length, sendMessage])
+    operation.current = startAnalyticsOperation("discovery_started", { flow: "discovery", stage: approval ? "build" : "sample", entry: "workspace" })
+    void sendMessage({ text }, { body: { approval, operation_id: operation.current.id } }); setPrompt("")
+  }, [access.enabled, busy, sendMessage])
   const latest = useMemo(() => latestPresentation(messages), [messages])
   const presentation = latest?.presentation
+  useEffect(() => {
+    if (!latest?.presentation.dataset?.rows.length || previewed.current.has(latest.id) || !operation.current) return
+    previewed.current.add(latest.id)
+    captureAnalytics("discovery_result_produced", { flow: "discovery", operation_id: messages.find(message => message.id === latest.id)?.metadata?.operation_id ?? operation.current.id, result_id: latest.id, row_count: latest.presentation.dataset.rows.length, stage: latest.presentation.status, time_to_first_result_ms: Math.round(performance.now() - operation.current.started) })
+  }, [latest, messages])
   const approve = useCallback((token: string) => send("Build the full dataset using these sources and fields.", token), [send])
   const edit = () => { setPrompt("I'd like to change "); composer.current?.focus() }
   return <section className="dataset-discovery-layout grid items-start lg:grid-cols-12" aria-label="Dataset discovery">
@@ -83,9 +105,9 @@ export function DiscoveryChat({ initialPrompt, autoRun = false }: { initialPromp
     <form className="discovery-composer" onSubmit={event => { event.preventDefault(); send(prompt) }}>
       <div className="composer-caption"><label htmlFor="dataset-idea">{messages.length ? "Message" : "Describe your dataset"}</label></div>
       <Textarea ref={composer} className="composer-input" id="dataset-idea" placeholder={messages.length ? "Change a field, explain a relationship, or resolve an open decision…" : "A dataset of book listings, with a title, price and link to each listing…"} value={prompt} maxLength={4000} onChange={event => setPrompt(event.target.value)} rows={3} />
-      <div className="composer-actions"><span>Define the rows. We’ll explore the sources.</span>{busy ? <Button type="button" variant="outline" onClick={() => stop()}><Square />Stop</Button> : <Button type="submit" disabled={!access.enabled || !prompt.trim()}>{messages.length ? "Send" : "Start discovering"}<ArrowUp /></Button>}</div>
+      <div className="composer-actions"><span>Define the rows. We’ll explore the sources.</span>{busy ? <Button type="button" variant="outline" onClick={() => { if (operation.current) finishAnalyticsOperation(operation.current, "discovery_finished", { flow: "discovery", outcome: "cancelled" }); stop() }}><Square />Stop</Button> : <Button type="submit" disabled={!access.enabled || !prompt.trim()}>{messages.length ? "Send" : "Start discovering"}<ArrowUp /></Button>}</div>
     </form>
-      {!messages.length && <div className="discovery-starters"><span>A few places to start</span><div className="flex flex-wrap gap-2">{starters.map(({ label, text }) => <Button key={label} variant="ghost" size="sm" disabled={!access.enabled || busy} onClick={() => { setPrompt(text); composer.current?.focus(); posthog.capture("discovery_example_used", { example_label: label }) }}>{label}<ArrowUp /></Button>)}</div></div>}
+      {!messages.length && <div className="discovery-starters"><span>A few places to start</span><div className="flex flex-wrap gap-2">{starters.map(({ label, text }) => <Button key={label} variant="ghost" size="sm" disabled={!access.enabled || busy} onClick={() => { setPrompt(text); composer.current?.focus(); captureAnalytics("discovery_example_used", { example_label: label }) }}>{label}<ArrowUp /></Button>)}</div></div>}
       <details className="discovery-notes"><summary>About this workspace</summary><p>Uses data already in Periplus. <Link href="/coverage#coverage">Inspect coverage</Link> or <Link href="/coverage">request broader coverage</Link>.</p><p>The agent sees up to 20 rows per query; previews and CSV exports follow the configured query limits (1,000 rows by default). Definitions and sampled results go to the model provider. This workspace is temporary: download your definition and SQL before reloading. <Link href="/about#access">Access & data use</Link></p></details>
     </div>
     <aside aria-label="Your dataset definition" className="discovery-definition min-w-0 break-words lg:sticky lg:top-6 lg:col-span-4 lg:max-h-[calc(100dvh-3rem)] lg:overflow-y-auto">

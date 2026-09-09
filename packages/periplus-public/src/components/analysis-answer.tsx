@@ -8,6 +8,7 @@ import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { QueryTable } from "@/components/query-table"
 import { analysisCsv, analysisView } from "@/lib/analysis-view"
+import { captureAnalytics } from "@/lib/analytics"
 import { extractApiError } from "@/lib/api"
 import type { DiscoveryMessage } from "@/types/assistant"
 
@@ -15,13 +16,18 @@ function download(name: string, text: string, type: string) {
   try {
     const url = URL.createObjectURL(new Blob([text], { type }))
     const link = document.createElement("a"); link.href = url; link.download = name; link.click(); URL.revokeObjectURL(url)
-  } catch (error) { toast.error(extractApiError(error)) }
+    return true
+  } catch (error) { toast.error(extractApiError(error)); return false }
 }
 
 export const AnalysisAnswer = memo(function AnalysisAnswer({ message, running, current, busy, onApprove }: { message: DiscoveryMessage; running: boolean; current: boolean; busy: boolean; onApprove: (token: string) => void }) {
   const { finding, presentation, queries } = useMemo(() => analysisView(message), [message])
   const [activityOpen, setActivityOpen] = useState(false)
   const dataset = presentation?.dataset
+  function exportDataset() {
+    if (!dataset) return
+    if (download("periplus-dataset.csv", analysisCsv(dataset.columns, dataset.rows), "text/csv;charset=utf-8")) captureAnalytics("sql_results_exported", { flow: "discovery", operation_id: message.metadata?.operation_id, result_id: message.id, format: "csv", method: "download", row_count: dataset.rows.length, truncated: dataset.truncated })
+  }
   return <>
     {finding && !presentation && <div aria-live="polite"><Markdown skipHtml allowedElements={["p", "strong", "em", "ul", "li"]} unwrapDisallowed>{finding}</Markdown></div>}
     {presentation && <p>{presentation.message}</p>}
@@ -35,7 +41,7 @@ export const AnalysisAnswer = memo(function AnalysisAnswer({ message, running, c
         <div className="analysis-actions">
           {presentation.status === "sample" && presentation.approval && <Button disabled={busy} onClick={() => onApprove(presentation.approval!)}>Build dataset<ArrowUpRight /></Button>}
           {presentation.status === "ready" && <>
-            <Button onClick={() => download("periplus-dataset.csv", analysisCsv(dataset.columns, dataset.rows), "text/csv;charset=utf-8")}><Download />Download CSV</Button>
+            <Button onClick={exportDataset}><Download />Download CSV</Button>
             <Button variant="outline" nativeButton={false} render={<Link href={`/sql?${new URLSearchParams({ sql: dataset.sql })}`} target="_blank" rel="noopener noreferrer" />}>Open in SQL<ArrowUpRight /></Button>
             <Button variant="ghost" onClick={() => download("periplus-dataset.json", JSON.stringify({ brief: presentation.brief, sql: dataset.sql, schema_version: dataset.schema_version, source_snapshot: dataset.source_snapshot, checks: presentation.checks.map(check => check.sql) }, null, 2), "application/json")}><Download />Save definition</Button>
           </>}
