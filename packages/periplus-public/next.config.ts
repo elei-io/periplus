@@ -1,3 +1,4 @@
+import { withPostHogConfig } from "@posthog/nextjs-config"
 import type { NextConfig } from "next"
 import { networkInterfaces } from "node:os"
 import path from "node:path"
@@ -24,4 +25,16 @@ const nextConfig: NextConfig = {
   ],
 }
 
-export default nextConfig
+export default process.env.POSTHOG_API_KEY && process.env.POSTHOG_PROJECT_ID
+  ? withPostHogConfig(nextConfig, {
+      personalApiKey: process.env.POSTHOG_API_KEY,
+      projectId: process.env.POSTHOG_PROJECT_ID,
+      host: process.env.POSTHOG_HOST ?? "https://us.posthog.com",
+      sourcemaps: {
+        enabled: true,
+        releaseName: "periplus-public",
+        releaseVersion: process.env.NEXT_PUBLIC_RELEASE ?? "local",
+        deleteAfterUpload: true,
+      },
+    })
+  : nextConfig

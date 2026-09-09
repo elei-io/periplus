@@ -174,16 +174,28 @@ per-process lane bounds; replica count and local concurrency are separate contro
 
 ### Public analytics
 
-`NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN` and `NEXT_PUBLIC_POSTHOG_HOST` configure the
-public application's PostHog integration. These are public, non-secret build
-inputs; never use a personal API key as the project token. Set the matching GitHub
-Actions repository variables for published images, or pass both Docker build
-arguments for manual builds. Compose reads them from the root `.env`.
-Next.js embeds these values in browser bundles, so changes require rebuilding the
-public image; Kubernetes runtime environment changes do not update them. Leave
-both empty for local builds without analytics. The wizard configures host-side
-development in `packages/periplus-public/.env.local`, which is not included in
-Docker builds.
+`NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN`, `NEXT_PUBLIC_POSTHOG_HOST`,
+`NEXT_PUBLIC_ANALYTICS_ENVIRONMENT` and `NEXT_PUBLIC_RELEASE` are public build
+inputs. Capture starts only when the environment is `production` and the token
+and host exist. The publish workflow sets production and the full Git SHA; set
+the token and host as GitHub Actions repository variables. Never use a personal
+API key as the browser project token. Manual production builds must explicitly
+set the environment and release arguments. Compose defaults to development
+without capture, even if a token remains in a local environment file.
+
+Next.js embeds these values in browser bundles; changing Kubernetes runtime
+environment variables cannot update them. Rebuild the public image.
+
+For source maps, set GitHub Actions variable `POSTHOG_PROJECT_ID` and secret
+`POSTHOG_API_KEY` (a personal API key with error-tracking write access).
+Docker receives the key only through the `posthog_api_key` BuildKit secret mount;
+it is not an ARG or runtime ENV. `@posthog/nextjs-config` uploads maps under release
+`periplus-public` / the Git SHA and deletes uploaded maps from build output.
+A local source-map validation can set `POSTHOG_PROJECT_ID` while keeping the key
+in the ignored public `.env.local`. Builds without upload credentials remain
+usable locally. CI must have both settings to upload maps.
+
+See [analytics operations](ANALYTICS.md) for dashboards and capture validation.
 
 ### Public search metadata
 

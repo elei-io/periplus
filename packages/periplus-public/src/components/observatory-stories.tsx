@@ -1,7 +1,8 @@
 "use client"
 
+import { observeCoverage } from "@/lib/coverage-analytics"
 import Link from "next/link"
-import { memo, useLayoutEffect, useRef } from "react"
+import { memo, useEffect, useLayoutEffect, useRef } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { ArrowUpRight, Check } from "lucide-react"
 import { Button, buttonVariants } from "@/components/ui/button"
@@ -66,6 +67,7 @@ function RequestObservationTail({id, playing}: {id:string;playing:boolean}) {
 export function RequestStory({id, playing}: {id:string;playing:boolean}) {
   const query = useQuery({queryKey:["collection",id],queryFn:({signal})=>read<Collection>(`/api/collections/${encodeURIComponent(id)}`,signal),refetchInterval:playing ? 5000 : false,retry:false})
   const item=query.data
+  useEffect(() => { if (item) observeCoverage(item) }, [item])
   if (!item) return <section className="observatory-request-story">{query.error ? <ReadError error={query.error}/> : <p role="status">Loading request progress…</p>}</section>
   const finished=item.source === "history" ? item.outcome !== null : item.status === "settled"
   const paused=item.source === "current" && item.status === "paused"
