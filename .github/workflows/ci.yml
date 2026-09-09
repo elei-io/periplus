@@ -30,8 +30,8 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: packages/periplus/uv.lock
-      - name: Install Python 3.14
-        run: uv python install 3.14
+      - name: Install Python 3.14.7
+        run: uv python install 3.14.7
       - name: Install backend
         working-directory: packages/periplus
         run: uv sync --frozen
