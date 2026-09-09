@@ -738,7 +738,10 @@ Eligibility is intentionally syntactic and bounded, rather than a general lineag
   LIKE/ILIKE, IN lists, Boolean combinations, and lower/upper/coalesce; arbitrary
   functions and explicit casts do not qualify.
 - Up to eight ordinary inner joins connect registered sources by exactly
-  `USING (content_id)` or one qualified equality to an earlier source's `content_id`.
+  `USING (content_id)` or a required qualified equality to an earlier source's
+  `content_id` within the `ON` conjunction. Parentheses and either equality direction
+  are supported. Additional deterministic predicates remain in the original join;
+  an equality appearing only inside `OR` does not establish connectivity.
   Sources must be one of the drivers or a reviewed content-local view.
 - Extraction coverage is `html_node`, `html_element`, `html_metadata`, `html_heading`,
   `html_section`, `html_form`, `html_form_control`, `html_select_option`, `html_list`,
@@ -782,3 +785,45 @@ This rule reduces work behind extraction barriers; it is not a cost model or a g
 of file pruning or lower latency. Full-domain searches retained full extraction work and
 added CTE/key-set overhead. Single paired timings are recorded in the investigation and
 must not be treated as production performance guarantees.
+
+### Shared-input plan diagnostics and optimizer evaluation
+
+Compiler `public-query-v3` retains the reviewed content-scoping rewrite and adds
+bounded inspection of the native JSON plan for its actual row-capped executable.
+This is another EXPLAIN, never EXPLAIN ANALYZE or a discovery execution during prep.
+It shares the existing transaction and deadline. Display-plan truncation does not
+truncate this inspection. JSON inspection is limited to 1 MB, 4,096 nodes and 64
+levels; unsupported evidence produces `content_scope_plan_unverified` rather than
+claiming that physical work is bounded.
+
+`content_scope` now reports that selected-document restrictions were *added*, not
+that every scan is limited. `content_scope_shared_input` warns when a native
+`__common_subplan_*` producer reads HTML primitives without the selected key CTE,
+while its consumers apply that restriction later. The detector follows native CTE
+indices through producer dependencies, excludes consumer subtrees, and does not
+label inputs with their own content-key scan filters unrestricted. This narrowly
+recognizes an observed barrier; absence of the warning does not prove low cost,
+complete predicate propagation or file pruning. Diagnostics flow through ordinary
+prep/execute responses and private preparation evidence.
+
+Regression tests measure the shared producer and complete section-window row
+counts, not just result equality. The diagnostic-only `common_subplan` alternative
+is also compared across all 13 reviewed views at selective, empty and full domains,
+including duplicate captures and column descriptions. The real read-only DuckLake
+service test checks the warning in both preparation and execution.
+
+`scripts/query_common_subplan_probe.py` provides the bounded read-only comparison
+against configured reader credentials. It uses a disposable connection, alternates
+variant order, pins each pair to one snapshot, validates installed definitions and
+compares complete result multisets/types. It stops comparisons after a timeout or
+result bound (100,000 rows / 32 MiB) rather than asserting partial equivalence.
+It prints aggregate evidence only. Run it with `uv run python` from
+`packages/periplus/`; `--case`, `--seconds` (default 20) and `--repetitions` (default 2)
+limit the work.
+
+No automatic optimizer selection is enabled by this evaluation. Production query
+connections remain configuration-locked, with the normal native optimizer set.
+Per-query toggling would require changing that security/lifecycle boundary;
+globally disabling common-subplan extraction is not justified by selective-only
+speedups. The production-data comparisons and remaining broad-query timeouts are
+recorded in [the investigation](query-investigations/key-domain/README.md).

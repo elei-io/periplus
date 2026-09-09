@@ -9,7 +9,7 @@ from unittest.mock import patch
 import duckdb
 
 from periplus.platform.catalogue.config import CatalogueConfig
-from periplus.platform.catalogue.connection import _literal
+from periplus.platform.catalogue.connection import DuckLakeConnectionFactory, _literal
 from periplus.platform.catalogue.public import public_objects
 from periplus.platform.catalogue.schema import expected_columns
 from periplus.platform.catalogue.client import _column_type
@@ -107,6 +107,82 @@ class QueryServiceTests(unittest.TestCase):
             prepared = self.service.prepare(request)
             self.assertEqual(prepared.sql, request.sql)
             self.assertNotIn('content_scope', [d.code for d in prepared.diagnostics])
+
+    def test_compound_join_activates_and_preserves_parameter_positions(self):
+        request = QueryRequest(sql="""SELECT ? AS marker, c.requested_url AS url, m.value AS title
+            FROM prose p JOIN capture c USING (content_id)
+            JOIN html_metadata m ON (m.name = ? AND (m.content_id = c.content_id))
+            WHERE p.text ILIKE ? ORDER BY title""", parameters=['marker', 'title', '%robot%'])
+        expected = self.service.connection.execute(request.sql, request.parameters).fetchall()
+        prepared = self.service.prepare(request)
+        result = self.service.execute(request)
+        for response in (prepared, result):
+            self.assertIn('content_scope', [d.code for d in response.diagnostics])
+        self.assertEqual(prepared.sql, result.sql)
+        self.assertEqual(result.rows, [list(row) for row in expected])
+        self.assertEqual(result.rows, [['marker', 'https://example.com/inline', 'start']])
+        reused = self.service.execute(QueryRequest(sql=prepared.sql, parameters=prepared.parameters))
+        self.assertEqual(reused.rows, result.rows)
+
+    def test_shared_scope_warning_reaches_results_and_history_without_settings_changes(self):
+        from periplus.operations.query_history.schemas import PreparationEvidence
+        request = QueryRequest(sql="""SELECT m.* FROM prose p JOIN html_metadata m
+            USING(content_id) WHERE p.text ILIKE '%robot%' AND m.name='title'""")
+        before = self.service.connection.execute("SELECT current_setting('disabled_optimizers')").fetchone()
+        for findings, code in ((('html_elements',), 'content_scope_shared_input'),
+                               (None, 'content_scope_plan_unverified')):
+            with self.subTest(code=code), patch('periplus.query.service.shared_html_inputs', return_value=findings) as inspect:
+                evidence = PreparationEvidence()
+                prepared = self.service.prepare(request, evidence=evidence)
+                result = self.service.execute(request)
+                self.assertEqual(inspect.call_count, 2)
+                self.assertIn('"name"', inspect.call_args.args[0])  # Native JSON, not display text.
+                for response in (prepared, result):
+                    warning = next(d for d in response.diagnostics if d.code == code)
+                    self.assertEqual(warning.severity, 'warning')
+                self.assertEqual(evidence.diagnostics, [d.model_dump() for d in prepared.diagnostics])
+                self.assertEqual(result.rows[0][-1], 'start')
+        self.assertEqual(self.service.connection.execute("SELECT current_setting('disabled_optimizers')").fetchone(), before)
+        self.assertTrue(self.service.connection.execute("SELECT current_setting('lock_configuration')").fetchone()[0])
+
+    def test_shared_scope_warning_is_not_added_when_barrier_absent(self):
+        request = QueryRequest(sql="""SELECT m.* FROM prose p JOIN html_metadata m
+            USING(content_id) WHERE p.text ILIKE '%robot%' AND m.name='title'""")
+        with patch('periplus.query.service.shared_html_inputs', return_value=()):
+            response = self.service.prepare(request)
+        self.assertIn('content_scope', [d.code for d in response.diagnostics])
+        self.assertNotIn('content_scope_shared_input', [d.code for d in response.diagnostics])
+        self.assertNotIn('content_scope_plan_unverified', [d.code for d in response.diagnostics])
+
+    def test_native_shared_plan_warning_on_read_only_lake(self):
+        self.service.close()
+        writer = DuckLakeConnectionFactory(self.config).connect()
+        try:
+            writer.execute('USE periplus')
+            writer.execute('DELETE FROM material.html_elements')
+            writer.execute('DELETE FROM material.html_nodes')
+            writer.execute("""INSERT INTO material.html_elements
+                (content_sha256, element_index, subtree_end_index, tag, namespace) VALUES
+                ('helper-fixture',1,3,'h1','HTML'), ('helper-fixture',3,5,'h2','HTML')""")
+            writer.execute("""INSERT INTO material.html_nodes
+                (content_sha256,node_index,subtree_end_index,node_type,value,depth) VALUES
+                ('helper-fixture',0,5,'document',NULL,0),
+                ('helper-fixture',1,3,'element',NULL,1),
+                ('helper-fixture',2,3,'text','Heading',2),
+                ('helper-fixture',3,5,'element',NULL,1),
+                ('helper-fixture',4,5,'text','Child',2)""")
+        finally:
+            writer.close()
+        self.service.connection = self.service._connect()
+        request = QueryRequest(sql="""SELECT h.text AS heading, s.* FROM capture c
+            JOIN html_heading h USING(content_id) JOIN html_section s
+            ON s.content_id=h.content_id AND s.heading_node_index=h.node_index
+            WHERE c.requested_url LIKE '%inline' ORDER BY h.node_index""")
+        prepared = self.service.prepare(request)
+        result = self.service.execute(request)
+        for response in (prepared, result):
+            self.assertIn('content_scope_shared_input', [d.code for d in response.diagnostics])
+        self.assertEqual([row[0] for row in result.rows], ['Heading', 'Child'])
 
     def test_anonymous_parameter_cast_matches_duckdb_without_rewriting_sql(self):
         sql = "SELECT ?::INTEGER AS value, '?::UUID' AS marker /* ?:: is literal comment text */"

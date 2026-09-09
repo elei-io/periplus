@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import posthog from "posthog-js"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { ArrowUpRight, Globe, MessageSquare } from "lucide-react"
 import { toast } from "sonner"
@@ -41,11 +42,15 @@ export function CollectionForm({ onCreated }: { onCreated: (id: string) => void 
       method: "POST", headers: { "content-type": "application/json" },
       signal: AbortSignal.timeout(35000), body: JSON.stringify(payload),
     })),
-    onSuccess: result => {
+    onSuccess: (result, payload) => {
       cache.setQueryData(["collection", result.id], result)
       void cache.invalidateQueries({ queryKey: ["collections"] })
       onCreated(result.id)
       toast.success("Coverage request submitted. Keep its link to follow progress.")
+      posthog.capture("coverage_request_submitted", {
+        request_id: result.id,
+        kind: payload.specification.seed_description ? "description" : "url",
+      })
     },
     onError: error => { access.onDenied(error); if(error instanceof ApiError && error.code === "options_changed") setFrozen(null); toast.error(extractApiError(error)) },
   })

@@ -196,6 +196,9 @@ services:
     build:
       context: .
       dockerfile: docker/public/Dockerfile
+      args:
+        NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN: ${NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN:-}
+        NEXT_PUBLIC_POSTHOG_HOST: ${NEXT_PUBLIC_POSTHOG_HOST:-}
     image: ${PERIPLUS_PUBLIC_IMAGE:-periplus-public:local}
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}

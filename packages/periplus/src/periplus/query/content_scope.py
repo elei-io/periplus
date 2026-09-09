@@ -35,6 +35,7 @@ _MAX_SQL = 100_000
 class ContentScope:
     sql: str
     definitions: dict[str, str]
+    key_cte: str
 
     def matches(self, connection, installed: dict[str, str]) -> bool:
         if any(name not in installed for name in self.definitions):
@@ -73,6 +74,16 @@ def _number_parameters(sql: str) -> str | None:
     for index, token in reversed(list(enumerate(positions, 1))):
         sql = sql[:token.start] + f'${index}' + sql[token.end + 1:]
     return sql
+
+
+def _conjuncts(expression: exp.Expression):
+    """Unwrap parentheses and AND only; an equality inside OR is not required."""
+    expression = expression.unnest()
+    if isinstance(expression, exp.And):
+        yield from _conjuncts(expression.this)
+        yield from _conjuncts(expression.expression)
+    else:
+        yield expression
 
 
 def content_scope(sql: str) -> ContentScope | None:
@@ -115,7 +126,8 @@ def content_scope(sql: str) -> ContentScope | None:
     if any(t.args.get('alias') and t.args['alias'].args.get('columns') for t in tables):
         return None
     # Every join must link its new source to an earlier source by the complete
-    # document key. Other ON predicates are not moved or inferred.
+    # document key in a required conjunct. Keep the entire ON expression in the
+    # final join: residual predicates must not shrink a view's window partitions.
     seen = {aliases[0]}
     for join, alias in zip(joins, aliases[1:]):
         if join.args.get('side') or join.args.get('kind') not in (None, '', 'INNER') or join.args.get('method'):
@@ -126,12 +138,19 @@ def content_scope(sql: str) -> ContentScope | None:
                 return None
         else:
             on = join.args.get('on')
-            if not isinstance(on, exp.EQ):
+            if on is None:
                 return None
-            a, b = on.this, on.expression
-            if not (isinstance(a, exp.Column) and isinstance(b, exp.Column)
-                    and a.name == b.name == 'content_id'
-                    and ((a.table == alias and b.table in seen) or (b.table == alias and a.table in seen))):
+            connected = False
+            for conjunct in _conjuncts(on):
+                if not isinstance(conjunct, exp.EQ):
+                    continue
+                a, b = conjunct.this.unnest(), conjunct.expression.unnest()
+                if (isinstance(a, exp.Column) and isinstance(b, exp.Column)
+                        and a.name == b.name == 'content_id'
+                        and ((a.table == alias and b.table in seen) or (b.table == alias and a.table in seen))):
+                    connected = True
+                    break
+            if not connected:
                 return None
         seen.add(alias)
     if any(t.name not in _DRIVERS and not registry[t.name].content_local for t in tables):
@@ -206,4 +225,4 @@ def content_scope(sql: str) -> ContentScope | None:
     result = tree.sql(dialect='duckdb')
     if len(result) > _MAX_SQL:
         return None
-    return ContentScope(result, definitions)
+    return ContentScope(result, definitions, keys)

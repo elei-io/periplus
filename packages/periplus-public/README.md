@@ -56,6 +56,21 @@ Run `npm run dev -- --port 3011`; the launcher loads the root `.env`.
 Run `npm run typecheck`, `npm run lint`, `npm test`, and `npm run build` to validate.
 Production ingress owns aggregate traffic limits; the agent bounds concurrent runs locally.
 
+## Product analytics
+
+PostHog starts in `src/instrumentation-client.ts` when both
+`NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN` and `NEXT_PUBLIC_POSTHOG_HOST` are configured.
+The wizard stores local values in `.env.local`. Production builds receive them
+through Docker build arguments and the matching GitHub repository variables;
+see [deployment configuration](../../docs/DEPLOYMENT.md#public-analytics).
+
+In addition to automatic pageviews and error capture, product events cover dataset
+launches, discovery starts and examples, SQL runs and sharing, result exports,
+assistant opening, schema inspection, and successful coverage submissions.
+Custom event properties contain lengths, counts, formats and identifiers rather
+than SQL, prompts or result rows. Coverage submissions use the browser's PostHog
+session after the API succeeds, without delaying the server response for analytics.
+
 ## Collection requests and Live
 
 `/suggest` accepts a starting URL or description, depth 0–2, internal/external/both link scope,

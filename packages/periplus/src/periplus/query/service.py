@@ -24,10 +24,11 @@ from periplus.platform.catalogue.config import CatalogueConfig
 from periplus.platform.catalogue.connection import DuckLakeConnectionFactory, _identifier
 from periplus.query.validation import _bounded_query, _one_statement
 from periplus.query.content_scope import content_scope
+from periplus.query.scope_plan import shared_html_inputs
 from periplus.operations.access.schemas import QueryLimits
 from periplus.operations.query_history.schemas import PreparationEvidence
 
-COMPILER_VERSION = "public-query-v2"
+COMPILER_VERSION = "public-query-v3"
 
 logger = logging.getLogger(__name__)
 _active_queries = Gauge("periplus_query_active_operations", "Occupied query admission slots.")
@@ -185,8 +186,23 @@ class QueryService:
                     prepared_sql = scoped.sql
                     diagnostics.append(Diagnostic(
                         severity="info", code="content_scope",
-                        message="Limited document-local extraction to content IDs selected by the query.",
+                        message="Added selected-document restrictions to extraction inputs; shared work and broad scans may remain.",
                     ))
+                    # Inspect the actual row-capped executable, before display
+                    # truncation. This binds a plan only; prep never profiles or
+                    # executes discovery, and all work shares the same deadline.
+                    physical = d.execute("EXPLAIN (FORMAT JSON) " + executable, payload.parameters).fetchone()[-1]
+                    shared = shared_html_inputs(physical, key_cte=scoped.key_cte)
+                    if shared:
+                        diagnostics.append(Diagnostic(
+                            severity="warning", code="content_scope_shared_input",
+                            message="DuckDB computes a shared HTML input before applying the selected-document restriction. This query may still scan broadly and exceed its time limit.",
+                        ))
+                    elif shared is None:
+                        diagnostics.append(Diagnostic(
+                            severity="warning", code="content_scope_plan_unverified",
+                            message="Selected-document restrictions were added, but their placement in the physical plan could not be verified.",
+                        ))
             if len(plan.encode()) > 64_000:
                 plan = plan.encode()[:64_000].decode(errors="ignore")
                 diagnostics.append(Diagnostic(severity="warning", code="plan_truncated", message="The execution plan preview was truncated."))

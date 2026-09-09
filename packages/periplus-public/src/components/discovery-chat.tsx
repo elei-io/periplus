@@ -17,6 +17,7 @@ import { DatasetSpecification } from "@/components/dataset-specification"
 import { analysisHistory, analysisView } from "@/lib/analysis-view"
 import { extractApiError } from "@/lib/api"
 import type { DiscoveryMessage } from "@/types/assistant"
+import posthog from "posthog-js"
 
 const starters = [
   { label: "Source directory", text: "List websites in Periplus, with one row per hostname, distinct page counts, and first and last observation dates. Show a small sample first." },
@@ -54,8 +55,11 @@ export function DiscoveryChat({ initialPrompt, autoRun = false }: { initialPromp
   const send = useCallback((text: string, approval?: string) => {
     if (!access.enabled || !text.trim() || busy) return
     if (text.length > 7800) { toast.error("The definition is too long. Shorten field descriptions before building."); return }
+    if (messages.length === 0 && !approval) {
+      posthog.capture("discovery_dataset_started", { prompt_length: text.length })
+    }
     void sendMessage({ text }, { body: { approval } }); setPrompt("")
-  }, [access.enabled, busy, sendMessage])
+  }, [access.enabled, busy, messages.length, sendMessage])
   const latest = useMemo(() => latestPresentation(messages), [messages])
   const presentation = latest?.presentation
   const approve = useCallback((token: string) => send("Build the full dataset using these sources and fields.", token), [send])
@@ -81,7 +85,7 @@ export function DiscoveryChat({ initialPrompt, autoRun = false }: { initialPromp
       <Textarea ref={composer} className="composer-input" id="dataset-idea" placeholder={messages.length ? "Change a field, explain a relationship, or resolve an open decision…" : "A dataset of book listings, with a title, price and link to each listing…"} value={prompt} maxLength={4000} onChange={event => setPrompt(event.target.value)} rows={3} />
       <div className="composer-actions"><span>Define the rows. We’ll explore the sources.</span>{busy ? <Button type="button" variant="outline" onClick={() => stop()}><Square />Stop</Button> : <Button type="submit" disabled={!access.enabled || !prompt.trim()}>{messages.length ? "Send" : "Start discovering"}<ArrowUp /></Button>}</div>
     </form>
-      {!messages.length && <div className="discovery-starters"><span>A few places to start</span><div className="flex flex-wrap gap-2">{starters.map(({ label, text }) => <Button key={label} variant="ghost" size="sm" disabled={!access.enabled || busy} onClick={() => { setPrompt(text); composer.current?.focus() }}>{label}<ArrowUp /></Button>)}</div></div>}
+      {!messages.length && <div className="discovery-starters"><span>A few places to start</span><div className="flex flex-wrap gap-2">{starters.map(({ label, text }) => <Button key={label} variant="ghost" size="sm" disabled={!access.enabled || busy} onClick={() => { setPrompt(text); composer.current?.focus(); posthog.capture("discovery_example_used", { example_label: label }) }}>{label}<ArrowUp /></Button>)}</div></div>}
       <details className="discovery-notes"><summary>About this workspace</summary><p>Uses data already in Periplus. <Link href="/coverage#coverage">Inspect coverage</Link> or <Link href="/coverage">request broader coverage</Link>.</p><p>The agent sees up to 20 rows per query; previews and CSV exports follow the configured query limits (1,000 rows by default). Definitions and sampled results go to the model provider. This workspace is temporary: download your definition and SQL before reloading. <Link href="/about#access">Access & data use</Link></p></details>
     </div>
     <aside aria-label="Your dataset definition" className="discovery-definition min-w-0 break-words lg:sticky lg:top-6 lg:col-span-4 lg:max-h-[calc(100dvh-3rem)] lg:overflow-y-auto">

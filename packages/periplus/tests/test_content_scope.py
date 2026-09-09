@@ -17,6 +17,7 @@ from periplus.platform.catalogue.public import public_objects
 from periplus.platform.catalogue.schema import expected_columns
 from periplus.query.content_scope import content_scope, _source
 from periplus.query.validation import _bounded_query
+from periplus.query.scope_plan import shared_html_inputs
 
 
 class ContentScopeTests(unittest.TestCase):
@@ -125,6 +126,43 @@ class ContentScopeTests(unittest.TestCase):
             with self.subTest(sql=sql):
                 self.assertIsNone(content_scope(sql))
 
+    def test_compound_joins_across_reviewed_views(self):
+        for item in public_objects():
+            if not item.content_local:
+                continue
+            for pattern in ('%robot%', '%absent%', '%'):
+                for reverse in (False, True):
+                    sources = (f'{item.name} e JOIN prose p' if reverse
+                               else f'prose p JOIN {item.name} e')
+                    with self.subTest(view=item.name, pattern=pattern, reverse=reverse):
+                        self.assertEquivalent(
+                            f'SELECT e.* FROM {sources} ON p.content_id = e.content_id '
+                            'AND (e.content_id = ? OR e.content_id IS NULL) '
+                            'WHERE p.text ILIKE ?', ['a', pattern])
+
+    def test_compound_heading_sections_keep_complete_partitions_and_order(self):
+        for condition in (
+            's.content_id = h.content_id AND s.heading_node_index = h.node_index',
+            '(s.heading_node_index = h.node_index AND (h.level = ? AND (h.content_id) = (s.content_id)))',
+        ):
+            sql = f'''SELECT c.effective_url, h.text AS heading, s.* FROM capture c
+                JOIN html_heading h USING (content_id) JOIN html_section s ON {condition}
+                WHERE c.effective_url LIKE ? AND lower(h.text) LIKE ?
+                ORDER BY c.effective_url, s.heading_node_index'''
+            parameters = ([2] if '?' in condition else []) + ['%/a', '%benefits%']
+            scoped, rows = self.assertEquivalent(sql, parameters)
+            self.assertEqual(len(rows), 2)  # Shared content, separate captures.
+            self.assertEqual(rows, self.db.execute(scoped.sql, parameters).fetchall())
+            contact = self.db.execute("SELECT node_index FROM html_heading WHERE content_id='a' AND text='Contact'").fetchone()[0]
+            self.assertTrue(all(row[-1] == contact for row in rows))
+
+    def test_compound_join_null_and_false_residuals(self):
+        for residual in ('m.value IS NULL', 'm.value = NULL', 'false',
+                         "(m.name = 'title' OR m.value IS NULL)"):
+            self.assertEquivalent(f'''SELECT c.effective_url, m.* FROM capture c
+                JOIN html_metadata m ON c.content_id = m.content_id AND {residual}
+                WHERE c.effective_url LIKE '%/a' ''')
+
     def test_parameters_identifiers_and_output_contract(self):
         self.assertEquivalent("""SELECT ? AS marker, m.value AS title, '?' AS literal
           FROM public_v1.prose AS "P" JOIN public_v1.html_metadata AS "m" USING (content_id)
@@ -151,7 +189,12 @@ class ContentScopeTests(unittest.TestCase):
             base.replace("'%robot%'", '$1'),
             base.replace('html_metadata', 'html_table_cell'),
             base.replace('html_metadata', 'html_list_item'),
-            base.replace('USING (content_id)', 'ON p.content_id = m.content_id AND m.name = \'title\''),
+            base.replace('USING (content_id)', "ON p.content_id = m.content_id OR m.name = 'title'"),
+            base.replace('USING (content_id)', "ON (p.content_id = m.content_id OR m.name = 'title') AND m.value IS NOT NULL"),
+            base.replace('USING (content_id)', "ON p.content_id <> m.content_id AND m.name = 'title'"),
+            base.replace('USING (content_id)', "ON m.content_id = m.content_id AND m.name = 'title'"),
+            base.replace('USING (content_id)', "ON p.content_id = m.content_id AND random() > 0"),
+            base.replace('USING (content_id)', "ON p.content_id = m.content_id AND CAST(m.value AS INTEGER) > 0"),
         ]
         for sql in cases:
             with self.subTest(sql=sql):
@@ -165,3 +208,58 @@ class ContentScopeTests(unittest.TestCase):
             self.assertFalse(scoped.matches(self.db, changed))
             del changed[name]
             self.assertFalse(scoped.matches(self.db, changed))
+
+    def test_shared_input_plan_regression_and_targeted_alternative(self):
+        sql = """SELECT c.effective_url, h.text AS heading, s.* FROM capture c
+            JOIN html_heading h USING(content_id) JOIN html_section s
+            ON s.content_id=h.content_id AND s.heading_node_index=h.node_index
+            WHERE c.effective_url LIKE '%/a' ORDER BY c.effective_url, s.heading_node_index"""
+        scoped = content_scope(sql)
+        expected = self.db.execute(sql).fetchall()
+
+        def walk(node):
+            yield node
+            for child in node.get('children', []):
+                yield from walk(child)
+
+        for disabled in ('', 'common_subplan'):
+            with self.subTest(disabled=disabled):
+                self.db.execute('SET disabled_optimizers=?', [disabled])
+                executable = _bounded_query(scoped.sql)
+                raw = self.db.execute('EXPLAIN (FORMAT JSON) ' + executable).fetchone()[-1]
+                self.assertEqual(shared_html_inputs(raw, key_cte=scoped.key_cte),
+                                 ('html_elements',) if not disabled else ())
+                self.assertEqual(self.db.execute(executable).fetchall(), expected)
+                profile = json.loads(self.db.execute('EXPLAIN (ANALYZE, FORMAT JSON) ' + executable).fetchone()[-1])
+                nodes = list(walk(profile))
+                shared = [n for n in nodes if str(n.get('extra_info', {}).get('CTE Name', '')).startswith('__common_subplan_')]
+                if not disabled:
+                    # Known native regression: constructs both documents' headings
+                    # before consumers restrict to the requested document.
+                    self.assertEqual([n['children'][0]['operator_cardinality'] for n in shared], [6])
+                else:
+                    self.assertFalse(shared)
+                windows = [n['operator_cardinality'] for n in nodes if n.get('operator_name') == 'WINDOW']
+                self.assertEqual(windows, [3])  # Complete selected-document partition.
+        self.db.execute("SET disabled_optimizers=''")
+
+    def test_optimizer_alternative_across_views_and_selectivity(self):
+        for item in public_objects():
+            if not item.content_local:
+                continue
+            for pattern in ('%robot%', '%absent%', '%'):
+                with self.subTest(view=item.name, pattern=pattern):
+                    sql = f'''SELECT c.effective_url, e.* FROM prose p JOIN capture c USING(content_id)
+                        JOIN {item.name} e ON e.content_id=c.content_id AND e.content_id IS NOT NULL
+                        WHERE p.text ILIKE ?'''
+                    scoped = content_scope(sql)
+                    before = self.db.execute(scoped.sql, [pattern])
+                    description = before.description
+                    rows = Counter(map(repr, before.fetchall()))
+                    self.db.execute("SET disabled_optimizers='common_subplan'")
+                    try:
+                        after = self.db.execute(scoped.sql, [pattern])
+                        self.assertEqual(after.description, description)
+                        self.assertEqual(Counter(map(repr, after.fetchall())), rows)
+                    finally:
+                        self.db.execute("SET disabled_optimizers=''")

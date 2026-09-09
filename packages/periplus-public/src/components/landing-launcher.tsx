@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { coverageSql } from "@/lib/datasets"
 import { sqlDraftLink } from "@/lib/schema-reference"
+import posthog from "posthog-js"
 
 export function LandingLauncher() {
   const router = useRouter()
@@ -16,6 +17,7 @@ export function LandingLauncher() {
   const [pending, startTransition] = useTransition()
   function launch(text = value) {
     if (!text.trim() || pending) return
+    posthog.capture("landing_dataset_launched", { prompt_length: text.length })
     startTransition(() => router.push(`/discover?${new URLSearchParams({ run: "1", question: text })}`))
   }
   return <div className="landing-launcher">
