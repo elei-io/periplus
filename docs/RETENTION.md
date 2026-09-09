@@ -148,3 +148,20 @@ The lake contains no Periplus operational tables. Batch completion receipts and
 published generation state also live in control Postgres; see [LIFECYCLE.md](LIFECYCLE.md).
 Native DuckLake metadata and its CDC cursor remain owned by DuckLake in its metadata
 Postgres. Rebuild/retired projection tables contain dataset rows, not operational state.
+
+## Current frontier cleanup cadence
+
+Operational collection/acquisition cleanup retains its one-hour grace, durable
+receipt checks, and ownership gates. Each transaction inspects at most 64 records;
+collection pruning removes at most 512 dependent rows. A partial collection resumes
+at that collection rather than skipping it. Batch results distinguish scan completion
+from deletion count, so protected records cannot hide later reclaimable records.
+
+The janitor drains these batches for a code-owned 30-second window, checking shutdown
+between transactions. The deadline limits starting new batches; it never interrupts
+an in-flight transaction. Other maintenance phases run between windows. An unfinished
+scan retries after one second; a completed scan uses `PERIPLUS_JANITOR_INTERVAL_SECONDS`
+(default 300 seconds). Failed frontier cleanup uses the normal interval rather than
+hot-looping. The `frontier_cleanup` event reports batch count, removed collections and
+acquisitions, and whether scanning remains. This cadence does not alter research-data
+retention, crawler budgets, or LakeDucktor's physical cleanup policy.

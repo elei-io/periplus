@@ -1237,3 +1237,26 @@ body:has(.landing-page) .public-header { background: transparent; border-bottom-
 .docs-page .docs-code-box { background: var(--quiet-surface); border: 1px solid var(--border); box-shadow: none; gap: 12px; }
 .docs-code-box pre { overflow-x: auto; font: 13px/1.8 ui-monospace, monospace; tab-size: 4; }
 .docs-code-box pre:focus-visible { outline: 2px solid var(--ring); outline-offset: 4px; border-radius: 2px; }
+
+/* Keep fast queries quiet; longer queries get an indeterminate activity bar. */
+.query-progress {
+  animation: query-progress-reveal 150ms ease-out 500ms both;
+}
+.query-progress [data-slot="progress-track"] { height: 2px; border-radius: 0; }
+.query-progress [data-slot="progress-indicator"] {
+  width: 35%;
+  animation: query-progress-travel 1.8s ease-in-out 500ms infinite both;
+}
+@keyframes query-progress-reveal {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes query-progress-travel {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(286%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .query-progress { animation-duration: 0s; }
+  .query-progress [data-slot="progress-indicator"] { animation: none; width: 100%; opacity: .5; }
+  [data-slot="spinner"] { animation: none; }
+}

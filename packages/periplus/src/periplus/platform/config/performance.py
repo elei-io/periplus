@@ -24,6 +24,9 @@ INGESTION_MAX_LOCAL_CONCURRENCY = 4
 # Navigation retention is recovery cleanup, not a bulk-delete job. One bounded
 # batch per janitor sweep keeps object-store pressure predictable.
 NAVIGATION_CLEANUP_BATCH_SIZE = 500
+# Yield between bounded frontier cleanup windows, rather than sleeping on backlog.
+FRONTIER_CLEANUP_WINDOW_SECONDS = 30.0
+FRONTIER_CLEANUP_RETRY_SECONDS = 1.0
 
 # Adaptive microbatch bounds. A batch flushes on whichever bound is reached
 # first, keeping latency bounded for small deployments and amortising commits
