@@ -872,7 +872,7 @@ console links preserve the selected mode with `mode=experimental`. Stable uses
 `/api/query/experimental/exec`, `/api/query/experimental/prep` and
 `/api/query/experimental/helpers`. The SQL assistant validates against the selected mode.
 
-Stable retains the clean compiler baseline. Experimental `public-query-v5:experimental`
+Stable retains the clean compiler baseline. Experimental `public-query-v6:experimental`
 activates `capture_heading_content_scope_v1` only for a conservative inner join of
 `capture` and `html_heading` with a single exact `capture.effective_url` equality,
 a plain content-ID join and string parameter bindings.
@@ -892,3 +892,29 @@ Experimental unavailability is an error, never a retry through stable.
 See [the first-three investigation](query-investigations/experimental-first-three/README.md)
 for paired production evidence and rejected candidates. No shared physical layout
 or catalogue relation changes are part of this activation.
+
+### Prose counts before capture joins (experimental)
+
+`prose_scalar_before_capture_v1` computes a regex match count per prose row in a
+statement-local materialized CTE before joining capture history. It retains the
+inner join, latest eligible capture per requested URL, and all subsequent filters
+and aggregation. Full prose no longer crosses that join. This is a compiler
+intervention; public schema, lake layout, materializations and stable are unchanged.
+
+Initial eligibility follows the measured broad-analytics family: one nonrecursive
+CTE containing a capture/prose inner `USING (content_id)` join, `DISTINCT ON
+(requested_url)`, and ordering by requested URL, descending capture time and capture
+ID. Exactly one aliased `len(regexp_extract_all(text, literal_pattern))` is moved.
+Other projected fields must also have explicit, unique aliases. Qualified public
+relations, source aliases and either join direction are supported. Selective
+predicates, inner limits, outer joins, raw-text outputs, parameters, additional
+sources/CTEs, regex options/groups and unsupported grammar remain native.
+
+The original binds first. Both installed public view definitions must match and
+the bounded literal regex is validated with DuckDB inside the read transaction;
+invalid patterns do not abort that validation transaction. No discovery scan runs
+during preparation. Regex semantics, output types and labels remain unchanged.
+
+[Evidence and limitations](query-investigations/prose-scalar/README.md) include
+same-snapshot equality and latency comparisons in both orders. This still scans
+prose across the corpus and does not guarantee completion within 512 MB.

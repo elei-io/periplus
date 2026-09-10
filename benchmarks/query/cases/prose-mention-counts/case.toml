@@ -1,0 +1,7 @@
+id = "prose-mention-counts"
+title = "Phrase counts on the latest eligible page per URL"
+use_case = "Count prose matches, select latest pages, aggregate by host."
+classification = "optimizer"
+ordered = true
+memory_limit = "512MB"
+max_warm_ms = 60000

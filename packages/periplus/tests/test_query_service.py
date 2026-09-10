@@ -77,7 +77,7 @@ class QueryServiceTests(unittest.TestCase):
         self.assertEqual(stable.query_mode, QueryMode.STABLE)
         self.assertEqual(result.query_mode, QueryMode.EXPERIMENTAL)
         self.assertEqual(result.optimizations, [])
-        self.assertEqual(evidence.compiler_version, "public-query-v5:experimental")
+        self.assertEqual(evidence.compiler_version, "public-query-v6:experimental")
         self.assertNotEqual(result.compiler_version, stable.compiler_version)
         with self.assertRaises(ValueError):
             QueryService(self.config, mode="invalid")
@@ -111,6 +111,32 @@ class QueryServiceTests(unittest.TestCase):
             self.assertEqual(experimental.execute(request).optimizations, [])
         broad = QueryRequest(sql=request.sql.replace('c.effective_url = ?', 'c.effective_url LIKE ?'), parameters=['%'])
         self.assertEqual(experimental.execute(broad).optimizations, [])
+
+    def test_experimental_prose_scalar_is_isolated_and_catalogue_guarded(self):
+        from periplus.query.service import QueryMode
+        from test_query_prose_scalar import SQL
+        experimental = QueryService(self.config, mode=QueryMode.EXPERIMENTAL)
+        self.addCleanup(experimental.close)
+        request = QueryRequest(sql=SQL.replace('AI|artificial intelligence', 'robot|careers'))
+        before = self.service.execute(request)
+        after = experimental.execute(request)
+        self.assertTrue(before.rows)
+        self.assertEqual((after.rows, after.columns, after.types), (before.rows, before.columns, before.types))
+        self.assertEqual(before.optimizations, [])
+        self.assertEqual(after.optimizations, ['prose_scalar_before_capture_v1'])
+        self.assertEqual(after.sql, request.sql)
+        self.assertEqual(experimental.prepare(request).optimizations, after.optimizations)
+        with patch('periplus.query.content_scope.ContentScope.matches', return_value=False):
+            self.assertEqual(experimental.execute(request).optimizations, [])
+        from periplus.query.prose_scalar import prose_scalar
+        candidate = prose_scalar(request.sql.replace('(?i)\\b(robot|careers)\\b', '['))
+        installed = dict(experimental.connection.execute(
+            "SELECT view_name, sql FROM duckdb_views() WHERE database_name='periplus' AND schema_name='public_v1'"
+        ).fetchall())
+        experimental.connection.execute("BEGIN")
+        self.assertFalse(candidate.matches(experimental.connection, installed))
+        self.assertEqual(experimental.connection.execute("SELECT 1").fetchone(), (1,))
+        experimental.connection.execute("ROLLBACK")
 
     def test_unmodified_preparation_execution_and_reuse(self):
         from periplus.operations.query_history.schemas import PreparationEvidence
