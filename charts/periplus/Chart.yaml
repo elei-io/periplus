@@ -5,6 +5,6 @@ type: application
 version: 0.1.0
 appVersion: main
 kubeVersion: ">=1.30.0-0"
-home: https://github.com/ekkuleivonen/periplus
+home: https://github.com/elei-io/periplus
 sources:
-  - https://github.com/ekkuleivonen/periplus
+  - https://github.com/elei-io/periplus

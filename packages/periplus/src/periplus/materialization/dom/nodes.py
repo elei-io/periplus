@@ -1,7 +1,8 @@
 """Complete HTML5 tree with one document-wide position space."""
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
+from typing import cast
 from xml.dom import Node
 
 import html5lib
@@ -41,35 +42,49 @@ def parse_document(source: str | bytes) -> tuple[tuple[NodeRow, ...], tuple[Elem
         Node.COMMENT_NODE: "comment",
         Node.PROCESSING_INSTRUCTION_NODE: "processing_instruction",
     }
-    nodes: list[NodeRow] = []
-    elements: dict[int, ElementRow] = {}
-    # Closing events fill exclusive subtree boundaries without Python recursion.
-    stack = [(document, None, 0, 0, False, -1)]
+    nodes: list[NodeRow | None] = []
+    elements: list[ElementRow | None] = []
+    # Reserve preorder positions on entry; construct final records on exit.
+    stack = [(document, None, 0, 0, -1, -1)]
     while stack:
-        node, parent, sibling, depth, closing, index = stack.pop()
-        if closing:
-            nodes[index] = replace(nodes[index], subtree_end_index=len(nodes))
-            if index in elements:
-                elements[index] = replace(elements[index], subtree_end_index=len(nodes))
-            continue
-        index = len(nodes)
+        node, parent, sibling, depth, index, element_index = stack.pop()
+        if index < 0:
+            index = len(nodes)
+            nodes.append(None)
+            if node.nodeType == Node.ELEMENT_NODE:
+                element_index = len(elements)
+                elements.append(None)
+            if node.childNodes:
+                stack.append((node, parent, sibling, depth, index, element_index))
+                stack.extend((child, index, position, depth + 1, -1, -1)
+                             for position, child in reversed(list(enumerate(node.childNodes))))
+                continue
         kind = kinds[node.nodeType]
         name = (node.localName or node.nodeName) if kind in {"element", "doctype", "processing_instruction"} else None
-        nodes.append(NodeRow(index, parent, index + 1, sibling, kind, name,
-                             node.namespaceURI, node.nodeValue, depth))
-        if kind == "element":
+        nodes[index] = NodeRow(index, parent, len(nodes), sibling, kind, name,
+                               node.namespaceURI, node.nodeValue, depth)
+        if element_index >= 0:
             attributes = {}
             for attribute in node.attributes.values():
                 key = (f"{{{attribute.namespaceURI}}}{attribute.localName}"
                        if attribute.namespaceURI else attribute.name)
                 attributes[key] = attribute.value
-            elements[index] = ElementRow(
-                index, parent, index + 1, depth, sibling, name,
+            elements[element_index] = ElementRow(
+                index, parent, len(nodes), depth, sibling, name,
                 node.namespaceURI, dict(sorted(attributes.items())),
+                # Unlink preserves text data in the direct children retained by
+                # this parent, so text can be copied when the parent closes.
                 "".join(child.data for child in node.childNodes if child.nodeType == Node.TEXT_NODE),
                 "",
             )
-        stack.append((node, parent, sibling, depth, True, index))
-        stack.extend((child, index, position, depth + 1, False, -1)
-                     for position, child in reversed(list(enumerate(node.childNodes))))
-    return tuple(nodes), tuple(elements.values())
+        # HTML5 permits distinct qualified attributes (lang and xml:lang)
+        # that minidom indexes under the same non-namespaced local name.
+        # Records are already copied: detach owners before disposing the entire
+        # element so Attr.unlink need not delete those colliding lookup keys.
+        if node.nodeType == Node.ELEMENT_NODE:
+            for attribute in node.attributes.values():
+                attribute.ownerElement = None
+        # Children have already been detached, keeping cleanup shallow.
+        node.unlink()
+    # Every reserved slot is filled before its closing event completes.
+    return cast(tuple[NodeRow, ...], tuple(nodes)), cast(tuple[ElementRow, ...], tuple(elements))

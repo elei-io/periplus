@@ -4,7 +4,7 @@ import { beginOperation } from "./telemetry";
 
 // Transport only. Python owns query policy, preparation and execution.
 export async function proxyQuery(request: Request, path: string) {
-  const finish = beginOperation("query_proxy");
+  const finish = beginOperation("query_proxy", request.headers.get("x-periplus-operation-id"));
   if (path === "/query/exec" || path === "/query/prep") {
     const denial = await admitPublic("sql", request.signal, path === "/query/exec")
     if (denial) { finish(denial.status >= 500 ? "failed" : "rejected"); return denial }

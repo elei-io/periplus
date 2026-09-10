@@ -1,0 +1,10 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Sid": "PeriplusLakeReader",
+    "Effect": "Allow",
+    "Principal": {"AWS": ["REPLACE_WITH_READER_ACCESS_KEY_ID"]},
+    "Action": ["s3:GetObject"],
+    "Resource": ["arn:aws:s3:::periplus/ducklake/*"]
+  }]
+}

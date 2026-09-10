@@ -7,6 +7,7 @@ import httpx
 
 from playwright.async_api import async_playwright
 
+from periplus.platform.messaging.topology import operational_replicas
 from periplus.crawl.control.collections.discovery import SourceDiscovery
 from periplus.crawl.acquisition.errors import PlaywrightRuntimeLost
 from periplus.crawl.control.content_policies.schemas import EffectivePolicySnapshot
@@ -23,7 +24,7 @@ from periplus.crawl.runtime.frontier_store import FrontierStore
 from periplus.crawl.runtime.seed_query import SeedQueryClient
 from periplus.ingestion.acquisition import AcquisitionPipeline
 from periplus.platform.config import get_float, get_optional, get_str
-from periplus.platform.config.performance import CRAWL_ACQUISITION_LANES, OPERATIONAL_STATE_REPLICAS
+from periplus.platform.config.performance import CRAWL_ACQUISITION_LANES
 from periplus.platform.health import HealthMonitor
 from periplus.platform.messaging.client import connect_nats
 from periplus.platform.messaging.leases import ensure_operation_lease_storage
@@ -95,7 +96,7 @@ async def run() -> None:
         await asyncio.to_thread(store.validate_installed)
         client = await connect_nats()
         jetstream = client.jetstream()
-        await ensure_capture_queue(jetstream, replicas=OPERATIONAL_STATE_REPLICAS)
+        await ensure_capture_queue(jetstream, replicas=operational_replicas())
         domain = await ensure_domain_pacing_storage(jetstream)
         operations = await ensure_operation_lease_storage(jetstream)
         presence = await ensure_crawler_presence(jetstream)

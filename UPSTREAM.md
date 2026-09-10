@@ -143,3 +143,25 @@ The deployment uses the existing complete rebuild to activate a new generation
 and start its consumer at the new source schema. No second cursor or compatibility
 path was added. A coherent fix needs an explicit, testable empty-window checkpoint
 contract across schema-only boundaries, including manual commit and filtered DML.
+
+## Requested join keys arrive after grouped/windowed derived work
+
+- **Caller:** selective prose discovery joined to metadata, headings or sections.
+- **Evidence:** DuckDB 1.5.5 computes all 1,478 title groups for 289 selected content
+  IDs; view-boundary semijoin and lateral wrappers do not reduce that work. Input
+  semijoins reduce groups to 289 with identical result multiplicity. Section
+  windows show the same pattern. A standalone accounts/events reproduction
+  computes 1,000 groups for eight requested keys, versus eight with explicit
+  input semijoins, without DuckLake or Periplus.
+- **Reproduction and measurements:**
+  [requested-key investigation](docs/query-investigations/key-domain/README.md)
+  and [standalone SQL](docs/query-investigations/key-domain/reproduce.sql).
+- **Needed investigation:** propagate demanded keys through group/partition keys
+  and equivalent join bindings, preserving outer-join provenance and complete
+  window partitions. The pinned join-filter pass traverses only the first join
+  child and has no WINDOW case; title plans put the grouped key on the other
+  input of an intervening RIGHT join. Evaluate both static semijoin reduction
+  and dynamic-filter propagation; more selective computation does not itself
+  establish file pruning or justify unconditional rewrites.
+- **Periplus status:** read-only experiments only. No extra materialization,
+  deployment change, optimizer extension, or production prep rewrite was added.

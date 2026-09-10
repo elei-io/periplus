@@ -1,5 +1,7 @@
 from operational_state_fixture import operational_state
 import unittest
+
+import pyarrow as pa
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -10,6 +12,7 @@ from periplus.materialization.document_projection import (
     DocumentProjectionSource,
     build_visit_batch_context,
     ducklake_varchar_bucket,
+    table_from_rows,
 )
 from periplus.materialization.registry import PROJECTIONS
 
@@ -17,6 +20,24 @@ from periplus.materialization.registry import PROJECTIONS
 class DocumentProjectionTests(unittest.TestCase):
     def setUp(self):
         operational_state(self)
+
+    def test_chunked_rows_preserve_values_order_and_schema(self) -> None:
+        schema = pa.schema([
+            pa.field("index", pa.int32(), nullable=False),
+            pa.field("text", pa.string()),
+            pa.field("attributes", pa.map_(pa.string(), pa.string())),
+        ])
+        rows = [(i, "é & text" if i % 2 else None,
+                 {"b": "two", "a": "one"} if i % 3 else {})
+                for i in range(16401)]
+        actual = table_from_rows(schema, iter(rows))
+        expected = pa.Table.from_arrays(
+            [pa.array([row[i] for row in rows], type=field.type)
+             for i, field in enumerate(schema)], schema=schema)
+        self.assertTrue(actual.equals(expected))
+        empty = table_from_rows(schema, iter(()))
+        self.assertEqual(empty.schema, schema)
+        self.assertEqual(empty.num_rows, 0)
 
     def test_ducklake_bucket_uses_iceberg_murmur3(self) -> None:
         self.assertEqual(

@@ -33,6 +33,9 @@ class SafeFormatter(logging.Formatter):
                          if key in {'operation', 'operation_id', 'outcome', 'code', 'elapsed_ms',
                                     'status', 'route', 'method', 'actor', 'truncated', 'rows', 'bytes', 'attempt', 'request_id'}
                          and isinstance(value, (str, int, float, bool))})
+            data.update({key: value for key, value in fields.items()
+                         if key in {'batches', 'collections_removed', 'acquisitions_removed', 'more'}
+                         and isinstance(value, (int, bool))})
         if record.exc_info and record.exc_info[0]:
             data['exception_type'] = record.exc_info[0].__name__
             data['frames'] = [{'function': f.name, 'line': f.lineno}

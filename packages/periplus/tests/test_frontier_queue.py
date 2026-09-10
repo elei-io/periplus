@@ -47,3 +47,15 @@ class FrontierQueueTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeError, "max_ack_pending"):
             await ensure_capture_queue(js)
         js.add_consumer.assert_not_awaited()
+
+    async def test_three_replica_capture_contract(self):
+        js = self.configured()
+        js.stream_info.return_value.config.num_replicas = 3
+        js.stream_info.side_effect = [NotFoundError(), js.stream_info.return_value]
+        await ensure_capture_queue(js, replicas=3)
+        self.assertEqual(js.add_stream.await_args.kwargs["config"].num_replicas, 3)
+        js.stream_info.side_effect = None
+        js.stream_info.return_value.config.num_replicas = 1
+        with self.assertRaisesRegex(RuntimeError, "num_replicas"):
+            await ensure_capture_queue(js, replicas=3)
+        js.update_stream.assert_not_awaited()

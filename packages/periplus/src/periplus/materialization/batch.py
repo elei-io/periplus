@@ -102,28 +102,34 @@ def prepare_batch(
         content_output_hashes=owned_hashes,
     )
     source_bytes = sum(source.content_bytes for source in sources)
-    outputs = {spec.name: spec.rows(context) for spec in PROJECTIONS}
     project_seconds = time.perf_counter() - project_started
-    parquet_started = time.perf_counter()
+    parquet_seconds = 0.0
+    output_rows = 0
     files: dict[str, tuple[PreparedFile, ...]] = {}
     file_set_id = uuid4().hex
     for spec in PROJECTIONS:
+        project_started = time.perf_counter()
+        output = spec.rows(context)
+        project_seconds += time.perf_counter() - project_started
+        output_rows += output.num_rows
+        parquet_started = time.perf_counter()
         files[spec.name] = _write_partitioned_parquet(
             catalogue,
-            outputs[spec.name],
+            output,
             run_id=run.id,
             batch_id=batch.id,
             file_set_id=file_set_id,
             table_name=spec.name,
         )
-    parquet_seconds = time.perf_counter() - parquet_started
+        parquet_seconds += time.perf_counter() - parquet_started
+        del output
     return PreparedBatch(
         retained_visit_ids=tuple(str(row[0]) for row in visits),
         retained_content_hashes=tuple(source.content_sha256 for source in sources),
         owned_content_hashes=tuple(sorted(owned_hashes)),
         source_items=len(visits),
         source_bytes=source_bytes,
-        output_rows=sum(table.num_rows for table in outputs.values()),
+        output_rows=output_rows,
         output_bytes=sum(
             file.size
             for relation_files in files.values()

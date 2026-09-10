@@ -61,6 +61,12 @@ class StaleDispatch(RuntimeError):
 
 
 @dataclass(frozen=True)
+class CleanupBatch:
+    removed: int
+    more: bool
+
+
+@dataclass(frozen=True)
 class Admission:
     interest_id: UUID
     acquisition_id: UUID
@@ -495,7 +501,7 @@ class FrontierStore:
 
 
 
-    def cleanup_collections(self, *, cutoff: datetime) -> int:
+    def cleanup_collections(self, *, cutoff: datetime) -> CleanupBatch:
         """Hand settled requests to immutable history, then reclaim at most 512 dependent rows."""
         if cutoff.utcoffset() is None:
             raise ValueError("collection cleanup cutoff requires a timezone")
@@ -510,7 +516,9 @@ class FrontierStore:
             records = list(session.scalars(statement.order_by(CollectionRecord.id).limit(64)))
             removed, remaining, last = 0, 512, None
             for collection in records:
+                previous = last if last is not None else control.collection_retention_cursor
                 last = collection.id
+                finished = False
                 if not collection.retiring:
                     if collection.service_expires_at is not None and _aware(collection.service_expires_at) > now:
                         continue
@@ -554,12 +562,17 @@ class FrontierStore:
                     if session.scalar(select(FrontierOutboxRecord.message_id).where(FrontierOutboxRecord.collection_id == collection.id).limit(1)) is None:
                         session.delete(collection)
                         removed += 1
+                        finished = True
                 if remaining == 0:
+                    # Resume the partially pruned collection, not the next UUID.
+                    if not finished:
+                        last = previous
                     break
-            control.collection_retention_cursor = last if len(records) == 64 or remaining == 0 else None
-            return removed
+            more = len(records) == 64 or remaining == 0
+            control.collection_retention_cursor = last if more else None
+            return CleanupBatch(removed, more)
 
-    def cleanup_acquisitions(self, *, cutoff: datetime) -> int:
+    def cleanup_acquisitions(self, *, cutoff: datetime) -> CleanupBatch:
         """Reclaim a bounded batch only after all current ownership and durable evidence gates."""
         if cutoff.utcoffset() is None:
             raise ValueError("acquisition cleanup cutoff requires a timezone")
@@ -594,8 +607,9 @@ class FrontierStore:
                 session.execute(delete(FrontierOutboxRecord).where(FrontierOutboxRecord.acquisition_id == acquisition.id))
                 session.delete(acquisition)
                 removed += 1
-            control.retention_cursor = records[-1].id if len(records) == 64 else None
-            return removed
+            more = len(records) == 64
+            control.retention_cursor = records[-1].id if more else None
+            return CleanupBatch(removed, more)
 
     def retire_navigation(self, acquisition_id: UUID, key: str, *, modified_at: datetime,
                           cutoff: datetime, orphan_cutoff: datetime) -> bool:

@@ -1,8 +1,7 @@
-# Values for the compute-main homelab cluster. Secret names follow the
-# secret-access controller's projected bundle convention.
+# Initial private deployment in namespace applications. See docs/HOMELAB.md.
+# Replace image tags with one published revision before reconciliation.
 imagePullSecrets:
   - name: ghcr-pull
-
 images:
   core:
     tag: sha-abcdef0
@@ -10,31 +9,74 @@ images:
     tag: sha-abcdef0
   public:
     tag: sha-abcdef0
-
 secrets:
   controlDatabase:
     name: postgres-periplus-control
-    urlKey: DATABASE_URL
   ducklakeMetadata:
     name: postgres-periplus-lake
-    pathKey: DATABASE_URL
+  queryDucklakeMetadata:
+    name: postgres-periplus-lake-reader
+  queryS3:
+    name: s3-periplus-lake-reader
+  apiAccess:
+    name: periplus-api-access
   nats:
     name: nats-periplus
   s3:
     name: s3-periplus
-
 config:
-  cdpUrl: http://replace-with-cdp-service:9222
+  cdpUrl: ws://stolosio-api.stolosio.svc:8411/v1/connect
+  repository:
+    prefix: repository
+    s3UrlStyle: path
+    s3UseSSL: false
   ducklake:
     dataPath: s3://periplus/ducklake/
-    s3Endpoint: s3.elei.io:9000
+    s3Endpoint: 192.168.40.101:7070
     s3UrlStyle: path
-    s3UseSSL: true
-
-web:
+    s3UseSSL: false
+  nats:
+    operationalReplicas: 3
+    catalogueWorkStreamReplicas: 3
+    ingestResultReplicas: 3
+extraEnv:
+  - name: PERIPLUS_CONTROL_POSTGRES_POOL_SIZE
+    value: "2"
+  - name: PERIPLUS_RETENTION_MODE
+    value: disabled
+# Bring up privately, set global frontier dispatch_limit=2, then enable crawler.
+# This prevents default controls from admitting work before the budget is set.
+crawler:
+  replicas: 0
+  autoscaling:
+    enabled: false
+ingestor:
+  replicas: 1
+  concurrency: 1
+  autoscaling:
+    enabled: false
+materializer:
+  replicas: 1
+  concurrency: 1
+  autoscaling:
+    enabled: false
+api:
+  replicas: 1
+  autoscaling:
+    enabled: false
+admin:
+  replicas: 1
   service:
-    type: LoadBalancer
-    annotations:
-      metallb.io/address-pool: compute-lb
-      # Reserve and verify this address in the homelab registry before apply.
-      metallb.io/loadBalancerIPs: 192.168.30.207
+    type: ClusterIP
+  autoscaling:
+    enabled: false
+public:
+  replicas: 1
+  service:
+    type: ClusterIP
+  autoscaling:
+    enabled: false
+query:
+  replicas: 1
+  autoscaling:
+    enabled: false

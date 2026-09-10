@@ -1273,10 +1273,26 @@ class FrontierStoreTests(unittest.TestCase):
                       status="failed" if index <= 64 else "cancelled",
                     completed_at=self.now))
         cutoff = self.now + timedelta(seconds=1)
-        self.assertEqual(self.store.cleanup_acquisitions(cutoff=cutoff), 0)
-        self.assertEqual(self.store.cleanup_acquisitions(cutoff=cutoff), 1)
+        first = self.store.cleanup_acquisitions(cutoff=cutoff)
+        self.assertEqual(first.removed, 0)
+        self.assertTrue(first.more)
+        last = self.store.cleanup_acquisitions(cutoff=cutoff)
+        self.assertEqual(last.removed, 1)
+        self.assertFalse(last.more)
         self.assertIsNone(self.store.get_acquisition(UUID(int=65)))
         self.assertEqual(self.store.control_view().retained_acquisitions, 64)
+
+    def test_acquisition_cleanup_drains_multiple_transactions_and_finishes(self):
+        from uuid import UUID
+        with self.sessions.begin() as session:
+            for index in range(1, 194):
+                session.add(AcquisitionRecord(id=UUID(int=index), url=f"https://retired.example/{index}",
+                    domain="retired.example", capture_key=str(index), requirements=self.policy.model_dump(mode="json"),
+                    status="cancelled", completed_at=self.now))
+        results = [self.store.cleanup_acquisitions(cutoff=self.now + timedelta(seconds=1)) for _ in range(4)]
+        self.assertEqual([batch.removed for batch in results], [64, 64, 64, 1])
+        self.assertEqual([batch.more for batch in results], [True, True, True, False])
+        self.assertEqual(self.store.control_view().retained_acquisitions, 0)
 
     def commit_collection_receipts(self, identity):
         with self.sessions.begin() as session:
@@ -1292,14 +1308,14 @@ class FrontierStoreTests(unittest.TestCase):
         self.store.finish_seed_selection(identity)
         self.store.settle_collection(identity, now=self.now)
         cutoff = self.now + timedelta(seconds=1)
-        self.assertEqual(self.store.cleanup_collections(cutoff=cutoff), 0)
+        self.assertEqual(self.store.cleanup_collections(cutoff=cutoff).removed, 0)
         self.commit_collection_receipts(identity)
-        self.assertEqual(self.store.cleanup_collections(cutoff=cutoff), 0)
+        self.assertEqual(self.store.cleanup_collections(cutoff=cutoff).removed, 0)
         self.allow_retention_receipts(own.acquisition_id)
-        self.assertEqual(self.store.cleanup_collections(cutoff=cutoff), 1)
+        self.assertEqual(self.store.cleanup_collections(cutoff=cutoff).removed, 1)
         self.assertIsNone(self.store.get_collection(identity))
         self.assertEqual(self.store.control_view().retained_interests, 0)
-        self.assertEqual(self.store.cleanup_acquisitions(cutoff=cutoff), 1)
+        self.assertEqual(self.store.cleanup_acquisitions(cutoff=cutoff).removed, 1)
         self.assertEqual(self.store.control_view().retained_acquisitions, 0)
 
     def test_collection_cleanup_prunes_bounded_rows_and_hides_partial_current_counts(self):
@@ -1319,12 +1335,13 @@ class FrontierStoreTests(unittest.TestCase):
         self.store.stop_collection(identity, now=self.now)
         self.commit_collection_receipts(identity)
         cutoff = self.now + timedelta(seconds=1)
-        self.assertEqual(self.store.cleanup_collections(cutoff=cutoff), 0)
+        self.assertEqual(self.store.cleanup_collections(cutoff=cutoff).removed, 0)
         self.assertEqual(self.store.control_view().retained_interests, 88)
         self.assertTrue(self.store.get_collection(identity).retiring)
         self.assertEqual(collection_views(self.sessions, identity=identity), [])
-        for _ in range(3):
-            self.store.cleanup_collections(cutoff=cutoff)
+        final = self.store.cleanup_collections(cutoff=cutoff)
+        self.assertEqual(final.removed, 1)
+        self.assertFalse(final.more)
         self.assertIsNone(self.store.get_collection(identity))
         self.assertEqual(self.store.control_view().retained_interests, 0)
 
@@ -1334,7 +1351,7 @@ class FrontierStoreTests(unittest.TestCase):
         self.commit_collection_receipts(identity)
         with self.sessions.begin() as session:
             session.delete(session.get(FrontierOutboxRecord, f"lineage:collection:{identity}"))
-        self.assertEqual(self.store.cleanup_collections(cutoff=self.now + timedelta(seconds=1)), 0)
+        self.assertEqual(self.store.cleanup_collections(cutoff=self.now + timedelta(seconds=1)).removed, 0)
         self.assertFalse(self.store.get_collection(identity).retiring)
 
     def test_duration_expiry_keeps_started_capture_and_blocks_remaining_work(self):

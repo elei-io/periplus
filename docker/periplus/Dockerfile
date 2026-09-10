@@ -1,6 +1,11 @@
 # syntax=docker/dockerfile:1.7
 
-FROM ghcr.io/astral-sh/uv:python3.14-bookworm-slim AS dependencies
+FROM python:3.14.7-slim-bookworm AS dependencies
+COPY --from=ghcr.io/astral-sh/uv:0.12.11 /uv /uvx /bin/
+
+# Reject runtimes that retain completed captures through asyncio.wait (gh-152569).
+COPY packages/periplus/tests/test_python_runtime.py /tmp/test_python_runtime.py
+RUN python /tmp/test_python_runtime.py && rm /tmp/test_python_runtime.py
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
