@@ -61,7 +61,7 @@ class QueryServiceTests(unittest.TestCase):
         self.service = QueryService(self.config)
         self.addCleanup(self.service.close)
 
-    def test_content_scope_preparation_execution_and_reuse(self):
+    def test_unmodified_preparation_execution_and_reuse(self):
         from periplus.operations.query_history.schemas import PreparationEvidence
         request = QueryRequest(sql="""SELECT c.requested_url AS url, m.value AS title
             FROM prose p JOIN capture c USING (content_id)
@@ -70,7 +70,8 @@ class QueryServiceTests(unittest.TestCase):
         expected = self.service.connection.execute(request.sql, request.parameters).fetchall()
         evidence = PreparationEvidence()
         prepared = self.service.prepare(request, evidence=evidence)
-        self.assertIn('content_scope', [d.code for d in prepared.diagnostics])
+        self.assertEqual(prepared.sql, request.sql)
+        self.assertNotIn('content_scope', [d.code for d in prepared.diagnostics])
         self.assertEqual(evidence.plan, prepared.plan)
         self.assertEqual(evidence.diagnostics, [d.model_dump() for d in prepared.diagnostics])
         result = self.service.execute(request)
@@ -82,11 +83,11 @@ class QueryServiceTests(unittest.TestCase):
         reused = self.service.execute(QueryRequest(sql=prepared.sql, parameters=prepared.parameters))
         self.assertEqual(reused.rows, result.rows)
         self.assertEqual(reused.sql, prepared.sql)
-        # Binding the original request must happen before an attempted rewrite.
+        # Invalid SQL is still rejected by native binding.
         with self.assertRaises(duckdb.BinderException):
             self.service.prepare(QueryRequest(sql=request.sql.replace('m.value', 'm.missing'), parameters=request.parameters))
 
-    def test_joined_prose_activates_in_prepare_and_execute(self):
+    def test_joined_prose_stays_unmodified_in_prepare_and_execute(self):
         request = QueryRequest(sql="""SELECT c.requested_url AS url, m.value AS title
             FROM html_metadata m JOIN capture c USING (content_id)
             JOIN prose p USING (content_id) WHERE p.text ILIKE ? AND m.name = ?""",
@@ -94,21 +95,14 @@ class QueryServiceTests(unittest.TestCase):
         prepared = self.service.prepare(request)
         result = self.service.execute(request)
         for response in (prepared, result):
-            self.assertIn('content_scope', [d.code for d in response.diagnostics])
+            self.assertEqual(response.sql, request.sql)
+            self.assertNotIn('content_scope', [d.code for d in response.diagnostics])
         self.assertEqual(prepared.sql, result.sql)
         self.assertEqual(result.rows, [['https://example.com/inline', 'start']])
         self.assertEqual(result.columns, ['url', 'title'])
         self.assertEqual(result.parameters, request.parameters)
 
-    def test_content_scope_definition_mismatch_keeps_original(self):
-        request = QueryRequest(sql="""SELECT m.* FROM prose p JOIN html_metadata m USING (content_id)
-            WHERE p.text ILIKE '%robot%'""")
-        with patch('periplus.query.content_scope.ContentScope.matches', return_value=False):
-            prepared = self.service.prepare(request)
-            self.assertEqual(prepared.sql, request.sql)
-            self.assertNotIn('content_scope', [d.code for d in prepared.diagnostics])
-
-    def test_compound_join_activates_and_preserves_parameter_positions(self):
+    def test_compound_join_stays_unmodified_and_preserves_parameter_positions(self):
         request = QueryRequest(sql="""SELECT ? AS marker, c.requested_url AS url, m.value AS title
             FROM prose p JOIN capture c USING (content_id)
             JOIN html_metadata m ON (m.name = ? AND (m.content_id = c.content_id))
@@ -117,44 +111,32 @@ class QueryServiceTests(unittest.TestCase):
         prepared = self.service.prepare(request)
         result = self.service.execute(request)
         for response in (prepared, result):
-            self.assertIn('content_scope', [d.code for d in response.diagnostics])
+            self.assertEqual(response.sql, request.sql)
+            self.assertNotIn('content_scope', [d.code for d in response.diagnostics])
         self.assertEqual(prepared.sql, result.sql)
         self.assertEqual(result.rows, [list(row) for row in expected])
         self.assertEqual(result.rows, [['marker', 'https://example.com/inline', 'start']])
         reused = self.service.execute(QueryRequest(sql=prepared.sql, parameters=prepared.parameters))
         self.assertEqual(reused.rows, result.rows)
 
-    def test_shared_scope_warning_reaches_results_and_history_without_settings_changes(self):
+    def test_api_never_invokes_research_optimizer_or_plan_inspector(self):
         from periplus.operations.query_history.schemas import PreparationEvidence
         request = QueryRequest(sql="""SELECT m.* FROM prose p JOIN html_metadata m
             USING(content_id) WHERE p.text ILIKE '%robot%' AND m.name='title'""")
         before = self.service.connection.execute("SELECT current_setting('disabled_optimizers')").fetchone()
-        for findings, code in ((('html_elements',), 'content_scope_shared_input'),
-                               (None, 'content_scope_plan_unverified')):
-            with self.subTest(code=code), patch('periplus.query.service.shared_html_inputs', return_value=findings) as inspect:
-                evidence = PreparationEvidence()
-                prepared = self.service.prepare(request, evidence=evidence)
-                result = self.service.execute(request)
-                self.assertEqual(inspect.call_count, 2)
-                self.assertIn('"name"', inspect.call_args.args[0])  # Native JSON, not display text.
-                for response in (prepared, result):
-                    warning = next(d for d in response.diagnostics if d.code == code)
-                    self.assertEqual(warning.severity, 'warning')
-                self.assertEqual(evidence.diagnostics, [d.model_dump() for d in prepared.diagnostics])
-                self.assertEqual(result.rows[0][-1], 'start')
+        with patch('periplus.query.content_scope.content_scope', side_effect=AssertionError('research optimizer invoked')), patch('periplus.query.scope_plan.shared_html_inputs', side_effect=AssertionError('research plan inspector invoked')):
+            evidence = PreparationEvidence()
+            prepared = self.service.prepare(request, evidence=evidence)
+            result = self.service.execute(request)
+        self.assertEqual(prepared.sql, request.sql)
+        self.assertEqual(result.sql, request.sql)
+        self.assertEqual(evidence.compiler_version, 'public-query-v4')
+        self.assertEqual(evidence.plan, prepared.plan)
+        self.assertFalse(any(d.code.startswith('content_scope') for d in result.diagnostics))
         self.assertEqual(self.service.connection.execute("SELECT current_setting('disabled_optimizers')").fetchone(), before)
         self.assertTrue(self.service.connection.execute("SELECT current_setting('lock_configuration')").fetchone()[0])
 
-    def test_shared_scope_warning_is_not_added_when_barrier_absent(self):
-        request = QueryRequest(sql="""SELECT m.* FROM prose p JOIN html_metadata m
-            USING(content_id) WHERE p.text ILIKE '%robot%' AND m.name='title'""")
-        with patch('periplus.query.service.shared_html_inputs', return_value=()):
-            response = self.service.prepare(request)
-        self.assertIn('content_scope', [d.code for d in response.diagnostics])
-        self.assertNotIn('content_scope_shared_input', [d.code for d in response.diagnostics])
-        self.assertNotIn('content_scope_plan_unverified', [d.code for d in response.diagnostics])
-
-    def test_native_shared_plan_warning_on_read_only_lake(self):
+    def test_heading_section_query_unmodified_on_read_only_lake(self):
         self.service.close()
         writer = DuckLakeConnectionFactory(self.config).connect()
         try:
@@ -181,7 +163,8 @@ class QueryServiceTests(unittest.TestCase):
         prepared = self.service.prepare(request)
         result = self.service.execute(request)
         for response in (prepared, result):
-            self.assertIn('content_scope_shared_input', [d.code for d in response.diagnostics])
+            self.assertEqual(response.sql, request.sql)
+            self.assertFalse(any(d.code.startswith('content_scope') for d in response.diagnostics))
         self.assertEqual([row[0] for row in result.rows], ['Heading', 'Child'])
 
     def test_anonymous_parameter_cast_matches_duckdb_without_rewriting_sql(self):

@@ -2,6 +2,9 @@
 
 Periplus delivers its query interface in three layers, in this order.
 
+The continuous investigation loop, decision matrix and production-reader bench are
+documented in [QUERY_OPTIMIZATION.md](QUERY_OPTIMIZATION.md).
+
 ## Performance triage
 
 Every query-performance investigation begins by classifying the issue as a schema/catalogue
@@ -95,9 +98,10 @@ SQL preparation and execution remain in the separate Python
 
 Both operations accept SQL and positional parameters and use the same public SQL validation.
 Preparation binds and explains without executing the analytical query, returning SQL, parameters,
-a query ID, diagnostics, and a plan. Eligible content-discovery joins receive the bounded
-content-scoping transformation described below; otherwise SQL remains unchanged. The returned SQL
-and plan describe the chosen statement, and returned parameters can execute that SQL again.
+a query ID, diagnostics, and a plan. Compiler `public-query-v4` preserves submitted SQL
+and parameters; the API applies no custom optimization rewrites or optimizer settings.
+The execution-only row-limit wrapper remains a resource control. DuckDB performs native
+optimization. The returned plan explains the submitted statement.
 Execution always prepares independently, then runs the query. It does not trust a prior prep call.
 Execution returns `source_snapshot`, obtained from `ducklake_current_snapshot` inside the same
 read transaction before binding or executing the query. The result and snapshot therefore describe
@@ -718,7 +722,17 @@ That investigation did not activate a runtime rewrite. The reviewed, deliberatel
 implementation below follows the subsequent scope decision; materializations remain unchanged.
 
 
-### Reviewed content scoping in query prep (2026-09-09)
+### Historical content-scoping experiment (2026-09-09; removed from API 2026-09-10)
+
+The following records the former implementation, not current API behavior.
+Compiler `public-query-v4` removes this rewrite, installed-definition checks and the
+additional JSON-plan inspection from prep and execution. The content-scoping code
+and plan detector remain research-only benchmark candidates, with differential
+tests; no public request path imports or invokes them. Validation, Cartesian-product
+warnings, plan preview truncation, resource limits, history and native DuckDB
+optimization remain. Future activation requires the optimization playbook's evidence.
+
+### Former reviewed implementation
 
 This is a **compiler/optimizer** fix for selective discovery followed by extraction that
 DuckDB otherwise computes across the corpus. It adds no persistent relation or extraction
@@ -786,7 +800,7 @@ of file pruning or lower latency. Full-domain searches retained full extraction 
 added CTE/key-set overhead. Single paired timings are recorded in the investigation and
 must not be treated as production performance guarantees.
 
-### Shared-input plan diagnostics and optimizer evaluation
+### Historical shared-input plan diagnostics and optimizer evaluation
 
 Compiler `public-query-v3` retains the reviewed content-scoping rewrite and adds
 bounded inspection of the native JSON plan for its actual row-capped executable.

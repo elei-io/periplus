@@ -23,12 +23,10 @@ from sqlglot import exp
 from periplus.platform.catalogue.config import CatalogueConfig
 from periplus.platform.catalogue.connection import DuckLakeConnectionFactory, _identifier
 from periplus.query.validation import _bounded_query, _one_statement
-from periplus.query.content_scope import content_scope
-from periplus.query.scope_plan import shared_html_inputs
 from periplus.operations.access.schemas import QueryLimits
 from periplus.operations.query_history.schemas import PreparationEvidence
 
-COMPILER_VERSION = "public-query-v3"
+COMPILER_VERSION = "public-query-v4"
 
 logger = logging.getLogger(__name__)
 _active_queries = Gauge("periplus_query_active_operations", "Occupied query admission slots.")
@@ -169,40 +167,6 @@ class QueryService:
             else:
                 plan_sql = "EXPLAIN " + payload.sql
             plan = "\n".join(str(row[-1]) for row in d.execute(plan_sql, payload.parameters).fetchall())
-            prepared_sql = payload.sql
-            # Bind the original first: expansion must never repair an invalid
-            # request. Inspect definitions in the same snapshot as execution.
-            scoped = content_scope(payload.sql) if isinstance(statement, exp.Select) else None
-            if scoped is not None:
-                installed = dict(d.execute(
-                    "SELECT view_name, sql FROM duckdb_views() "
-                    "WHERE database_name = ? AND schema_name = ?",
-                    [self.alias, PUBLIC_SCHEMA],
-                ).fetchall())
-                if scoped.matches(d, installed):
-                    executable = _bounded_query(scoped.sql, max_rows=limits.max_rows)
-                    plan = "\n".join(str(row[-1]) for row in d.execute(
-                        "EXPLAIN " + scoped.sql, payload.parameters).fetchall())
-                    prepared_sql = scoped.sql
-                    diagnostics.append(Diagnostic(
-                        severity="info", code="content_scope",
-                        message="Added selected-document restrictions to extraction inputs; shared work and broad scans may remain.",
-                    ))
-                    # Inspect the actual row-capped executable, before display
-                    # truncation. This binds a plan only; prep never profiles or
-                    # executes discovery, and all work shares the same deadline.
-                    physical = d.execute("EXPLAIN (FORMAT JSON) " + executable, payload.parameters).fetchone()[-1]
-                    shared = shared_html_inputs(physical, key_cte=scoped.key_cte)
-                    if shared:
-                        diagnostics.append(Diagnostic(
-                            severity="warning", code="content_scope_shared_input",
-                            message="DuckDB computes a shared HTML input before applying the selected-document restriction. This query may still scan broadly and exceed its time limit.",
-                        ))
-                    elif shared is None:
-                        diagnostics.append(Diagnostic(
-                            severity="warning", code="content_scope_plan_unverified",
-                            message="Selected-document restrictions were added, but their placement in the physical plan could not be verified.",
-                        ))
             if len(plan.encode()) > 64_000:
                 plan = plan.encode()[:64_000].decode(errors="ignore")
                 diagnostics.append(Diagnostic(severity="warning", code="plan_truncated", message="The execution plan preview was truncated."))
@@ -213,7 +177,7 @@ class QueryService:
                 evidence.plan_fingerprint = None if evidence.plan_truncated else hashlib.sha256(
                     (COMPILER_VERSION + "\n" + duckdb.__version__ + "\n" + plan).encode()).hexdigest()
                 evidence.diagnostics = [item.model_dump() for item in diagnostics]
-            prepared = PreparedQuery(query_id=query_id, sql=prepared_sql, parameters=payload.parameters, diagnostics=diagnostics, plan=plan)
+            prepared = PreparedQuery(query_id=query_id, sql=payload.sql, parameters=payload.parameters, diagnostics=diagnostics, plan=plan)
             if expired.is_set():
                 raise TimeoutError("Query time limit exceeded.")
             if not execute:

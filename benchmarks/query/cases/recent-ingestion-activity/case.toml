@@ -1,6 +1,6 @@
 id = "recent-ingestion-activity"
-title = "Recent ingestion activity"
-use_case = "Inspect the latest outcomes from one imported dataset while checking an ingestion run."
+title = "Recent documentation captures"
+use_case = "Inspect the latest captured documentation pages."
 classification = "both"
 ordered = true
 memory_limit = "512MB"
