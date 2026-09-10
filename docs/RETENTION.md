@@ -190,7 +190,8 @@ storage/commit failures are not retried in that call and retain their claims.
 Raw reclamation acquires one content lease at a time within the bounded candidate
 batch. An active publisher defers only its content; publication-claim cleanup also
 skips busy identities. Keyset scans wrap so deferred work is revisited. Duplicate
-content shares one lease, and per-content deletion limits sum to the original batch
-size. Lease loss and infrastructure errors remain failures, not busy skips.
+content shares one lease. Available content is reclaimed through one catalogue
+attachment and the existing 300-second call bound; its deletion limit never exceeds
+the original batch size. Lease loss and infrastructure errors remain failures, not busy skips.
 Structured `retention_sweep` and `retention_reclamation` events record counts
 without publishing object keys or observation identities.

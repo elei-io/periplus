@@ -17,7 +17,7 @@ class RetentionRecoveryTests(IsolatedAsyncioTestCase):
         bucket = FakeBucket()
         now = datetime.now(UTC)
         rows = [('a', now, 'raw/a'), ('b', now, 'raw/b')]
-        reclaim = Mock(return_value=1)
+        reclaim = Mock(side_effect=lambda objects, **kw: len(kw["content_hashes"]))
         with patch('periplus.retention.store.candidates', side_effect=[rows, [], rows]) as candidates, patch(
                 'periplus.retention.runtime.catalogue_from_env', side_effect=lambda **kw: nullcontext(object())), patch(
                 'periplus.retention.runtime.RetentionCatalogue', return_value=SimpleNamespace(reclaim_objects=reclaim)):
@@ -31,7 +31,7 @@ class RetentionRecoveryTests(IsolatedAsyncioTestCase):
             self.assertEqual(await reclaim_pass(settings, object(), bucket, after), (0, None))
             self.assertEqual((await reclaim_pass(settings, object(), bucket))[0], 2)
         self.assertEqual(candidates.call_args_list[1].args, (2, (now, 'raw/b')))
-        self.assertEqual([c.kwargs['content_hashes'] for c in reclaim.call_args_list], [('b',), ('a',), ('b',)])
+        self.assertEqual([c.kwargs['content_hashes'] for c in reclaim.call_args_list], [('b',), ('a', 'b')])
         self.assertFalse(bucket.values)
 
     async def test_duplicate_content_shares_lease_without_expanding_batch_budget(self):

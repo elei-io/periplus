@@ -1,5 +1,6 @@
 """Janitor-owned bounded retention sweeps; no control transaction spans lake I/O."""
 from collections import Counter
+from contextlib import AsyncExitStack
 from datetime import UTC, datetime
 import logging
 from typing import Literal
@@ -98,23 +99,31 @@ async def reclaim_pass(settings, objects, leases, after=None):
     counts = Counter(row[0] for row in rows)
     cursor = (rows[-1][1], rows[-1][2]) if len(rows) == settings.batch_size else None
     removed = deferred = 0
-    for content_hash, limit in counts.items():
-        try:
-            async with operation_leases(leases, [f"content:{content_hash}"], phase="ingestion", acquire_timeout=0) as guard:
-                def check():
-                    if guard.lost:
-                        raise OperationLeaseLost("raw object reclamation lost ownership")
+    async with AsyncExitStack() as held:
+        hashes = []
+        guards = []
+        for content_hash, limit in counts.items():
+            try:
+                guard = await held.enter_async_context(operation_leases(
+                    leases, [f"content:{content_hash}"], phase="ingestion", acquire_timeout=0))
+            except OperationLeaseUnavailable:
+                # The keyset wraps later; a publisher must not block other content.
+                deferred += limit
+                continue
+            hashes.append(content_hash)
+            guards.append(guard)
+        if hashes:
+            def check():
+                if any(guard.lost for guard in guards):
+                    raise OperationLeaseLost("raw object reclamation lost ownership")
 
-                def reclaim():
-                    with catalogue_from_env(threads=1, memory_limit="512MB") as catalogue:
-                        return RetentionCatalogue(catalogue).reclaim_objects(objects, now=datetime.now(UTC),
-                            grace_seconds=settings.object_grace_seconds, limit=limit,
-                            content_hashes=(content_hash,), check_ownership=check)
-                removed += await bounded_call(reclaim)
-        except OperationLeaseUnavailable:
-            # The keyset wraps on later sweeps; a publisher must not block other content.
-            deferred += limit
-            continue
+            def reclaim():
+                with catalogue_from_env(threads=1, memory_limit="512MB") as catalogue:
+                    return RetentionCatalogue(catalogue).reclaim_objects(objects, now=datetime.now(UTC),
+                        grace_seconds=settings.object_grace_seconds, limit=sum(counts[key] for key in hashes),
+                        content_hashes=tuple(hashes), check_ownership=check)
+            # Keep one attachment and the existing 300-second bound for the whole batch.
+            removed = await bounded_call(reclaim)
     if rows:
         event("retention_reclamation", candidates=len(rows), deferred=deferred, removed=removed)
     return removed, cursor
