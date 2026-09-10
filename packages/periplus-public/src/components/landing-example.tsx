@@ -17,7 +17,7 @@ export function LandingExample() {
   return <section id="example" className="landing-example" aria-labelledby="example-heading">
     <div className="featured-dataset-heading"><div><span className="eyebrow">Start with a hunch</span><h2 id="example-heading">One collection of websites. Several ways to query it.</h2><p>Take a group of investment firm websites. Search their text for “artificial intelligence” or “AI,” list links from portfolio pages, or compare destinations linked by several firms.</p></div></div>
     <div className="audience-grid">
-      {steps.map((step, index) => <Card key={step.title} className="landing-step">
+      {steps.map((step, index) => <Card key={step.title} className="landing-step w-full max-w-sm">
         <CardHeader><CardDescription>0{index + 1} / {step.title}</CardDescription><CardTitle><h3>{step.question}</h3></CardTitle></CardHeader>
         <CardContent><p>{step.detail}</p></CardContent>
       </Card>)}
