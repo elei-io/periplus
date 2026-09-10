@@ -154,3 +154,10 @@ or the candidate's measured warm median is not lower than the baseline's. The
 report retains both timings and their ratio. Treat one speedup as provisional until
 reverse-order measurements corroborate it; this is an experiment gate, not a noisy
 wall-time assertion in unit tests.
+
+Interrupted measurements retain a safe `progress` record: case/scale, snapshot,
+failing phase, completed normal-execution timing and row count, and completed warm
+profile count. Paired failures also identify the failed variant and retain any
+fully measured variant under `completed_variants`. The overall report remains
+`complete=false` with no equivalence or speedup claim. Native exception messages
+are never recorded because they can contain credential-bearing storage URLs.

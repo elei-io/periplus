@@ -18,7 +18,9 @@ from time import perf_counter
 import tomllib
 import threading
 import subprocess
-from typing import Any, Iterable
+from typing import Any, Iterable, Literal
+
+from pydantic import BaseModel, ConfigDict
 
 import duckdb
 
@@ -241,6 +243,36 @@ def inspect_profile(
     return tuple(blocking), tuple(scans)
 
 
+class MeasurementProgress(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    case: str
+    scale: int | None
+    phase: Literal["snapshot", "normal_execution", "result_collection", "warm_profile", "metadata"] = "snapshot"
+    snapshot: int | None = None
+    normal_ms: float | None = None
+    result_rows: int | None = None
+    warm_runs_completed: int = 0
+
+
+class BenchmarkFailure(Exception):
+    """Safe failure evidence; never retain a native error message."""
+    def __init__(self, error_type: str, progress: MeasurementProgress):
+        super().__init__(error_type)
+        self.error_type = error_type
+        self.progress = progress.model_dump()
+        self.variant: str | None = None
+        self.completed_variants: dict[str, Any] = {}
+
+
+@contextmanager
+def measurement_progress(case: QueryCase, scale: int | None):
+    progress = MeasurementProgress(case=case.identifier, scale=scale)
+    try:
+        yield progress
+    except Exception as exc:
+        raise BenchmarkFailure(type(exc).__name__, progress) from None
+
+
 @contextmanager
 def deadline(connection: duckdb.DuckDBPyConnection, seconds: int):
     timer = threading.Timer(seconds, connection.interrupt)
@@ -267,14 +299,19 @@ def _measure(connection, case: QueryCase, scale: int | None, warm_runs: int) -> 
     parameters = _parameters(scale)
     config = catalogue_config_from_env()
     # One total deadline covers the normal run and all warm profiles.
-    with deadline(connection, case.seconds):
+    with measurement_progress(case, scale) as progress, deadline(connection, case.seconds):
         snapshot = int(connection.execute(
             "SELECT id FROM ducklake_current_snapshot(?)", [config.alias]
         ).fetchone()[0])
+        progress.snapshot = snapshot
+        progress.phase = "normal_execution"
         started = perf_counter()
         cursor = _execute(connection, case.sql, parameters)
+        progress.phase = "result_collection"
         rows = bounded_rows(cursor)
         normal_ms = (perf_counter() - started) * 1000
+        progress.normal_ms = normal_ms
+        progress.result_rows = len(rows)
         description = cursor.description or []
         columns = tuple(str(column[0]) for column in description)
         types = tuple(str(column[1]) for column in description)
@@ -286,6 +323,7 @@ def _measure(connection, case: QueryCase, scale: int | None, warm_runs: int) -> 
         blocking: tuple[dict[str, Any], ...] = ()
         scans: tuple[dict[str, Any], ...] = ()
         for _ in range(warm_runs):
+            progress.phase = "warm_profile"
             cursor = _execute(
                 connection,
                 "EXPLAIN (ANALYZE, FORMAT JSON) " + case.sql,
@@ -298,6 +336,8 @@ def _measure(connection, case: QueryCase, scale: int | None, warm_runs: int) -> 
             peak_buffer.append(int(profile["system_peak_buffer_memory"]) if profile.get("system_peak_buffer_memory") is not None else None)
             peak_temp.append(int(profile["system_peak_temp_dir_size"]) if profile.get("system_peak_temp_dir_size") is not None else None)
             blocking, scans = inspect_profile(profile)
+            progress.warm_runs_completed += 1
+        progress.phase = "metadata"
         warm_median = median(warm_ms)
         return Measurement(
             case=case.identifier,
@@ -352,7 +392,15 @@ def measure_pair(case: QueryCase, candidate: QueryCase, scale: int | None, *, wa
         order = [("baseline", case), ("candidate", candidate)]
         if candidate_first:
             order.reverse()
-        return {label: asdict(_measure(connection, item, scale, warm_runs)) for label, item in order}
+        completed = {}
+        for label, item in order:
+            try:
+                completed[label] = asdict(_measure(connection, item, scale, warm_runs))
+            except BenchmarkFailure as exc:
+                exc.variant = label
+                exc.completed_variants = completed
+                raise
+        return completed
     finally:
         with suppress(duckdb.Error):
             connection.execute("ROLLBACK")

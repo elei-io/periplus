@@ -12,7 +12,7 @@ import duckdb
 from dataclasses import replace
 from unittest.mock import MagicMock, call, patch
 
-from periplus.query.benchmarking import compare_reports, discover_cases, inspect_profile, result_digest, bounded_rows, deadline, measure_pair
+from periplus.query.benchmarking import compare_reports, discover_cases, inspect_profile, result_digest, bounded_rows, deadline, measure_pair, BenchmarkFailure, MeasurementProgress, _measure
 
 
 class QueryBenchmarkingTests(unittest.TestCase):
@@ -106,6 +106,38 @@ class QueryBenchmarkingTests(unittest.TestCase):
                 self.assertTrue(payload["comparison"][0]["exact_result"])
                 self.assertEqual(payload["comparison"][0]["performance_improved"], succeeds)
                 self.assertEqual(bool(payload["failures"]), not succeeds)
+
+    def test_interrupted_profile_retains_safe_normal_execution_evidence(self):
+        root = Path(__file__).resolve().parents[3] / "benchmarks/query/cases"
+        case = discover_cases(root)["exact-page-history"]
+        connection = MagicMock()
+        connection.execute.return_value.fetchone.return_value = (42,)
+        cursor = MagicMock()
+        cursor.fetchone.side_effect = [(7,), None]
+        cursor.description = [("n", "INTEGER")]
+        with patch("periplus.query.benchmarking.catalogue_config_from_env", return_value=MagicMock(alias="periplus")), patch("periplus.query.benchmarking._execute", side_effect=[cursor, duckdb.InterruptException("secret-connection-string")]):
+            with self.assertRaises(BenchmarkFailure) as caught:
+                _measure(connection, case, None, 1)
+        failure = caught.exception
+        self.assertEqual(failure.error_type, "InterruptException")
+        self.assertEqual(failure.progress["snapshot"], 42)
+        self.assertEqual(failure.progress["phase"], "warm_profile")
+        self.assertEqual(failure.progress["result_rows"], 1)
+        self.assertIsNotNone(failure.progress["normal_ms"])
+        self.assertNotIn("secret", str(failure))
+        self.assertNotIn("secret", json.dumps(failure.progress))
+
+    def test_failed_candidate_preserves_complete_baseline_without_comparison(self):
+        root = Path(__file__).resolve().parents[3] / "benchmarks/query/cases"
+        case = discover_cases(root)["exact-page-history"]
+        failure = BenchmarkFailure("InterruptException", MeasurementProgress(case=case.identifier, scale=None))
+        connection = MagicMock()
+        with patch("periplus.query.benchmarking._connection", return_value=connection), patch("periplus.query.benchmarking._measure", side_effect=[case, failure]):
+            with self.assertRaises(BenchmarkFailure) as caught:
+                measure_pair(case, case, None, warm_runs=1)
+        self.assertEqual(caught.exception.variant, "candidate")
+        self.assertEqual(list(caught.exception.completed_variants), ["baseline"])
+        connection.close.assert_called_once()
 
     def test_discovers_a_parameterized_public_sql_case(self) -> None:
         with TemporaryDirectory() as temporary:

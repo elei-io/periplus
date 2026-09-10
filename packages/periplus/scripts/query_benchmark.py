@@ -7,7 +7,7 @@ from dataclasses import replace
 import json
 from pathlib import Path
 
-from periplus.query.benchmarking import compare_reports, discover_cases, report_payload, measure_pair, environment_metadata
+from periplus.query.benchmarking import compare_reports, discover_cases, report_payload, measure_pair, environment_metadata, BenchmarkFailure
 
 
 from periplus.query.content_scope import content_scope
@@ -91,7 +91,11 @@ def main() -> None:
     except Exception as exc:
         # Storage errors can contain credential-bearing connection strings.
         payload = {"format_version": 2, "measurements": [],
-                   "failures": [type(exc).__name__], "complete": False}
+                   "failures": [exc.error_type if isinstance(exc, BenchmarkFailure) else type(exc).__name__], "complete": False}
+        if isinstance(exc, BenchmarkFailure):
+            payload["failed_variant"] = exc.variant
+            payload["progress"] = exc.progress
+            payload["completed_variants"] = exc.completed_variants
         arguments.report.parent.mkdir(parents=True, exist_ok=True)
         arguments.report.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         print("Benchmark incomplete; safe failure type recorded in report")
