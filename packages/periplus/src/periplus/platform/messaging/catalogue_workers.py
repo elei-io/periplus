@@ -10,7 +10,8 @@ import logging
 from typing import Literal, Protocol
 
 from periplus.platform.config import get_float, get_int
-from periplus.platform.config.performance import OPERATIONAL_STATE_REPLICAS
+from periplus.platform.messaging.topology import operational_replicas
+
 from nats.js.api import KeyValueConfig, StorageType
 from nats.js.errors import (
     BadRequestError,
@@ -119,7 +120,7 @@ async def ensure_catalogue_worker_storage(jetstream):
         ttl=get_float("PERIPLUS_CATALOGUE_WORKER_PRESENCE_TTL_SECONDS"),
         max_bytes=get_int("PERIPLUS_CATALOGUE_WORKER_MAX_BYTES"),
         storage=StorageType.FILE,
-        replicas=OPERATIONAL_STATE_REPLICAS,
+        replicas=operational_replicas(),
     )
     try:
         bucket = await jetstream.key_value(CATALOGUE_WORKERS_BUCKET)

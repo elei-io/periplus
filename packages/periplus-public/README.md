@@ -56,6 +56,20 @@ Run `npm run dev -- --port 3011`; the launcher loads the root `.env`.
 Run `npm run typecheck`, `npm run lint`, `npm test`, and `npm run build` to validate.
 Production ingress owns aggregate traffic limits; the agent bounds concurrent runs locally.
 
+## Product analytics
+
+PostHog starts in `src/instrumentation-client.ts` only when the public token,
+host, and `NEXT_PUBLIC_ANALYTICS_ENVIRONMENT=production` are configured at build
+time. Local builds do not capture events. Production releases include a Git SHA
+and upload source maps through a BuildKit secret.
+
+See the [analytics operating guide](../../docs/ANALYTICS.md) for the event contract,
+privacy settings, dashboards, scout thresholds, and weekly review procedure.
+Custom events record outcomes, counts, durations and correlation IDs. SQL,
+parameters, prompts and result rows are excluded; sensitive workspace regions are
+blocked from session replay. Coverage readiness is observed by the submitting
+browser and is not an authoritative backend completion metric.
+
 ## Collection requests and Live
 
 `/suggest` accepts a starting URL or description, depth 0–2, internal/external/both link scope,

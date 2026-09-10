@@ -5,7 +5,7 @@ name = "periplus"
 version = "0.1.0"
 description = "Web acquisition and normalization for SQL-centric data pipelines"
 readme = { text = "Periplus backend services.", content-type = "text/markdown" }
-requires-python = ">=3.14"
+requires-python = ">=3.14.7"
 dependencies = [
     "alembic>=1.18",
     "fastapi[standard]>=0.139.0",
@@ -40,7 +40,7 @@ periplus-setup = "periplus.entrypoints.setup:main"
 periplus-worker = "periplus.entrypoints.worker:main"
 
 [build-system]
-requires = ["setuptools>=77"]
+requires = ["setuptools>=84.0.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]

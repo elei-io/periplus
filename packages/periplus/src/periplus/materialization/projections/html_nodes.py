@@ -1,5 +1,4 @@
 """Complete content-owned parsed HTML nodes."""
-from dataclasses import astuple
 
 import pyarrow as pa
 
@@ -8,11 +7,25 @@ from periplus.materialization.registry import PartitionTransform, ProjectionColu
 
 
 def project(context: VisitBatchContext) -> pa.Table:
-    return table_from_rows(PROJECTION.arrow_schema, [
-        (content_id, *astuple(node))
-        for content_id in sorted(context.content_output_hashes)
-        for node in context.parsed_nodes_by_content.get(content_id, ())
-    ])
+    return table_from_rows(
+        PROJECTION.arrow_schema,
+        (
+            (
+                content_id,
+                node.node_index,
+                node.parent_index,
+                node.subtree_end_index,
+                node.sibling_index,
+                node.node_type,
+                node.name,
+                node.namespace,
+                node.value,
+                node.depth,
+            )
+            for content_id in sorted(context.content_output_hashes)
+            for node in context.parsed_nodes_by_content.get(content_id, ())
+        ),
+    )
 
 
 PROJECTION = ProjectionSpec(

@@ -20,6 +20,7 @@ x-periplus-control-environment: &periplus-control-environment
 x-periplus-nats-environment: &periplus-nats-environment
   PERIPLUS_NATS_URL: nats://periplus-nats:4222
   PERIPLUS_NATS_SEED: ""
+  PERIPLUS_NATS_OPERATIONAL_REPLICAS: ${PERIPLUS_NATS_OPERATIONAL_REPLICAS:-1}
 
 x-periplus-ducklake-environment: &periplus-ducklake-environment
   PERIPLUS_DUCKLAKE_ALIAS: periplus
@@ -195,6 +196,9 @@ services:
     build:
       context: .
       dockerfile: docker/public/Dockerfile
+      args:
+        NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN: ${NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN:-}
+        NEXT_PUBLIC_POSTHOG_HOST: ${NEXT_PUBLIC_POSTHOG_HOST:-}
     image: ${PERIPLUS_PUBLIC_IMAGE:-periplus-public:local}
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}

@@ -15,7 +15,7 @@
   },
   "types": "./dist/index.d.ts",
   "dependencies": {
-    "@wterm/dom": "^0.3.0",
+    "@wterm/dom": "^0.5.0",
     "@wterm/react": "^0.3.0",
     "periplus-console-core": "*"
   },
@@ -23,7 +23,7 @@
     "react": "^19.0.0"
   },
   "devDependencies": {
-    "@types/react": "^19",
+    "@types/react": "^19.2.18",
     "react": "^19.2.6",
     "typescript": "~6"
   },

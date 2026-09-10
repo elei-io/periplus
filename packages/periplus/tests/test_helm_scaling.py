@@ -24,6 +24,16 @@ class HelmScalingTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return [document for document in yaml.safe_load_all(result.stdout) if document]
 
+    def test_operational_replication_is_shared_by_core_roles(self):
+        for replicas in (1, 3, 5):
+            docs = self.render({"config": {"nats": {"operationalReplicas": replicas}}})
+            for role in ("api", "crawler", "ingestor", "materializer", "janitor", "setup"):
+                doc = next(d for d in docs if d["kind"] in ("Deployment", "Job") and d["metadata"]["name"].endswith("-" + role))
+                env = {v["name"]: v.get("value") for v in doc["spec"]["template"]["spec"]["containers"][0]["env"]}
+                self.assertEqual(env["PERIPLUS_NATS_OPERATIONAL_REPLICAS"], str(replicas))
+        for invalid in (0, 6, "three"):
+            self.render({"config": {"nats": {"operationalReplicas": invalid}}}, valid=False)
+
     def test_default_is_installable_without_autoscaling_crds(self):
         documents = self.render()
         self.assertFalse(any(d["kind"] in ("ScaledObject", "PodMonitor") for d in documents))

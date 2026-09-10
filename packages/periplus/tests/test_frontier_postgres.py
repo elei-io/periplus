@@ -610,7 +610,7 @@ class FrontierPostgresTests(unittest.TestCase):
         gate = Barrier(2)
         def cleanup(_):
             gate.wait(timeout=10)
-            return self.store.cleanup_acquisitions(cutoff=self.now + timedelta(seconds=1))
+            return self.store.cleanup_acquisitions(cutoff=self.now + timedelta(seconds=1)).removed
         with ThreadPoolExecutor(max_workers=2) as pool:
             results = list(pool.map(cleanup, range(2)))
         self.assertEqual(sorted(results), [0, 1])
@@ -627,7 +627,7 @@ class FrontierPostgresTests(unittest.TestCase):
         gate = Barrier(2)
         def cleanup(_):
             gate.wait(timeout=10)
-            return self.store.cleanup_collections(cutoff=self.now + timedelta(seconds=1))
+            return self.store.cleanup_collections(cutoff=self.now + timedelta(seconds=1)).removed
         with ThreadPoolExecutor(max_workers=2) as pool:
             results = list(pool.map(cleanup, range(2)))
         self.assertEqual(sorted(results), [0, 1])

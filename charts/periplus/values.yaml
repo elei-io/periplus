@@ -5,15 +5,15 @@ imagePullSecrets: []
 
 images:
   core:
-    repository: ghcr.io/ekkuleivonen/periplus-core
+    repository: ghcr.io/elei-io/periplus-core
     tag: ""
     pullPolicy: IfNotPresent
   admin:
-    repository: ghcr.io/ekkuleivonen/periplus-admin
+    repository: ghcr.io/elei-io/periplus-admin
     tag: ""
     pullPolicy: IfNotPresent
   public:
-    repository: ghcr.io/ekkuleivonen/periplus-public
+    repository: ghcr.io/elei-io/periplus-public
     tag: ""
     pullPolicy: IfNotPresent
 
@@ -68,6 +68,7 @@ config:
     s3UrlStyle: path
     s3UseSSL: true
   nats:
+    operationalReplicas: 3
     catalogueWorkStreamReplicas: 3
     ingestResultReplicas: 3
 

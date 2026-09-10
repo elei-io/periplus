@@ -41,6 +41,9 @@ class CatalogueObject:
     errors: tuple[str, ...] = ()
     requires_functions: frozenset[str] = frozenset()
     requires_relations: frozenset[str] = frozenset()
+    # Reviewed promise: restricting complete content IDs in all primitive inputs
+    # preserves values, duplicates, partitions and observable extraction errors.
+    content_local: bool = False
 
 
 def public_objects() -> tuple[CatalogueObject, ...]:

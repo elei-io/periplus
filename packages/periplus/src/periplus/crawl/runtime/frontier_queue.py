@@ -5,10 +5,10 @@ from uuid import UUID
 from nats.js.api import AckPolicy, ConsumerConfig, DiscardPolicy, KeyValueConfig, RetentionPolicy, StorageType, StreamConfig
 from nats.js.errors import BadRequestError, BucketNotFoundError, NotFoundError
 from pydantic import BaseModel, ConfigDict, Field
+from periplus.platform.messaging.topology import operational_replicas
 from periplus.crawl.runtime.frontier_health import DispatchReadiness
 
 from periplus.platform.config import get_float
-from periplus.platform.config.performance import OPERATIONAL_STATE_REPLICAS
 from periplus.platform.messaging.topology import validate_kv_contract
 
 CAPTURE_STREAM = "PERIPLUS_CRAWL_WORK"
@@ -86,7 +86,7 @@ async def ensure_crawler_presence(jetstream):
     config = KeyValueConfig(
         bucket=CRAWLER_PRESENCE_BUCKET, description="Ephemeral Periplus crawler presence",
         history=1, ttl=get_float("PERIPLUS_CRAWLER_PRESENCE_TTL_SECONDS"),
-        max_bytes=1024 * 1024, storage=StorageType.FILE, replicas=OPERATIONAL_STATE_REPLICAS,
+        max_bytes=1024 * 1024, storage=StorageType.FILE, replicas=operational_replicas(),
     )
     try:
         bucket = await jetstream.key_value(CRAWLER_PRESENCE_BUCKET)

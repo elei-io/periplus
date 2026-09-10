@@ -3,6 +3,21 @@
 Periplus deployment names distinguish infrastructure authorities, executable process roles, and
 domain capabilities.
 
+## Python runtime
+
+Backend services require Python 3.14.7 or later. The container pins Python 3.14.7
+and runs `tests/test_python_runtime.py` during the build. Local development and
+backend CI use the same patch release.
+
+CPython [gh-152569](https://github.com/python/cpython/issues/152569) caused
+`asyncio.wait(FIRST_COMPLETED)` to retain completed caller tasks on a still-pending
+future. Playwright races protocol replies against its process-lived transport-error
+future, so affected runtimes retain completed Periplus capture results and HTML.
+The upstream fix removes the await-graph references when the wait exits. Increasing
+worker memory, adding replicas or collecting garbage does not fix that ownership
+bug. Rebuild and roll out the backend image to replace an affected interpreter;
+changing application settings cannot repair an already-running Python runtime.
+
 ## Naming
 
 - Infrastructure uses ownership-first names: `lake-s3`, `lake-postgres`,
@@ -95,11 +110,11 @@ extensions; only live materialization loads CDC.
 
 GitHub Actions publishes four immutable artifacts for each main-branch revision:
 
-- `ghcr.io/ekkuleivonen/periplus-core:sha-<commit>` contains the API, every worker role,
+- `ghcr.io/elei-io/periplus-core:sha-<commit>` contains the API, every worker role,
   `periplus-setup`, the DuckLake CDC extension;
-- `ghcr.io/ekkuleivonen/periplus-admin:sha-<commit>` contains the operator UI and nginx API gateway;
-- `ghcr.io/ekkuleivonen/periplus-public:sha-<commit>` contains the standalone Next.js public application; and
-- `oci://ghcr.io/ekkuleivonen/periplus-charts/periplus:0.1.0-dev.<commit>` deploys the three images.
+- `ghcr.io/elei-io/periplus-admin:sha-<commit>` contains the operator UI and nginx API gateway;
+- `ghcr.io/elei-io/periplus-public:sha-<commit>` contains the standalone Next.js public application; and
+- `oci://ghcr.io/elei-io/periplus-charts/periplus:0.1.0-dev.<commit>` deploys the three images.
 
 Release tags `vX.Y.Z` additionally publish matching `X.Y.Z` image and chart versions. Production
 GitOps must pin the explicit chart version and all three explicit image tags; it must not consume a
@@ -109,6 +124,8 @@ The core image installs official storage extensions and signed community CDC at 
 `packages/periplus/src/periplus/platform/catalogue/cdc_extension.py` validates the pinned
 DuckDB version, CDC version, and source revision during build and CDC startup. No extension
 source checkout, BuildKit named context, deploy key, or unsigned loading is required.
+
+For the initial K3s deployment, follow [homelab onboarding](HOMELAB.md).
 
 ## Kubernetes topology
 
@@ -126,6 +143,12 @@ Control state and DuckLake metadata still require distinct PostgreSQL databases 
 The same S3 bucket may back raw repository objects and DuckLake data when the repository prefix and
 DuckLake data path do not overlap. Annotated API and worker Services expose all built-in Prometheus
 endpoints for platform discovery.
+
+NATS capture delivery, worker presence, pacing and operation leases share
+`PERIPLUS_NATS_OPERATIONAL_REPLICAS` (1–5; local default 1). Helm sets it through
+`config.nats.operationalReplicas`, defaulting to 3. All account clients must agree;
+existing replica mismatches fail startup instead of resetting data. See
+[homelab NATS operations](HOMELAB.md#nats-storage-and-failure-contract).
 
 ## Process entrypoints
 
@@ -148,6 +171,31 @@ materializers. `PERIPLUS_INGESTOR_CONCURRENCY` and `PERIPLUS_MATERIALIZER_CONCUR
 per-process lane bounds; replica count and local concurrency are separate controls.
 
 ## Application access
+
+### Public analytics
+
+`NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN`, `NEXT_PUBLIC_POSTHOG_HOST`,
+`NEXT_PUBLIC_ANALYTICS_ENVIRONMENT` and `NEXT_PUBLIC_RELEASE` are public build
+inputs. Capture starts only when the environment is `production` and the token
+and host exist. The publish workflow sets production and the full Git SHA; set
+the token and host as GitHub Actions repository variables. Never use a personal
+API key as the browser project token. Manual production builds must explicitly
+set the environment and release arguments. Compose defaults to development
+without capture, even if a token remains in a local environment file.
+
+Next.js embeds these values in browser bundles; changing Kubernetes runtime
+environment variables cannot update them. Rebuild the public image.
+
+For source maps, set GitHub Actions variable `POSTHOG_PROJECT_ID` and secret
+`POSTHOG_API_KEY` (a personal API key with error-tracking write access).
+Docker receives the key only through the `posthog_api_key` BuildKit secret mount;
+it is not an ARG or runtime ENV. `@posthog/nextjs-config` uploads maps under release
+`periplus-public` / the Git SHA and deletes uploaded maps from build output.
+A local source-map validation can set `POSTHOG_PROJECT_ID` while keeping the key
+in the ignored public `.env.local`. Builds without upload credentials remain
+usable locally. CI must have both settings to upload maps.
+
+See [analytics operations](ANALYTICS.md) for dashboards and capture validation.
 
 ### Public search metadata
 
