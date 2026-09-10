@@ -15,6 +15,7 @@ from nats.js.errors import (
 from periplus.platform.messaging.leases import (
     OperationLease,
     OperationLeaseUnavailable,
+    OperationLeaseBackendUnavailable,
     _try_acquire,
     operation_lease_key,
     operation_leases,
@@ -80,6 +81,19 @@ class SlowLeaseSetBucket(FakeBucket):
 
 
 class OperationLeaseTests(unittest.IsolatedAsyncioTestCase):
+    async def test_storage_error_releases_acquired_prefix_and_preserves_failure(self):
+        class FailingBucket(FakeBucket):
+            async def create(self, key, value):
+                if OperationLease.model_validate_json(value).operation_id == 'second':
+                    raise PermissionError('denied')
+                return await super().create(key, value)
+        bucket = FailingBucket()
+        with self.assertRaises(OperationLeaseBackendUnavailable) as raised:
+            async with operation_leases(bucket, ['first', 'second'], phase='ingestion', acquire_timeout=0):
+                self.fail('unowned work started')
+        self.assertIsInstance(raised.exception.__cause__, PermissionError)
+        self.assertFalse(bucket.values)
+
     async def test_new_operation_is_created_without_a_missing_read(self) -> None:
         bucket = FakeBucket()
 

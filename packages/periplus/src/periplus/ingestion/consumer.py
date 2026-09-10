@@ -39,6 +39,7 @@ from periplus.ingestion.queue import (
 from periplus.ingestion.service import PreparedIngestion, repository_ingestor_from_env
 from periplus.platform.messaging.catalogue_workers import CatalogueLaneReporter
 from periplus.platform.messaging.leases import (
+    OperationLeaseBackendUnavailable,
     OperationLeaseLost,
     OperationLeaseUnavailable,
     operation_leases,
@@ -297,7 +298,7 @@ async def _retry_or_fail(
     job: IngestionJob,
     exc: Exception,
 ) -> None:
-    if is_retryable_catalogue_unavailability(exc):
+    if isinstance(exc, OperationLeaseBackendUnavailable) or is_retryable_catalogue_unavailability(exc):
         await message.nak(delay=1)
         return
     count = await record_ingestion_processing_failure(

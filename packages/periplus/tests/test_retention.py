@@ -56,6 +56,78 @@ class RetentionTests(unittest.TestCase):
     def candidates(self):
         return self.retention.plan(now=self.now).candidates
 
+    def test_commit_conflict_retries_retirement_after_rollback(self):
+        import duckdb
+        from unittest.mock import patch
+        visit = self.document_visit()
+        candidate = self.candidates()[0]
+        execute = self.catalogue.trusted_remote_execute
+        commits = 0
+        def conflicting_commit(sql, *args, **kwargs):
+            nonlocal commits
+            if sql == 'COMMIT':
+                commits += 1
+                if commits == 1:
+                    execute('ROLLBACK')
+                    raise duckdb.TransactionException('concurrent compaction')
+            return execute(sql, *args, **kwargs)
+        with patch.object(self.catalogue, 'trusted_remote_execute', side_effect=conflicting_commit):
+            self.assertTrue(self.retention.purge_observation(candidate, now=self.now))
+        self.assertEqual(commits, 2)
+        self.assertTrue(retired('observation', str(visit.visit.visit_id)))
+        self.assertEqual(self.object_count(), 1)
+        self.assertEqual(self.candidates(), [])
+
+    def test_request_conflict_rechecks_protection_and_retry_bound(self):
+        import duckdb
+        from unittest.mock import patch
+        visit = self.visit()
+        identity = self.request(visit, 1)
+        original = self.retention._purge_request
+        calls = 0
+        def conflict_once(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise duckdb.TransactionException('concurrent writer')
+            return original(*args, **kwargs)
+        with patch.object(self.retention, '_purge_request', side_effect=conflict_once):
+            self.assertTrue(self.retention.purge_request(identity, now=self.now))
+        self.assertEqual(calls, 2)
+        with patch.object(self.retention, '_purge_request', side_effect=duckdb.TransactionException('conflict')) as purge, patch(
+                'periplus.platform.catalogue.operations.time.sleep'):
+            with self.assertRaises(duckdb.TransactionException):
+                self.retention.purge_request(identity, now=self.now)
+            self.assertEqual(purge.call_count, 5)
+
+    def test_observation_protection_is_rechecked_after_conflict(self):
+        import duckdb
+        from unittest.mock import patch
+        visit = self.visit()
+        candidate = self.candidates()[0]
+        original = self.retention._purge_observation
+        calls = 0
+        def conflict_then_protected(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                self.request(visit)  # A concurrent indefinite request wins before retirement.
+                raise duckdb.TransactionException('concurrent fulfillment')
+            return original(*args, **kwargs)
+        with patch.object(self.retention, '_purge_observation', side_effect=conflict_then_protected):
+            self.assertFalse(self.retention.purge_observation(candidate, now=self.now))
+        self.assertEqual(calls, 2)
+        self.assertFalse(retired('observation', str(visit.visit.visit_id)))
+        self.assertIn(visit.visit.visit_id, self.service.get_visit_evidence([visit.visit.visit_id]))
+
+    def test_ambiguous_storage_failure_is_not_retried(self):
+        import duckdb
+        from unittest.mock import patch
+        with patch.object(self.retention, '_purge_request', side_effect=duckdb.IOException('unknown commit')) as purge:
+            with self.assertRaises(duckdb.IOException):
+                self.retention.purge_request(uuid4(), now=self.now)
+            self.assertEqual(purge.call_count, 1)
+
     def test_shared_forever_private_request_protects_expired_public_result(self):
         visit = self.visit()
         expired_request = self.request(visit, 86400)
