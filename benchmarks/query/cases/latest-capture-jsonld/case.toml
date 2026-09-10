@@ -1,0 +1,8 @@
+id = "latest-capture-jsonld"
+title = "Latest capture JSON-LD extraction"
+use_case = "Window selected captures then retain their JSON-LD declarations."
+classification = "schema"
+ordered = false
+memory_limit = "512MB"
+max_warm_ms = 60000
+seconds = 120
