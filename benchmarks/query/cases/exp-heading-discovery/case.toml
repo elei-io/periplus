@@ -1,0 +1,7 @@
+id = "exp-heading-discovery"
+title = "Exact heading substring discovery before sections"
+use_case = "Select matching content before reconstructing HTML, preserving full section partitions."
+classification = "optimizer"
+ordered = true
+memory_limit = "512MB"
+max_warm_ms = 60000

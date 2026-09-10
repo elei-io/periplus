@@ -1,0 +1,1 @@
+SELECT c.capture_id, h.text AS heading, s.* FROM public_v1.capture c JOIN public_v1.html_heading h USING(content_id) JOIN public_v1.html_section s ON s.content_id=h.content_id AND s.heading_node_index=h.node_index WHERE c.effective_url = 'https://www.gov.br/clientes/portalgovbr/portalgovbr/pt-br/servicos/servicos-por-publico-alvo' ORDER BY c.capture_id, h.node_index;

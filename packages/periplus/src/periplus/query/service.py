@@ -81,7 +81,7 @@ class QueryService:
 
     def __init__(self, config: CatalogueConfig, *, deadline: float | None = None, mode: QueryMode = QueryMode.STABLE):
         self.mode = QueryMode(mode)
-        self.compiler_version = f"{COMPILER_VERSION}:{self.mode.value}"
+        self.compiler_version = f"{COMPILER_VERSION}:{self.mode.value}" if self.mode == QueryMode.STABLE else "public-query-v5:experimental"
         self.alias = config.alias
         self.deadline = deadline
         self._lock = threading.Lock()
@@ -178,6 +178,19 @@ class QueryService:
             else:
                 plan_sql = "EXPLAIN " + payload.sql
             plan = "\n".join(str(row[-1]) for row in d.execute(plan_sql, payload.parameters).fetchall())
+            optimizations = []
+            if self.mode == QueryMode.EXPERIMENTAL:
+                from periplus.query.content_scope import experimental_scope
+                scope = experimental_scope(payload.sql, payload.parameters)
+                if scope is not None:
+                    installed = dict(d.execute(
+                        "SELECT view_name, sql FROM duckdb_views() WHERE database_name=? AND schema_name='public_v1'",
+                        [self.alias],
+                    ).fetchall())
+                    if scope.matches(d, installed):
+                        executable = _bounded_query(scope.sql, max_rows=limits.max_rows)
+                        plan = "\n".join(str(row[-1]) for row in d.execute("EXPLAIN " + scope.sql, payload.parameters).fetchall())
+                        optimizations = ["capture_heading_content_scope_v1"]
             if len(plan.encode()) > 64_000:
                 plan = plan.encode()[:64_000].decode(errors="ignore")
                 diagnostics.append(Diagnostic(severity="warning", code="plan_truncated", message="The execution plan preview was truncated."))
@@ -188,7 +201,7 @@ class QueryService:
                 evidence.plan_fingerprint = None if evidence.plan_truncated else hashlib.sha256(
                     (self.compiler_version + "\n" + duckdb.__version__ + "\n" + plan).encode()).hexdigest()
                 evidence.diagnostics = [item.model_dump() for item in diagnostics]
-            prepared = PreparedQuery(query_mode=self.mode, compiler_version=self.compiler_version, query_id=query_id, sql=payload.sql, parameters=payload.parameters, diagnostics=diagnostics, plan=plan)
+            prepared = PreparedQuery(optimizations=optimizations, query_mode=self.mode, compiler_version=self.compiler_version, query_id=query_id, sql=payload.sql, parameters=payload.parameters, diagnostics=diagnostics, plan=plan)
             if expired.is_set():
                 raise TimeoutError("Query time limit exceeded.")
             if not execute:

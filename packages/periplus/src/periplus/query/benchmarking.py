@@ -68,7 +68,7 @@ class Measurement:
     ducklake_snapshot: int
     normal_ms: float
     warm_ms: tuple[float, ...]
-    median_warm_ms: float
+    median_warm_ms: float | None
     result_rows: int
     result_digest: str
     columns: tuple[str, ...]
@@ -247,7 +247,7 @@ class MeasurementProgress(BaseModel):
     model_config = ConfigDict(extra="forbid")
     case: str
     scale: int | None
-    phase: Literal["snapshot", "normal_execution", "result_collection", "warm_profile", "metadata"] = "snapshot"
+    phase: Literal["snapshot", "normal_execution", "result_collection", "warm_profile", "warm_execution", "metadata"] = "snapshot"
     snapshot: int | None = None
     normal_ms: float | None = None
     result_rows: int | None = None
@@ -295,7 +295,7 @@ def bounded_rows(cursor, *, max_rows: int = 100_000, max_bytes: int = 32 * 1024 
     return rows
 
 
-def _measure(connection, case: QueryCase, scale: int | None, warm_runs: int) -> Measurement:
+def _measure(connection, case: QueryCase, scale: int | None, warm_runs: int, *, profile_warm_runs: bool = True) -> Measurement:
     parameters = _parameters(scale)
     config = catalogue_config_from_env()
     # One total deadline covers the normal run and all warm profiles.
@@ -323,7 +323,15 @@ def _measure(connection, case: QueryCase, scale: int | None, warm_runs: int) -> 
         blocking: tuple[dict[str, Any], ...] = ()
         scans: tuple[dict[str, Any], ...] = ()
         for _ in range(warm_runs):
-            progress.phase = "warm_profile"
+            progress.phase = "warm_profile" if profile_warm_runs else "warm_execution"
+            if not profile_warm_runs:
+                started = perf_counter()
+                repeated = bounded_rows(_execute(connection, case.sql, parameters))
+                warm_ms.append((perf_counter() - started) * 1000)
+                if result_digest(repeated, ordered=case.ordered) != result_digest(rows, ordered=case.ordered):
+                    raise ValueError("repeated execution changed results")
+                progress.warm_runs_completed += 1
+                continue
             cursor = _execute(
                 connection,
                 "EXPLAIN (ANALYZE, FORMAT JSON) " + case.sql,
@@ -338,7 +346,7 @@ def _measure(connection, case: QueryCase, scale: int | None, warm_runs: int) -> 
             blocking, scans = inspect_profile(profile)
             progress.warm_runs_completed += 1
         progress.phase = "metadata"
-        warm_median = median(warm_ms)
+        warm_median = median(warm_ms) if warm_ms else None
         return Measurement(
             case=case.identifier,
             scale=scale,
@@ -356,7 +364,7 @@ def _measure(connection, case: QueryCase, scale: int | None, warm_runs: int) -> 
             peak_temp_bytes=tuple(peak_temp),
             blocking_operators=blocking,
             scans=scans,
-            within_time_budget=warm_median <= case.max_warm_ms,
+            within_time_budget=(warm_median if warm_median is not None else normal_ms) <= case.max_warm_ms,
             settings=dict(connection.execute("SELECT name, value FROM duckdb_settings() WHERE name IN ('threads','memory_limit','max_temp_directory_size','disabled_optimizers')").fetchall()),
             catalogue_digest=hashlib.sha256(repr(connection.execute("SELECT view_name, sql FROM duckdb_views() WHERE database_name=? AND schema_name='public_v1' ORDER BY view_name", [config.alias]).fetchall()).encode()).hexdigest(),
             duckdb_version=duckdb.__version__,
@@ -375,7 +383,7 @@ def measure_case(case: QueryCase, scale: int | None, *, warm_runs: int) -> Measu
         connection.close()
 
 
-def measure_pair(case: QueryCase, candidate: QueryCase, scale: int | None, *, warm_runs: int, candidate_first: bool = False, verify_scope=None):
+def measure_pair(case: QueryCase, candidate: QueryCase, scale: int | None, *, warm_runs: int, candidate_first: bool = False, verify_scope=None, profile_warm_runs: bool = True):
     """Compare complete results inside one read transaction; never compare partial runs."""
     connection = _connection(case)
     try:
@@ -395,7 +403,7 @@ def measure_pair(case: QueryCase, candidate: QueryCase, scale: int | None, *, wa
         completed = {}
         for label, item in order:
             try:
-                completed[label] = asdict(_measure(connection, item, scale, warm_runs))
+                completed[label] = asdict(_measure(connection, item, scale, warm_runs, profile_warm_runs=profile_warm_runs))
             except BenchmarkFailure as exc:
                 exc.variant = label
                 exc.completed_variants = completed
@@ -463,14 +471,17 @@ def compare_reports(
         for field in ("settings", "catalogue_digest", "duckdb_version", "extensions"):
             if item.get(field) != reference.get(field):
                 failures.append(f"{field} mismatch for {key[0]}; timing comparison is uncontrolled")
-        baseline_ms = float(reference["median_warm_ms"])
-        candidate_ms = float(item["median_warm_ms"])
+        baseline_ms = reference["median_warm_ms"]
+        candidate_ms = item["median_warm_ms"]
+        if (baseline_ms is None) != (candidate_ms is None):
+            failures.append(f"warm execution protocol mismatch for {key[0]}")
         comparisons.append(
             {
                 "case": key[0],
                 "scale": key[1],
                 "exact_result": exact,
-                "warm_time_ratio": candidate_ms / baseline_ms if baseline_ms else None,
+                "warm_time_ratio": candidate_ms / baseline_ms if baseline_ms and candidate_ms is not None else None,
+                "normal_time_ratio": item["normal_ms"] / reference["normal_ms"] if reference["normal_ms"] else None,
                 "peak_buffer_ratio": _ratio_of_max(
                     item["peak_buffer_bytes"], reference["peak_buffer_bytes"]
                 ),

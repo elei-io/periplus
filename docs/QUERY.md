@@ -111,10 +111,11 @@ SQL preparation and execution remain in the separate Python
 
 Both operations accept SQL and positional parameters and use the same public SQL validation.
 Preparation binds and explains without executing the analytical query, returning SQL, parameters,
-a query ID, diagnostics, and a plan. Compiler `public-query-v4` preserves submitted SQL
-and parameters; the API applies no custom optimization rewrites or optimizer settings.
+a query ID, diagnostics, and a plan. Stable compiler `public-query-v4:stable` preserves submitted SQL
+and parameters and applies no custom optimization rewrites or optimizer settings. Experimental
+activation is documented below; responses preserve the submitted SQL and identify applied rewrites.
 The execution-only row-limit wrapper remains a resource control. DuckDB performs native
-optimization. The returned plan explains the submitted statement.
+optimization. The returned plan explains the selected statement; experimental responses identify any applied rewrite.
 Execution always prepares independently, then runs the query. It does not trust a prior prep call.
 Execution returns `source_snapshot`, obtained from `ducklake_current_snapshot` inside the same
 read transaction before binding or executing the query. The result and snapshot therefore describe
@@ -748,8 +749,8 @@ implementation below follows the subsequent scope decision; materializations rem
 The following records the former implementation, not current API behavior.
 Compiler `public-query-v4` removes this rewrite, installed-definition checks and the
 additional JSON-plan inspection from prep and execution. The content-scoping code
-and plan detector remain research-only benchmark candidates, with differential
-tests; no public request path imports or invokes them. Validation, Cartesian-product
+and plan detector were retained as research-only benchmark candidates, with differential
+tests. The later narrowly scoped experimental activation is documented below. Validation, Cartesian-product
 warnings, plan preview truncation, resource limits, history and native DuckDB
 optimization remain. Future activation requires the optimization playbook's evidence.
 
@@ -871,14 +872,23 @@ console links preserve the selected mode with `mode=experimental`. Stable uses
 `/api/query/experimental/exec`, `/api/query/experimental/prep` and
 `/api/query/experimental/helpers`. The SQL assistant validates against the selected mode.
 
-Both initially use the clean compiler baseline: normal DuckDB optimization is
-enabled and no Periplus SQL rewrites run. They share public catalogue semantics
+Stable retains the clean compiler baseline. Experimental `public-query-v5:experimental`
+activates `capture_heading_content_scope_v1` only for a conservative inner join of
+`capture` and `html_heading` with a single exact `capture.effective_url` equality,
+a plain content-ID join and string parameter bindings.
+The original SQL binds first, and installed view definitions must match the reviewed
+versions inside the pinned read transaction. Unsupported forms retain ordinary execution.
+Native DuckDB optimizers remain enabled in both modes. They share public catalogue semantics
 and lake layout. This split does not undo catalogue improvements or isolate
 physical storage changes. QueryService owns the execution mode; future candidate
 rewrites must be explicitly restricted to experimental until promoted.
 
 Prepared and executed responses identify `query_mode`, `compiler_version` and
-`optimizations` (initially empty). History records the mode in the compiler version,
+`optimizations` (empty when no rewrite applies). History records the mode in the compiler version,
 including failed admission. Separate processes provide independent connection,
 admission, memory and spill limits; they still share storage and cluster capacity.
 Experimental unavailability is an error, never a retry through stable.
+
+See [the first-three investigation](query-investigations/experimental-first-three/README.md)
+for paired production evidence and rejected candidates. No shared physical layout
+or catalogue relation changes are part of this activation.
