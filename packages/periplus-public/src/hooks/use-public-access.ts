@@ -25,23 +25,26 @@ export function usePublicAccess(feature: Capability) {
     initialData: 0,
   });
   const waiting = cooldown.data > query.dataUpdatedAt;
-  const enabled = !!query.data?.[feature].enabled && !query.isError && !waiting;
+  const queueFull = feature === "crawl" && query.data?.crawl.enabled && !query.data.crawl_admission.accepting;
+  const enabled = !!query.data?.[feature].enabled && !query.isError && !waiting && !queueFull;
   const message = query.isPending
     ? "Checking availability…"
     : query.isError
       ? extractApiError(query.error)
       : !query.data?.[feature].enabled
         ? `Public ${feature === "crawl" ? "crawl submissions" : feature === "sql" ? "SQL execution" : "dataset assistant"} is currently disabled.`
+        : queueFull
+          ? "New coverage requests are temporarily paused while the crawler catches up. Accepted requests continue; submissions reopen automatically."
         : waiting
           ? `Rate limit reached. Retry after ${new Date(cooldown.data).toLocaleTimeString()}.`
           : null;
   const onDenied = useCallback((error: unknown) => {
-    if (error instanceof ApiError && error.status === 429)
+    if (error instanceof ApiError && error.status === 429 && error.code !== "crawl_queue_full")
       cache.setQueryData(
         ["access-cooldown", feature],
         Date.now() + Math.max(1, error.retryAfterSeconds ?? 5) * 1000,
       );
     void cache.invalidateQueries({ queryKey: ["public-access"] });
   }, [cache, feature]);
-  return { data: query.isError ? undefined : query.data, enabled, message, onDenied };
+  return { data: query.isError ? undefined : query.data, enabled, retryEnabled: !!query.data && !query.isError && !waiting, message, onDenied };
 }

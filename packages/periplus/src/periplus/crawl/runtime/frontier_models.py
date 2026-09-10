@@ -20,8 +20,7 @@ class FrontierControlRecord(Base):
         CheckConstraint("capture_timeout_ms BETWEEN 1000 AND 3600000",
                         name="ck_frontier_capture_timeout"),
         CheckConstraint("pending_count >= 0 AND active_count >= 0 AND interest_count >= 0", name="ck_frontier_counts"),
-        CheckConstraint("acquisition_limit > 0 AND admission_limit > 0 AND dispatch_limit > 0 AND collection_limit > 0 AND interest_limit > 0", name="ck_frontier_limits"),
-        CheckConstraint("captures_per_minute >= 0", name="ck_frontier_rates"),
+        CheckConstraint("dispatch_limit > 0", name="ck_frontier_limits"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, default=1)
@@ -30,20 +29,13 @@ class FrontierControlRecord(Base):
     exclusion_cursor: Mapped[UUID | None] = mapped_column()
     retention_cursor: Mapped[UUID | None] = mapped_column()
     collection_retention_cursor: Mapped[UUID | None] = mapped_column()
-    collection_limit: Mapped[int] = mapped_column(default=1000)
-    interest_limit: Mapped[int] = mapped_column(default=200000)
     interest_count: Mapped[int] = mapped_column(default=0)
-    acquisition_limit: Mapped[int] = mapped_column(default=10000)
-    admission_limit: Mapped[int] = mapped_column(default=10000)
     dispatch_limit: Mapped[int] = mapped_column(default=48)
     pending_count: Mapped[int] = mapped_column(default=0)
     active_count: Mapped[int] = mapped_column(default=0)
-    captures_per_minute: Mapped[int] = mapped_column(default=60)
-    next_dispatch_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     capture_timeout_ms: Mapped[int] = mapped_column(default=120000)
     policy_version: Mapped[int] = mapped_column(default=1)
     scheduling_turn: Mapped[int] = mapped_column(default=0)
-    last_dispatch_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_by: Mapped[str | None] = mapped_column(Text)
 
@@ -100,6 +92,8 @@ class InterestRecord(Base):
     __tablename__ = "frontier_interests"
     __table_args__ = (
         UniqueConstraint("collection_id", "url_key", name="uq_frontier_collection_url_key"),
+        CheckConstraint("acquisition_id IS NOT NULL OR (status IN ('settled', 'cancelled') AND completed_status IS NOT NULL)",
+                        name="ck_frontier_interest_completion"),
         Index("ix_frontier_selection", "collection_id", "status", "created_at"),
         CheckConstraint("budget_state IN ('reserved', 'consumed', 'released')",
                         name="ck_frontier_interest_budget"),
@@ -109,10 +103,12 @@ class InterestRecord(Base):
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     collection_id: Mapped[UUID] = mapped_column(ForeignKey("collections.id"), index=True)
-    acquisition_id: Mapped[UUID] = mapped_column(ForeignKey("frontier_acquisitions.id"), index=True)
+    acquisition_id: Mapped[UUID | None] = mapped_column(ForeignKey("frontier_acquisitions.id"), index=True)
+    completed_status: Mapped[str | None] = mapped_column(Text)
+    completed_evidence: Mapped[bool] = mapped_column(default=False)
     url: Mapped[str] = mapped_column(Text)
     url_key: Mapped[str] = mapped_column(Text)
-    context: Mapped[dict[str, Any]] = mapped_column(json_type)
+    context: Mapped[dict[str, Any] | None] = mapped_column(json_type)
     mode: Mapped[str] = mapped_column(Text)
     budget_state: Mapped[str] = mapped_column(Text, default="reserved")
     status: Mapped[str] = mapped_column(Text, default="queued")

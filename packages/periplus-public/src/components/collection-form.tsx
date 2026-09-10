@@ -113,7 +113,7 @@ export function CollectionForm({ onCreated }: { onCreated: (id: string) => void 
         </fieldset>
         {submit.error && <Alert variant="destructive"><AlertDescription>{extractApiError(submit.error)}</AlertDescription></Alert>}
         {!frozen && <Button className="self-start" type="submit" disabled={!access.enabled || !validOptions}>Submit request<ArrowUpRight /></Button>}
-        {frozen && <div className="flex flex-col gap-3"><a className="underline break-all" href={`/coverage?request=${frozen.id}#request`}>View request {frozen.id}</a>{submit.isPending && <p role="status">Submitting…</p>}{submit.isError && <><p>Submission was not confirmed. Retrying resubmits the same request without creating a duplicate.</p><Button type="button" className="self-start" disabled={!access.enabled || !validOptions} onClick={() => submit.mutate(frozen)}>Retry same request</Button></>}<a className="underline" href="/coverage">Request more coverage</a></div>}
+        {frozen && <div className="flex flex-col gap-3"><a className="underline break-all" href={`/coverage?request=${frozen.id}#request`}>View request {frozen.id}</a>{submit.isPending && <p role="status">Submitting…</p>}{submit.isError && <><p>Submission was not confirmed. Retrying resubmits the same request without creating a duplicate.</p><Button type="button" className="self-start" disabled={!access.retryEnabled || !validOptions} onClick={() => submit.mutate(frozen)}>Retry same request</Button></>}<a className="underline" href="/coverage">Request more coverage</a></div>}
       </form>
     </CardContent>
   </Card>

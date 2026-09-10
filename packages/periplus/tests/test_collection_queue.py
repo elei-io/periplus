@@ -31,7 +31,6 @@ class CollectionQueueTests(unittest.TestCase):
         self.store.admit(private, 'https://private.example/', self.context, self.policy, now=now)
         with self.sessions.begin() as session:
             control = session.get(FrontierControlRecord, 1)
-            control.captures_per_minute = 60
             acquisition = session.get(AcquisitionRecord, second.acquisition_id)
             acquisition.eligible_at = datetime.now(UTC) + timedelta(minutes=1)
             acquisition.defer_reason = 'retry_backoff'

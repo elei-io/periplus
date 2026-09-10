@@ -38,7 +38,7 @@ class FrontierRuntimeTests(unittest.IsolatedAsyncioTestCase):
             table.create(self.engine)
         self.sessions = sessionmaker(self.engine, expire_on_commit=False)
         with self.sessions.begin() as session:
-            session.add(FrontierControlRecord(id=1, captures_per_minute=0))
+            session.add(FrontierControlRecord(id=1))
             ensure_default_domain_policy(session)
         self.store = FrontierStore(self.sessions)
         self.policy = EffectivePolicySnapshot.model_validate(policy_snapshot())

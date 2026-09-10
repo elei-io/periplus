@@ -146,8 +146,7 @@ unreadable presence leaves availability unknown. Public responses omit worker ID
 ## Current frontier wait explanations
 
 Item reads resolve current domain policy with the same specificity as dispatch, for only the bounded
-visible page. They distinguish domain pause, version-matching domain pacing, domain/global capacity,
-global pacing, and dispatch capacity. A policy edit invalidates an older stored domain
+visible page. They distinguish domain pause, version-matching domain pacing, domain capacity and global dispatch capacity. A policy edit invalidates an older stored domain
 pacing hint. The eligibility floor combines applicable persisted timing constraints; it is not a
 promised dispatch time. Reads return constraint names without exposing unrelated caller details,
 or occupancy counts. Live domain permits and future worker capacity can still prevent a start after
@@ -176,7 +175,7 @@ First-admission estimates measure submission to the first committed interest, in
 selection service wait. They use three to twenty recent public single-URL requests on the same
 hostname, under the same crawler control version, priority and recent-result age setting. Samples
 are drawn from the last ten minutes and must include an admission within two minutes. Predictions
-require recent crawler-process presence, available current admission/retained capacity, and unchanged
+require recent crawler-process presence and unchanged
 request controls. Browser dependency readiness is not an admission requirement. Description/SQL discovery, deadlines and later admission batches are unsupported;
 they retain explicit unavailable reasons. Ranges include calculation time, five-second expiry,
 sample count and uncertainty. Historical contention is not reconstructed; unchanged readiness and
@@ -188,7 +187,7 @@ Current collection responses partition admitted waiting interests into `queue.ru
 `deferred_pages`, and `unknown_pages`; these sum to `queued_pages`. Counts include retry waits,
 exclude captures already dispatched and candidates not yet admitted, and are scoped to the request.
 Runnable means eligible under the observed stored controls and fresh worker readiness. It reserves
-no domain permit or browser slot. Domain/global pacing, capacity, pauses and per-acquisition retry limits
+no domain permit or browser slot. Domain pacing, concurrency, pauses and per-acquisition retry limits
 produce explicit constraints. Missing readiness/policy evidence and exclusions requiring candidate
 inspection produce unknown eligibility rather than an optimistic runnable count.
 

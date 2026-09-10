@@ -2,7 +2,8 @@ export type Capability = "crawl" | "assistant" | "sql"
 export type RatePolicy = { enabled: boolean; requests: number; window_seconds: number }
 export type AccessPolicy = {
   version: number
-  crawl: RatePolicy & { page_budgets: number[]; default_page_budget: number; max_depths: number[]; default_max_depth: number; retention_seconds: (number | null)[]; default_retention_seconds: number | null }
+  crawl_admission: { pending_acquisitions: number; accepting: boolean }
+  crawl: RatePolicy & { queue_limit: number | null; page_budgets: number[]; default_page_budget: number; max_depths: number[]; default_max_depth: number; retention_seconds: (number | null)[]; default_retention_seconds: number | null }
   assistant: RatePolicy
   sql: RatePolicy & { max_rows: number; max_duration_seconds: number; max_result_bytes: number }
 }

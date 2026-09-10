@@ -795,3 +795,9 @@ execution counters and quota windows started fresh. All 18 Compose services pass
 health checks. A depth-zero, one-page request captured and ingested example.com,
 completed materialization, and returned its policy through both direct query-service
 and public-web SQL. Request `ffecb5d8-0b4a-4103-9100-bf9e610bdcb0` is query-ready.
+
+Current `frontier_interests` may outlive their acquisition payload while the parent request
+continues. After dependencies are complete and evidence committed, `acquisition_id` and
+selection context become null. `completed_status` and `completed_evidence` preserve current
+request progress; URL keys still enforce request-local deduplication. These compact rows
+are operational state, not a historical corpus, and retire with the parent request.

@@ -188,13 +188,12 @@ failures, cancellations, and consumed units separately. Cancellation and dispatc
 same request/interest state. Released interests stay deduplicated. Check dependency health before
 dispatch; outages after authorization pause retries rather than creating new page charges.
 
-Hitting the cap stops new admissions. Existing fulfillment and selection work must settle or explicitly
-stop at the cap before request completion. At frontier capacity, retain bounded deterministic selection
-checkpoints and pinned navigation inputs; resume on capacity availability with bounded recovery scans.
-Bound aggregate pending requests and retained inputs too, rather than creating an unlimited second queue.
+Hitting a request page cap stops new URL admission for that request. Other accepted requests
+continue independently. Selection uses bounded checkpointed batches, with no global retained-row
+or pending-queue quota. Public request admission has a separate queue threshold in [ACCESS.md](ACCESS.md).
 
 Each physical attempt freezes a capture timeout once regardless of the number of
-participants. Retries obey per-acquisition attempt limits, global concurrency/rate
+participants. Retries obey per-acquisition attempt limits, global concurrency
 limits and domain pacing. There is no lifetime attempt or elapsed-time allowance.
 Unknown outcomes retain their frozen timeout and null measured time as evidence.
 

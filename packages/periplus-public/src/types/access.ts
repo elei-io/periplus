@@ -5,7 +5,9 @@ const ratePolicySchema = z.object({ enabled: z.boolean(), requests: z.number().i
 export type RatePolicy = z.infer<typeof ratePolicySchema>
 const accessPolicySchema = z.object({
   version: z.number().int(),
+  crawl_admission: z.object({ pending_acquisitions: z.number().int().nonnegative(), accepting: z.boolean() }),
   crawl: ratePolicySchema.extend({
+    queue_limit: z.number().int().positive().nullable(),
     page_budgets: z.array(z.number().int().positive()), default_page_budget: z.number().int().positive(),
     max_depths: z.array(z.number().int().nonnegative()), default_max_depth: z.number().int().nonnegative(),
     retention_seconds: z.array(z.number().int().positive().nullable()), default_retention_seconds: z.number().int().positive().nullable(),

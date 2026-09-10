@@ -62,7 +62,6 @@ def collection_queue(session, record, control, *, workers, now):
             (domain_floor, 'domain_pacing'),
             (active_count >= _current_domain_column(DomainPolicy.maximum_concurrency), 'domain_capacity'),
             (literal(control.active_count >= control.dispatch_limit), 'dispatch_capacity'),
-            (literal(control.next_dispatch_at is not None and _aware(control.next_dispatch_at) > now), 'global_pacing'),
             else_=final,
         )
     # One grouped query, returning a bounded reason vocabulary rather than URLs,

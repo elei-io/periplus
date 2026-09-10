@@ -189,3 +189,9 @@ the implementation ledger; do not start replacement services against an old cont
 table in control Postgres, bounded best-effort recording, janitor cleanup and the
 `observatory/queries` dashboard. This is explicitly approved product analytics;
 no query results or crawl history are added to control Postgres.
+
+Global crawler execution has three controls: pause/resume, concurrent dispatches and
+per-capture timeout. Public submission admission uses the separate queue threshold in
+[ACCESS.md](ACCESS.md). There is no global dispatch-rate or retained-state quota.
+Completed acquisition payloads retire independently of long-running parent requests;
+compact interests preserve deduplication and progress until those requests finish.

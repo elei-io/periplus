@@ -6,7 +6,7 @@ import type {
 
 type NumericKey = Exclude<
   keyof FrontierSettings,
-  "paused" | "exclusions" | "captures_per_minute"
+  "paused" | "exclusions"
 >
 export const settingFields: {
   key: NumericKey
@@ -14,7 +14,6 @@ export const settingFields: {
   unit: number
   min: number
   max: number
-  group: "pace" | "capacity"
 }[] = [
   {
     key: "dispatch_limit",
@@ -22,7 +21,6 @@ export const settingFields: {
     unit: 1,
     min: 1,
     max: 10000,
-    group: "pace",
   },
   {
     key: "capture_timeout_ms",
@@ -30,39 +28,6 @@ export const settingFields: {
     unit: 1000,
     min: 1000,
     max: 3600000,
-    group: "pace",
-  },
-  {
-    key: "admission_limit",
-    label: "Pending acquisitions",
-    unit: 1,
-    min: 1,
-    max: 1000000,
-    group: "capacity",
-  },
-  {
-    key: "acquisition_limit",
-    label: "Retained acquisitions",
-    unit: 1,
-    min: 1,
-    max: 1000000,
-    group: "capacity",
-  },
-  {
-    key: "collection_limit",
-    label: "Retained collections",
-    unit: 1,
-    min: 1,
-    max: 100000,
-    group: "capacity",
-  },
-  {
-    key: "interest_limit",
-    label: "Retained collection URLs",
-    unit: 1,
-    min: 1,
-    max: 10000000,
-    group: "capacity",
   },
 ]
 
@@ -70,8 +35,6 @@ export type FrontierDraft = {
   version: number
   settings: FrontierSettings
   numbers: Record<NumericKey, string>
-  rate: string
-  unlimitedRate: boolean
 }
 
 export function settingsDraft(
@@ -86,11 +49,6 @@ export function settingsDraft(
         String(state.settings[field.key] / field.unit),
       ])
     ) as Record<NumericKey, string>,
-    rate:
-      state.settings.captures_per_minute === null
-        ? ""
-        : String(state.settings.captures_per_minute),
-    unlimitedRate: state.settings.captures_per_minute === null,
   }
 }
 
@@ -112,16 +70,6 @@ export function settingsPayload(draft: FrontierDraft): ReplaceFrontierSettings {
     }
     settings[field.key] = Math.round(value)
   }
-  const rate = Number(draft.rate)
-  if (
-    !draft.unlimitedRate &&
-    (!draft.rate.trim() || !Number.isInteger(rate) || rate < 1 || rate > 60000)
-  ) {
-    throw new Error(
-      "Dispatches per minute must be a whole number between 1 and 60000."
-    )
-  }
-  settings.captures_per_minute = draft.unlimitedRate ? null : rate
   if (
     settings.exclusions.length > 100 ||
     settings.exclusions.some(

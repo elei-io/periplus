@@ -139,12 +139,17 @@ class CollectionApiTests(unittest.TestCase):
         self.assertEqual(self.client.post(path, json={"action": "cancel"}, headers=self.admin).json()["outcome"], "cancelled")
 
     def test_capacity_rejects_new_intent_but_allows_identical_retry(self):
-        with self.sessions.begin() as session:
-            session.get(FrontierControlRecord, 1).collection_limit = 1
         self.assertEqual(self.client.post("/collections", json=self.payload).status_code, 201)
+        with self.sessions.begin() as session:
+            session.get(FrontierControlRecord, 1).pending_count = 10000
         rejected = self.client.post("/collections", json=self.payload | {"id": str(uuid4())})
         self.assertEqual(rejected.status_code, 429)
-        self.assertEqual(rejected.headers["retry-after"], "15")
+        self.assertEqual(rejected.json()["detail"]["code"], "crawl_queue_full")
+        self.assertEqual(rejected.headers["retry-after"], "5")
+        self.assertEqual(self.client.post("/collections", json=self.payload | {"id": str(uuid4())}, headers=self.admin).status_code, 201)
+        with self.sessions.begin() as session:
+            session.get(FrontierControlRecord, 1).pending_count = 9999
+        self.assertEqual(self.client.post("/collections", json=self.payload | {"id": str(uuid4())}).status_code, 201)
         self.assertEqual(self.client.post("/collections", json=self.payload).status_code, 201)
 
     def test_invalid_rules_limits_and_oversized_transport_are_rejected(self):
@@ -174,16 +179,15 @@ class CollectionApiTests(unittest.TestCase):
         self.assertEqual(initial.status_code, 200, initial.text)
         value = initial.json()
         change = {"expected_version": value["policy_version"],
-                  "settings": value["settings"] | {"paused": True, "captures_per_minute": None}}
+                  "settings": value["settings"] | {"paused": True}}
         self.assertEqual(self.client.put(path, json=change).status_code, 403)
         updated = self.client.put(path, json=change, headers=self.admin)
         self.assertEqual(updated.status_code, 200, updated.text)
         self.assertTrue(updated.json()["settings"]["paused"])
-        self.assertIsNone(updated.json()["settings"]["captures_per_minute"])
         self.assertEqual(updated.json()["updated_by"], "admin_service")
         self.assertEqual(updated.json()["dispatched_acquisitions"], 0)
         self.assertEqual(self.client.put(path, json=change, headers=self.admin).status_code, 409)
-        bad = change | {"settings": value["settings"] | {"captures_per_minute": 0}}
+        bad = change | {"settings": value["settings"] | {"dispatch_limit": 0}}
         self.assertEqual(self.client.put(path, json=bad, headers=self.admin).status_code, 422)
 
     def test_priority_changes_require_admin_and_preserve_frozen_intent(self):

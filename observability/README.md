@@ -77,3 +77,12 @@ Private SQL history is separate from operational logging. The explicitly authori
 `periplus_query_history_delivery_total` reports stored, failed and dropped remote
 records; failures/drops can mean incomplete analytics and have an initial alert.
 The existing janitor failure rule also covers the `query_history` cleanup phase.
+
+### Crawl backlog
+
+The control API exports `periplus_frontier_pending_acquisitions` (queued plus retrying)
+and `periplus_frontier_oldest_pending_seconds` (zero when empty). Use `max`, not `sum`,
+across API replicas because they observe the same frontier. The dashboard includes both.
+Compare queue trends with `rate(periplus_capture_attempts_total[5m])` and PostgreSQL
+storage/latency metrics from the platform. Growth is an operational capacity signal;
+only new public submissions are gated by the configured public queue threshold.

@@ -383,7 +383,7 @@ no query results or crawl history are added to control Postgres.
 ### Removing lifetime crawl allowances
 
 Revision `20260910_0013` removes the cumulative attempt/time limits and counters from
-`frontier_control`. Crawling has no lifetime usage stop. Concurrency, rate, pause,
+`frontier_control`. Crawling has no lifetime usage stop. Concurrency, pause,
 per-capture timeout, per-acquisition retry bounds, and collection budgets remain.
 Per-attempt `resource_usage` retains the frozen timeout (`reserved_ms`) and measured
 elapsed time as immutable evidence; it does not debit an allowance.
@@ -395,3 +395,19 @@ collections, acquisitions, outbox messages, policies and evidence. No lake schem
 change or data reset is required. Back up control Postgres before applying it.
 The migration deliberately refuses downgrade because deleted lifetime counters
 cannot be reconstructed; use a pre-upgrade control backup for an old-code rollback.
+
+### Continuous crawler controls and public queue admission
+
+Revision `20260910_0014` removes global dispatch pacing and retained-state/admission
+quotas. Global execution controls are pause, concurrent dispatches and capture timeout.
+Domain/content policies, global exclusions and per-request budgets remain unchanged.
+`public_access.configuration.crawl.queue_limit` gates only new public requests, initially
+at 10,000 queued/retrying acquisitions; null disables this threshold. Admin requests,
+schedules and accepted public requests are not subject to it.
+
+Stop old API/control workers before setup, then restart the new release. The migration
+preserves the current pause, concurrency, timeout, queue and requests. Janitor can now
+release acquisitions referenced solely by completed interests after evidence and
+navigation gates pass. It leaves compact deduplication/progress records until request
+retirement. Old code cannot read those reclaimed references, so rollback requires a
+coordinated pre-upgrade recovery set. No lake schema change is required.

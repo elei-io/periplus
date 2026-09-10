@@ -10,6 +10,7 @@ class RatePolicy(BaseModel):
     window_seconds: int = Field(default=60, ge=1, le=86400)
 
 class CrawlPolicy(RatePolicy):
+    queue_limit: int | None = Field(default=10000, ge=1, le=1000000000)
     requests: int = Field(default=6, ge=1, le=1000000)
     page_budgets: list[int] = Field(default_factory=lambda: [5, 25, 100, 500, 1000], min_length=1, max_length=20)
     default_page_budget: int = 25
@@ -44,8 +45,13 @@ class AccessPolicy(BaseModel):
     assistant: RatePolicy = Field(default_factory=lambda: RatePolicy(requests=10))
     sql: SqlPolicy = Field(default_factory=SqlPolicy)
 
+class CrawlAdmission(BaseModel):
+    pending_acquisitions: int
+    accepting: bool
+
 class AccessView(AccessPolicy):
     version: int
+    crawl_admission: CrawlAdmission
 
 class AccessEdit(AccessPolicy):
     expected_version: int = Field(ge=1)

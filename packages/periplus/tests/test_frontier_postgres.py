@@ -34,7 +34,7 @@ class FrontierPostgresTests(unittest.TestCase):
             table.create(self.engine)
         self.sessions = sessionmaker(self.engine, expire_on_commit=False)
         with self.sessions.begin() as session:
-            session.add(FrontierControlRecord(id=1, captures_per_minute=0))
+            session.add(FrontierControlRecord(id=1))
             ensure_default_domain_policy(session)
         self.store = FrontierStore(self.sessions)
         self.policy = EffectivePolicySnapshot.model_validate(policy_snapshot())
@@ -420,20 +420,14 @@ class FrontierPostgresTests(unittest.TestCase):
         third = self.store.claim_collection(now=self.now + timedelta(seconds=21))
         self.assertEqual(third.collection_id, low)
 
-    def test_concurrent_collection_admission_obeys_retained_capacity(self):
-        from periplus.crawl.runtime.frontier_store import AdmissionDeferred
-        with self.sessions.begin() as session:
-            session.get(FrontierControlRecord, 1).collection_limit = 1
+    def test_concurrent_admin_collection_admission_remains_open(self):
         gate = Barrier(4)
         def create(_):
             gate.wait(timeout=10)
-            try:
-                return self.collection()
-            except AdmissionDeferred:
-                return None
+            return self.collection()
         with ThreadPoolExecutor(max_workers=4) as pool:
             outcomes = list(pool.map(create, range(4)))
-        self.assertEqual(sum(identity is not None for identity in outcomes), 1)
+        self.assertEqual(sum(identity is not None for identity in outcomes), 4)
 
     def test_concurrent_control_updates_accept_only_one_policy_version(self):
         from periplus.crawl.control.collections.frontier_controls import (
@@ -579,22 +573,16 @@ class FrontierPostgresTests(unittest.TestCase):
             self.assertEqual(admission.acquisition_id, parent.acquisition_id)
             self.assertIsNotNone(self.store.get_acquisition(parent.acquisition_id).navigation)
 
-    def test_concurrent_admission_cannot_exceed_retained_acquisition_limit(self):
-        from periplus.crawl.runtime.frontier_store import AdmissionDeferred
+    def test_concurrent_acquisition_admission_remains_open(self):
         identities = [self.collection(), self.collection()]
-        with self.sessions.begin() as session:
-            session.get(FrontierControlRecord, 1).acquisition_limit = 1
         gate = Barrier(2)
         def admit(index):
             gate.wait(timeout=10)
-            try:
-                return self.store.admit(identities[index], f"https://host-{index}.example/", self.context, self.policy)
-            except AdmissionDeferred:
-                return None
+            return self.store.admit(identities[index], f"https://host-{index}.example/", self.context, self.policy)
         with ThreadPoolExecutor(max_workers=2) as pool:
             results = list(pool.map(admit, range(2)))
-        self.assertEqual(sum(result is not None for result in results), 1)
-        self.assertEqual(self.store.control_view().retained_acquisitions, 1)
+        self.assertEqual(sum(result is not None for result in results), 2)
+        self.assertEqual(self.store.control_view().retained_acquisitions, 2)
 
     def test_concurrent_cleanup_deletes_one_unreferenced_acquisition_once(self):
         from datetime import timedelta
