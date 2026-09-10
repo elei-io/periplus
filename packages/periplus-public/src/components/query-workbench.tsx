@@ -1,7 +1,7 @@
 "use client"
 
 import { memo, useCallback, useEffect, useRef, useState } from "react"
-import { Database, ListTree, MessageSquare, Play, Share2, Table2 } from "lucide-react"
+import { ChevronDown, Database, ListTree, MessageSquare, Play, Share2, Table2 } from "lucide-react"
 import { toast } from "sonner"
 import dynamic from "next/dynamic"
 
@@ -15,6 +15,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
+import { DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { schemaReference } from "@/lib/schema-reference"
 import { Separator } from "@/components/ui/separator"
@@ -87,10 +88,18 @@ export function QueryWorkbench({ initialSql, initialParameters, autoRun = false,
       <SchemaExplorer onLoadSql={loadSql} />
       <div id="explore" className="flex min-w-0 scroll-mt-6 flex-col gap-4">
         <Card size="sm" className="sql-input-surface gap-0 py-0">
-          <div className="flex flex-wrap items-center gap-2 p-3"><Tabs value={mode} onValueChange={value => setMode(value as QueryMode)}><TabsList aria-label="Query execution mode"><TabsTrigger value="stable" disabled={query.isPending}>Stable</TabsTrigger><TabsTrigger value="experimental" disabled={query.isPending}>Experimental</TabsTrigger></TabsList></Tabs><Button className="min-w-28" disabled={!query.access.enabled || query.isPending || !sql.trim()} onClick={run}>{query.isPending ? <Spinner aria-hidden="true" /> : <Play />}{query.isPending ? "Running…" : "Run query"}</Button><Button variant="outline" onClick={share}><Share2 />Share</Button><QuerySettings value={parameters} onChange={setParameters} /><Button variant="ghost" aria-expanded={assistant.open} aria-controls="sql-assistant" onClick={() => { if (assistant.open) { assistant.setOpen(false) } else { assistant.show(); captureAnalytics("sql_assistant_opened") } }}>{assistant.isPending ? <Spinner aria-hidden="true" /> : <MessageSquare />}Ask SQL</Button><CardDescription id="editor-help" className="ml-auto">⌘ / Ctrl + Enter to run · Tab to leave editor</CardDescription></div>
+          <div className="flex flex-wrap items-center gap-2 p-3"><Button className="min-w-28" disabled={!query.access.enabled || query.isPending || !sql.trim()} onClick={run}>{query.isPending ? <Spinner aria-hidden="true" /> : <Play />}{query.isPending ? "Running…" : "Run query"}</Button><Button variant="outline" onClick={share}><Share2 />Share</Button><QuerySettings value={parameters} onChange={setParameters} /><Button variant="ghost" aria-expanded={assistant.open} aria-controls="sql-assistant" onClick={() => { if (assistant.open) { assistant.setOpen(false) } else { assistant.show(); captureAnalytics("sql_assistant_opened") } }}>{assistant.isPending ? <Spinner aria-hidden="true" /> : <MessageSquare />}Ask SQL</Button><CardDescription id="editor-help" className="ml-auto">⌘ / Ctrl + Enter to run · Tab to leave editor</CardDescription></div>
           <div ref={editor} onKeyDownCapture={event => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); event.stopPropagation(); if (!query.isPending && sql.trim()) run() } }}><SqlEditor value={sql} onChange={setSql} onSelectionChange={setSelection} /></div>
           {!sql.trim() && !assistant.open && <div className="px-3"><Button variant="ghost" size="sm" onClick={() => assistant.show()}>Describe what you want to query…</Button></div>}
-          <div className="flex flex-wrap items-center justify-between gap-2 p-3"><div className="flex flex-wrap items-center gap-3"><CardDescription role="status">{query.access.message ?? query.phase}</CardDescription><Badge variant="secondary">DuckDB SQL · Read-only</Badge></div><CardDescription>{query.access.data ? `${query.access.data.sql.max_rows.toLocaleString()} rows / ${query.access.data.sql.max_result_bytes / (1024 * 1024)} MiB · ${query.access.data.sql.max_duration_seconds}s limit` : query.access.message === "Checking availability…" ? "Loading query limits…" : "Query limits unavailable"}</CardDescription></div>
+          <div className="flex flex-wrap items-center justify-between gap-2 p-3"><div className="flex flex-wrap items-center gap-3"><CardDescription role="status">{query.access.message ?? query.phase}</CardDescription><DropdownMenu>
+            <DropdownMenuTrigger disabled={query.isPending} aria-label={`Query execution mode: public_v1 - ${mode}`} render={<Badge variant="secondary" render={<button type="button" />} />}>public_v1 - {mode}<ChevronDown data-icon="inline-end" /></DropdownMenuTrigger>
+            <DropdownMenuContent side="top" align="start" className="w-max">
+              <DropdownMenuRadioGroup value={mode} onValueChange={value => { if (value === "stable" || value === "experimental") setMode(value) }} aria-label="Query execution mode">
+                <DropdownMenuRadioItem value="stable" disabled={query.isPending}>public_v1 - stable</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="experimental" disabled={query.isPending}>public_v1 - experimental</DropdownMenuRadioItem>
+              </DropdownMenuRadioGroup>
+            </DropdownMenuContent>
+          </DropdownMenu></div><CardDescription>{query.access.data ? `${query.access.data.sql.max_rows.toLocaleString()} rows / ${query.access.data.sql.max_result_bytes / (1024 * 1024)} MiB · ${query.access.data.sql.max_duration_seconds}s limit` : query.access.message === "Checking availability…" ? "Loading query limits…" : "Query limits unavailable"}</CardDescription></div>
           {mode === "experimental" && <CardDescription className="px-3 pb-3">Experimental execution. Same SQL semantics; performance may vary.</CardDescription>}
           <SqlAssistant assistant={assistant} />
         </Card>
@@ -135,7 +144,6 @@ const SchemaExplorer = memo(function SchemaExplorer({ onLoadSql }: { onLoadSql: 
               relations.sort((a, b) => a.name.length - b.name.length || a.name.localeCompare(b.name))
               if (!relations.length) return null
               return <div key={namespace} className="pb-4">
-                <p className="px-1 pb-2 font-mono text-xs text-muted-foreground">{namespace}</p>
                 {relations.map(relation => <div key={relation.name} className="relative"><details open={filter ? true : undefined} className="py-1">
                   <summary className="cursor-pointer py-1 pr-8" title={relation.grain}><span className="inline-flex items-center gap-2"><Table2 className="size-3.5" /><span>{relation.name.slice(namespace.length + 1)}</span></span></summary>
                   <div className="flex min-w-0 flex-col gap-1 py-2 pl-5">
