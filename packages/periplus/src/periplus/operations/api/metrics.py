@@ -1,8 +1,6 @@
 from datetime import UTC, datetime
 from fastapi import APIRouter, Request, Response
 from prometheus_client import CONTENT_TYPE_LATEST, Gauge, generate_latest
-from sqlalchemy import func, select
-from periplus.crawl.runtime.frontier_models import AcquisitionRecord, FrontierControlRecord
 
 router = APIRouter(tags=["operations"])
 pending = Gauge('periplus_frontier_pending_acquisitions', 'Current queued and retrying acquisitions; shared across API replicas.')
@@ -19,6 +17,9 @@ def prometheus_metrics(request: Request) -> Response:
 
 
 def refresh_frontier_metrics(sessions) -> None:
+    from sqlalchemy import func, select
+    from periplus.crawl.runtime.frontier_models import AcquisitionRecord, FrontierControlRecord
+
     with sessions() as session:
         oldest_created = select(func.min(AcquisitionRecord.created_at)).where(
             AcquisitionRecord.status.in_(("queued", "retry"))).scalar_subquery()
