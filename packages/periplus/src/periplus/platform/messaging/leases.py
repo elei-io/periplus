@@ -36,6 +36,10 @@ class OperationLeaseUnavailable(RuntimeError):
     """Another worker still owns at least one requested operation."""
 
 
+class OperationLeaseBackendUnavailable(RuntimeError):
+    """Lease storage failed; this is not evidence of another owner."""
+
+
 class OperationLeaseLost(RuntimeError):
     """A worker could not renew an operation lease it previously owned."""
 
@@ -254,9 +258,12 @@ async def operation_leases(
                     continue
                 if lost.is_set():
                     break
-                granted = await _try_acquire(
-                    bucket, phase=phase, operation_id=operation_id, owner=owner
-                )
+                try:
+                    granted = await _try_acquire(
+                        bucket, phase=phase, operation_id=operation_id, owner=owner
+                    )
+                except Exception as exc:
+                    raise OperationLeaseBackendUnavailable("operation lease storage is unavailable") from exc
                 if granted:
                     acquired.append(operation_id)
                     continue

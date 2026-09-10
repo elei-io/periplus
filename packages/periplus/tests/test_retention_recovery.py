@@ -3,11 +3,11 @@ from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest import IsolatedAsyncioTestCase
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
 
 from test_operation_leases import FakeBucket
-from periplus.platform.messaging.leases import operation_leases, OperationLeaseLost
+from periplus.platform.messaging.leases import operation_leases, OperationLeaseLost, OperationLeaseBackendUnavailable
 from periplus.retention.runtime import RetentionSettings, reclaim_pass
 from periplus.retention.publications import cleanup_publications
 
@@ -50,7 +50,7 @@ class RetentionRecoveryTests(IsolatedAsyncioTestCase):
                 raise PermissionError('lease write denied')
         with patch('periplus.retention.store.candidates', return_value=[('a', datetime.now(UTC), 'one')]), patch(
                 'periplus.retention.runtime.catalogue_from_env') as opened:
-            with self.assertRaises(PermissionError):
+            with self.assertRaises(OperationLeaseBackendUnavailable):
                 await reclaim_pass(RetentionSettings(mode='purge'), object(), BrokenBucket())
             opened.assert_not_called()
 
@@ -77,3 +77,13 @@ class RetentionRecoveryTests(IsolatedAsyncioTestCase):
                 'periplus.retention.runtime.RetentionCatalogue', return_value=SimpleNamespace(reclaim_objects=reclaim)):
             with self.assertRaises(OperationLeaseLost):
                 await reclaim_pass(RetentionSettings(mode='purge'), object(), FakeBucket())
+
+
+class LeaseFailureDeliveryTests(IsolatedAsyncioTestCase):
+    async def test_lease_backend_outage_does_not_consume_ingestion_failure_budget(self):
+        from periplus.ingestion.consumer import _retry_or_fail
+        message = SimpleNamespace(nak=AsyncMock())
+        with patch('periplus.ingestion.consumer.record_ingestion_processing_failure', new_callable=AsyncMock) as failure:
+            await _retry_or_fail(None, None, None, message, None, OperationLeaseBackendUnavailable('offline'))
+        message.nak.assert_awaited_once_with(delay=1)
+        failure.assert_not_awaited()
