@@ -7,6 +7,7 @@ const apiHost = process.env.NEXT_PUBLIC_POSTHOG_HOST
 const environment = process.env.NEXT_PUBLIC_ANALYTICS_ENVIRONMENT ?? "development"
 
 if (projectToken && apiHost && environment === "production") {
+  const internalTest = new URLSearchParams(window.location.search).get("analytics_test") === "1"
   // Named link interactions only; never collect link text or input-bearing URLs.
   const trackNavigation = (event: MouseEvent) => {
     if (event.type === "auxclick" && event.button !== 1) return
@@ -20,7 +21,10 @@ if (projectToken && apiHost && environment === "production") {
   posthog.init(projectToken, {
     api_host: apiHost,
     loaded: client => {
-      if (new URLSearchParams(window.location.search).get("analytics_test") === "1") client.setPersonProperties({ $internal_or_test_user: true })
+      if (internalTest) {
+        client.register({ $internal_or_test_user: true })
+        client.setPersonProperties({ $internal_or_test_user: true })
+      }
     },
     defaults: "2026-01-30",
     capture_pageview: "history_change",
@@ -44,6 +48,8 @@ if (projectToken && apiHost && environment === "production") {
     before_send: event => {
       if (!event) return null
       event.properties = redactAnalyticsProperties(event.properties) as typeof event.properties
+      // The first anonymous pageview may precede person creation. Mark it directly.
+      if (internalTest) event.properties.$internal_or_test_user = true
       event.properties.analytics_version = 2
       event.properties.environment = environment
       event.properties.release = process.env.NEXT_PUBLIC_RELEASE ?? "local"
