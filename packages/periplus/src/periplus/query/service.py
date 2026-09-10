@@ -27,7 +27,7 @@ from periplus.query.validation import _bounded_query, _one_statement
 from periplus.operations.access.schemas import QueryLimits
 from periplus.operations.query_history.schemas import PreparationEvidence
 
-COMPILER_VERSION = "public-query-v4"
+COMPILER_VERSION = "public-query-v7"
 
 class QueryMode(StrEnum):
     STABLE = "stable"
@@ -81,7 +81,7 @@ class QueryService:
 
     def __init__(self, config: CatalogueConfig, *, deadline: float | None = None, mode: QueryMode = QueryMode.STABLE):
         self.mode = QueryMode(mode)
-        self.compiler_version = f"{COMPILER_VERSION}:{self.mode.value}" if self.mode == QueryMode.STABLE else "public-query-v6:experimental"
+        self.compiler_version = f"{COMPILER_VERSION}:{self.mode.value}"
         self.alias = config.alias
         self.deadline = deadline
         self._lock = threading.Lock()
@@ -179,23 +179,24 @@ class QueryService:
                 plan_sql = "EXPLAIN " + payload.sql
             plan = "\n".join(str(row[-1]) for row in d.execute(plan_sql, payload.parameters).fetchall())
             optimizations = []
-            if self.mode == QueryMode.EXPERIMENTAL:
-                from periplus.query.content_scope import experimental_scope
-                from periplus.query.prose_scalar import prose_scalar
-                scope = experimental_scope(payload.sql, payload.parameters)
-                optimization = "capture_heading_content_scope_v1"
-                if scope is None:
-                    scope = prose_scalar(payload.sql, payload.parameters)
-                    optimization = "prose_scalar_before_capture_v1"
-                if scope is not None:
-                    installed = dict(d.execute(
-                        "SELECT view_name, sql FROM duckdb_views() WHERE database_name=? AND schema_name='public_v1'",
-                        [self.alias],
-                    ).fetchall())
-                    if scope.matches(d, installed):
-                        executable = _bounded_query(scope.sql, max_rows=limits.max_rows)
-                        plan = "\n".join(str(row[-1]) for row in d.execute("EXPLAIN " + scope.sql, payload.parameters).fetchall())
-                        optimizations = [optimization]
+            # Promoted baseline shared by both modes. Future candidates are
+            # explicitly gated on EXPERIMENTAL after this common selection.
+            from periplus.query.content_scope import capture_heading_scope
+            from periplus.query.prose_scalar import prose_scalar
+            scope = capture_heading_scope(payload.sql, payload.parameters)
+            optimization = "capture_heading_content_scope_v1"
+            if scope is None:
+                scope = prose_scalar(payload.sql, payload.parameters)
+                optimization = "prose_scalar_before_capture_v1"
+            if scope is not None:
+                installed = dict(d.execute(
+                    "SELECT view_name, sql FROM duckdb_views() WHERE database_name=? AND schema_name='public_v1'",
+                    [self.alias],
+                ).fetchall())
+                if scope.matches(d, installed):
+                    executable = _bounded_query(scope.sql, max_rows=limits.max_rows)
+                    plan = "\n".join(str(row[-1]) for row in d.execute("EXPLAIN " + scope.sql, payload.parameters).fetchall())
+                    optimizations = [optimization]
             if len(plan.encode()) > 64_000:
                 plan = plan.encode()[:64_000].decode(errors="ignore")
                 diagnostics.append(Diagnostic(severity="warning", code="plan_truncated", message="The execution plan preview was truncated."))

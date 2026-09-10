@@ -76,11 +76,11 @@ SQL preparation and execution remain in the separate Python
 
 Both operations accept SQL and positional parameters and use the same public SQL validation.
 Preparation binds and explains without executing the analytical query, returning SQL, parameters,
-a query ID, diagnostics, and a plan. Stable compiler `public-query-v4:stable` preserves submitted SQL
-and parameters and applies no custom optimization rewrites or optimizer settings. Experimental
-activation is documented below; responses preserve the submitted SQL and identify applied rewrites.
+a query ID, diagnostics, and a plan. Compiler `public-query-v7` applies the promoted
+optimizations documented below in both stable and experimental. Responses preserve
+the submitted SQL and parameters and identify applied rewrites.
 The execution-only row-limit wrapper remains a resource control. DuckDB performs native
-optimization. The returned plan explains the selected statement; experimental responses identify any applied rewrite.
+optimization. The returned plan explains the selected statement; both modes identify any applied rewrite.
 Execution always prepares independently, then runs the query. It does not trust a prior prep call.
 Execution returns `source_snapshot`, obtained from `ducklake_current_snapshot` inside the same
 read transaction before binding or executing the query. The result and snapshot therefore describe
@@ -833,8 +833,13 @@ console links preserve the selected mode with `mode=experimental`. Stable uses
 `/api/query/experimental/exec`, `/api/query/experimental/prep` and
 `/api/query/experimental/helpers`. The SQL assistant validates against the selected mode.
 
-Stable retains the clean compiler baseline. Experimental `public-query-v6:experimental`
-activates `capture_heading_content_scope_v1` only for a conservative inner join of
+Stable and experimental share compiler `public-query-v7`, with mode suffixes
+`:stable` and `:experimental`. Both include the promoted
+`capture_heading_content_scope_v1` and `prose_scalar_before_capture_v1` optimizations.
+There are currently no experimental-only rules. New candidates must be added only
+on the experimental side of this shared baseline until explicitly promoted.
+
+`capture_heading_content_scope_v1` activates only for a conservative inner join of
 `capture` and `html_heading` with a single exact `capture.effective_url` equality,
 a plain content-ID join and string parameter bindings.
 The original SQL binds first, and installed view definitions must match the reviewed
@@ -846,7 +851,9 @@ rewrites must be explicitly restricted to experimental until promoted.
 
 Prepared and executed responses identify `query_mode`, `compiler_version` and
 `optimizations` (empty when no rewrite applies). History records the mode in the compiler version,
-including failed admission. Separate processes provide independent connection,
+including failed admission. The SQL console shows the public schema (`public_v1`)
+and execution mode, not the internal compiler version; compiler metadata remains
+available through the API and operator query history. Separate processes provide independent connection,
 admission, memory and spill limits; they still share storage and cluster capacity.
 Experimental unavailability is an error, never a retry through stable.
 
@@ -854,13 +861,14 @@ See [the first-three investigation](query-investigations/experimental-first-thre
 for paired production evidence and rejected candidates. No shared physical layout
 or catalogue relation changes are part of this activation.
 
-### Prose counts before capture joins (experimental)
+### Prose counts before capture joins (shared baseline)
 
 `prose_scalar_before_capture_v1` computes a regex match count per prose row in a
 statement-local materialized CTE before joining capture history. It retains the
 inner join, latest eligible capture per requested URL, and all subsequent filters
 and aggregation. Full prose no longer crosses that join. This is a compiler
-intervention; public schema, lake layout, materializations and stable are unchanged.
+intervention available in both modes; public schema, lake layout and materializations
+are unchanged.
 
 Initial eligibility follows the measured broad-analytics family: one nonrecursive
 CTE containing a capture/prose inner `USING (content_id)` join, `DISTINCT ON
@@ -879,3 +887,11 @@ during preparation. Regex semantics, output types and labels remain unchanged.
 [Evidence and limitations](query-investigations/prose-scalar/README.md) include
 same-snapshot equality and latency comparisons in both orders. This still scans
 prose across the corpus and does not guarantee completion within 512 MB.
+
+### Promotion to the shared baseline
+
+The existing experimental rules were promoted unchanged at the user's request.
+The [promotion record](query-investigations/shared-query-baseline/README.md) links
+the original frozen-snapshot evidence and records common-path activation tests.
+Existing research-only candidates remain research-only. Stable is now the normal
+optimized endpoint, while experimental remains available for future candidates.

@@ -1,6 +1,6 @@
 """Restrict reviewed document-local views to keys selected by a simple join.
 
-Experimental activation is restricted separately from research eligibility.
+Production activation is restricted separately from research eligibility.
 This is deliberately not a general SQL optimizer. Eligibility is conservative,
 and the installed view definitions must match the reviewed catalogue sources.
 """
@@ -229,7 +229,7 @@ def content_scope(sql: str, *, materialize_inputs: bool = False, heading_driver:
     return ContentScope(result, definitions, keys)
 
 
-def experimental_scope(sql: str, parameters: list[object] | tuple[object, ...] = ()) -> ContentScope | None:
+def capture_heading_scope(sql: str, parameters: list[object] | tuple[object, ...] = ()) -> ContentScope | None:
     """Activate only the measured exact-URL capture/heading inner-join family."""
     if any(not isinstance(value, str) for value in parameters):
         return None

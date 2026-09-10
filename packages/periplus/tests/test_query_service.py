@@ -77,12 +77,12 @@ class QueryServiceTests(unittest.TestCase):
         self.assertEqual(stable.query_mode, QueryMode.STABLE)
         self.assertEqual(result.query_mode, QueryMode.EXPERIMENTAL)
         self.assertEqual(result.optimizations, [])
-        self.assertEqual(evidence.compiler_version, "public-query-v6:experimental")
+        self.assertEqual(evidence.compiler_version, "public-query-v7:experimental")
         self.assertNotEqual(result.compiler_version, stable.compiler_version)
         with self.assertRaises(ValueError):
             QueryService(self.config, mode="invalid")
 
-    def test_experimental_heading_scope_is_isolated_and_preserves_results(self):
+    def test_promoted_heading_scope_preserves_results_in_both_modes(self):
         from periplus.query.service import QueryMode
         self.service.close()
         writer = DuckLakeConnectionFactory(self.config).connect(read_only=False)
@@ -95,39 +95,48 @@ class QueryServiceTests(unittest.TestCase):
         self.addCleanup(stable.close)
         self.addCleanup(experimental.close)
         request = QueryRequest(sql="SELECT c.effective_url, h.text FROM capture c JOIN html_heading h USING(content_id) WHERE c.effective_url = ? ORDER BY h.node_index", parameters=['https://example.com/inline'])
+        native = stable.connection.execute(request.sql, request.parameters).fetchall()
         before = stable.execute(request)
+        self.assertEqual(before.rows, [list(row) for row in native])
         after = experimental.execute(request)
         self.assertEqual(before.rows, [['https://example.com/inline', 'Heading']])
         self.assertEqual(after.rows, before.rows)
         self.assertEqual(after.columns, before.columns)
         self.assertEqual(after.types, before.types)
         self.assertEqual(after.sql, request.sql)
-        self.assertEqual(before.optimizations, [])
-        self.assertEqual(before.compiler_version, 'public-query-v4:stable')
+        self.assertEqual(before.optimizations, ['capture_heading_content_scope_v1'])
+        self.assertEqual(before.compiler_version, 'public-query-v7:stable')
         self.assertEqual(after.optimizations, ['capture_heading_content_scope_v1'])
         self.assertIn('__periplus_scope_', after.plan)
+        self.assertEqual(stable.prepare(request).optimizations, after.optimizations)
         self.assertEqual(experimental.prepare(request).optimizations, after.optimizations)
         with patch('periplus.query.content_scope.ContentScope.matches', return_value=False):
-            self.assertEqual(experimental.execute(request).optimizations, [])
+            for service in (stable, experimental):
+                self.assertEqual(service.execute(request).optimizations, [])
         broad = QueryRequest(sql=request.sql.replace('c.effective_url = ?', 'c.effective_url LIKE ?'), parameters=['%'])
-        self.assertEqual(experimental.execute(broad).optimizations, [])
+        for service in (stable, experimental):
+            self.assertEqual(service.execute(broad).optimizations, [])
 
-    def test_experimental_prose_scalar_is_isolated_and_catalogue_guarded(self):
+    def test_promoted_prose_scalar_is_catalogue_guarded_in_both_modes(self):
         from periplus.query.service import QueryMode
         from test_query_prose_scalar import SQL
         experimental = QueryService(self.config, mode=QueryMode.EXPERIMENTAL)
         self.addCleanup(experimental.close)
         request = QueryRequest(sql=SQL.replace('AI|artificial intelligence', 'robot|careers'))
+        native = self.service.connection.execute(request.sql, request.parameters).fetchall()
         before = self.service.execute(request)
+        self.assertEqual(before.rows, [list(row) for row in native])
         after = experimental.execute(request)
         self.assertTrue(before.rows)
+        self.assertEqual(self.service.prepare(request).optimizations, after.optimizations)
         self.assertEqual((after.rows, after.columns, after.types), (before.rows, before.columns, before.types))
-        self.assertEqual(before.optimizations, [])
-        self.assertEqual(after.optimizations, ['prose_scalar_before_capture_v1'])
+        self.assertEqual(before.optimizations, ['prose_scalar_before_capture_v1'])
+        self.assertEqual(after.optimizations, before.optimizations)
         self.assertEqual(after.sql, request.sql)
         self.assertEqual(experimental.prepare(request).optimizations, after.optimizations)
         with patch('periplus.query.content_scope.ContentScope.matches', return_value=False):
-            self.assertEqual(experimental.execute(request).optimizations, [])
+            for service in (self.service, experimental):
+                self.assertEqual(service.execute(request).optimizations, [])
         from periplus.query.prose_scalar import prose_scalar
         candidate = prose_scalar(request.sql.replace('(?i)\\b(robot|careers)\\b', '['))
         installed = dict(experimental.connection.execute(
@@ -207,7 +216,7 @@ class QueryServiceTests(unittest.TestCase):
             result = self.service.execute(request)
         self.assertEqual(prepared.sql, request.sql)
         self.assertEqual(result.sql, request.sql)
-        self.assertEqual(evidence.compiler_version, 'public-query-v4:stable')
+        self.assertEqual(evidence.compiler_version, 'public-query-v7:stable')
         self.assertEqual(evidence.plan, prepared.plan)
         self.assertFalse(any(d.code.startswith('content_scope') for d in result.diagnostics))
         self.assertEqual(self.service.connection.execute("SELECT current_setting('disabled_optimizers')").fetchone(), before)

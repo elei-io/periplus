@@ -12,7 +12,7 @@ from periplus.materialization.registry import PROJECTIONS
 from periplus.platform.catalogue.client import _column_type
 from periplus.platform.catalogue.public import public_objects
 from periplus.platform.catalogue.schema import expected_columns
-from periplus.query.content_scope import content_scope, experimental_scope, _source
+from periplus.query.content_scope import content_scope, capture_heading_scope, _source
 from periplus.query.validation import _bounded_query
 from periplus.query.scope_plan import shared_html_inputs
 
@@ -71,16 +71,16 @@ class ContentScopeTests(unittest.TestCase):
 
     def test_activation_requires_exact_capture_url_and_measured_relations(self):
         sql = "SELECT h.text FROM capture c JOIN html_heading h USING(content_id) WHERE c.effective_url = ?"
-        self.assertIsNotNone(experimental_scope(sql, ["https://example.com/a"]))
-        self.assertIsNone(experimental_scope(sql, [1]))
-        self.assertIsNone(experimental_scope(sql + " AND c.content_id = 1", ["https://example.com/a"]))
-        self.assertIsNone(experimental_scope(sql.replace("USING(content_id)", "ON h.content_id=c.content_id AND h.text=1"), ["https://example.com/a"]))
-        self.assertIsNotNone(experimental_scope(sql.replace('c.effective_url = ?', "'https://example.com/a' = c.effective_url")))
+        self.assertIsNotNone(capture_heading_scope(sql, ["https://example.com/a"]))
+        self.assertIsNone(capture_heading_scope(sql, [1]))
+        self.assertIsNone(capture_heading_scope(sql + " AND c.content_id = 1", ["https://example.com/a"]))
+        self.assertIsNone(capture_heading_scope(sql.replace("USING(content_id)", "ON h.content_id=c.content_id AND h.text=1"), ["https://example.com/a"]))
+        self.assertIsNotNone(capture_heading_scope(sql.replace('c.effective_url = ?', "'https://example.com/a' = c.effective_url")))
         for other in (sql.replace(' = ?', ' LIKE ?'),
                       sql.replace('html_heading', 'html_section'),
                       sql.replace('c.effective_url = ?', 'c.effective_url = ? OR h.level = 1'),
                       sql + ' LIMIT 1', sql.replace('JOIN', 'LEFT JOIN')):
-            self.assertIsNone(experimental_scope(other), other)
+            self.assertIsNone(capture_heading_scope(other), other)
 
     def test_research_materialized_inputs_and_heading_discovery(self):
         for heading_driver in (False, True):
