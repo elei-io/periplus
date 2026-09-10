@@ -60,7 +60,8 @@ class QueryBenchmarkingTests(unittest.TestCase):
         candidate = replace(case, title="candidate")
         connection = MagicMock()
         seen = []
-        def measure(conn, item, scale, runs):
+        def measure(conn, item, scale, runs, *, profile_warm_runs):
+            self.assertTrue(profile_warm_runs)
             self.assertIs(conn, connection)
             seen.append(item.title)
             return item
@@ -90,7 +91,7 @@ class QueryBenchmarkingTests(unittest.TestCase):
         main = runpy.run_path(str(script))["main"]
         baseline = dict(case="gov-heading-sections", scale=None, ducklake_snapshot=42,
                         columns=["x"], types=["INTEGER"], result_rows=1,
-                        result_digest="same", median_warm_ms=20,
+                        result_digest="same", median_warm_ms=20, normal_ms=20,
                         peak_buffer_bytes=[100], cumulative_rows_scanned=[10],
                         within_time_budget=True)
         for timing, succeeds in [(10, True), (30, False)]:
@@ -108,6 +109,56 @@ class QueryBenchmarkingTests(unittest.TestCase):
                 self.assertTrue(payload["comparison"][0]["exact_result"])
                 self.assertEqual(payload["comparison"][0]["performance_improved"], succeeds)
                 self.assertEqual(bool(payload["failures"]), not succeeds)
+
+    def test_single_execution_records_no_warm_timing(self):
+        root = Path(__file__).resolve().parents[3] / "benchmarks/query/cases"
+        case = discover_cases(root)["exact-page-history"]
+        connection = MagicMock()
+        connection.execute.return_value.fetchone.return_value = (42,)
+        cursor = MagicMock()
+        cursor.fetchone.side_effect = [(7,), None]
+        cursor.description = [("n", "INTEGER")]
+        with patch("periplus.query.benchmarking.catalogue_config_from_env", return_value=MagicMock(alias="periplus")), patch("periplus.query.benchmarking._execute", return_value=cursor) as execute:
+            measured = _measure(connection, case, None, 0)
+        self.assertIsNone(measured.median_warm_ms)
+        self.assertEqual(measured.warm_ms, ())
+        self.assertEqual(measured.result_rows, 1)
+        execute.assert_called_once()
+
+    def test_ordinary_warm_execution_has_no_fabricated_scan_metrics(self):
+        root = Path(__file__).resolve().parents[3] / "benchmarks/query/cases"
+        case = discover_cases(root)["exact-page-history"]
+        connection = MagicMock()
+        connection.execute.return_value.fetchone.return_value = (42,)
+        cursors = []
+        for _ in range(2):
+            cursor = MagicMock()
+            cursor.fetchone.side_effect = [(7,), None]
+            cursor.description = [("n", "INTEGER")]
+            cursors.append(cursor)
+        with patch("periplus.query.benchmarking.catalogue_config_from_env", return_value=MagicMock(alias="periplus")), patch("periplus.query.benchmarking._execute", side_effect=cursors):
+            measured = _measure(connection, case, None, 1, profile_warm_runs=False)
+        self.assertEqual(measured.result_rows, 1)
+        self.assertEqual(len(measured.warm_ms), 1)
+        self.assertEqual(measured.cumulative_rows_scanned, ())
+        self.assertEqual(measured.scans, ())
+
+    def test_ordinary_warm_execution_rejects_changed_results(self):
+        root = Path(__file__).resolve().parents[3] / "benchmarks/query/cases"
+        case = discover_cases(root)["exact-page-history"]
+        connection = MagicMock()
+        connection.execute.return_value.fetchone.return_value = (42,)
+        cursors = []
+        for value in (7, 8):
+            cursor = MagicMock()
+            cursor.fetchone.side_effect = [(value,), None]
+            cursor.description = [("n", "INTEGER")]
+            cursors.append(cursor)
+        with patch("periplus.query.benchmarking.catalogue_config_from_env", return_value=MagicMock(alias="periplus")), patch("periplus.query.benchmarking._execute", side_effect=cursors) as execute:
+            with self.assertRaises(BenchmarkFailure) as caught:
+                _measure(connection, case, None, 1, profile_warm_runs=False)
+        self.assertEqual(caught.exception.error_type, "ValueError")
+        self.assertTrue(all(call.args[1] == case.sql for call in execute.call_args_list))
 
     def test_interrupted_profile_retains_safe_normal_execution_evidence(self):
         root = Path(__file__).resolve().parents[3] / "benchmarks/query/cases"
@@ -216,7 +267,7 @@ max_warm_ms = 60000
             "types": ["INTEGER"],
             "result_rows": 1,
             "result_digest": "same",
-            "median_warm_ms": 20,
+            "median_warm_ms": 20, "normal_ms": 20,
             "peak_buffer_bytes": [200],
             "cumulative_rows_scanned": [100],
         }
@@ -246,7 +297,7 @@ max_warm_ms = 60000
             "types": ["INTEGER"],
             "result_rows": 1,
             "result_digest": "same",
-            "median_warm_ms": 20,
+            "median_warm_ms": 20, "normal_ms": 20,
             "peak_buffer_bytes": [200],
             "cumulative_rows_scanned": [100],
         }

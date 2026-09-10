@@ -129,7 +129,7 @@ focused benchmark tests. Reports remain ignored local artifacts.
 ## Default optimizer experiment: production snapshot, off versus on
 
 Use the production corpus directly. A single read transaction freezes the snapshot
-for both variants while ingestion continues. For the research-only content-scoping candidate (removed from the public API):
+for both variants while ingestion continues. For the general research content-scoping candidate (runtime activation is separately restricted):
 
 ```sh
 uv run python scripts/query_benchmark.py --case gov-heading-sections \
@@ -161,3 +161,18 @@ profile count. Paired failures also identify the failed variant and retain any
 fully measured variant under `completed_variants`. The overall report remains
 `complete=false` with no equivalence or speedup claim. Native exception messages
 are never recorded because they can contain credential-bearing storage URLs.
+
+### Separating execution from profiling
+
+For paired research runs, `--ordinary-warm-runs` repeats the ordinary SQL rather
+than `EXPLAIN ANALYZE`. It records `warm_protocol=ordinary_execution`, verifies
+each repeat against the complete first result, and leaves physical profile metrics
+empty. Use this when profiling itself exceeds the bounded budget; do not compare
+these timings with profiled timings or claim absent scan metrics are zero.
+`--access-path cluster_direct_reader` labels a temporary in-cluster read-only
+bench explicitly. Keep the same snapshot, limits and execution protocol on both sides.
+
+`--warm-runs 0` records one ordinary execution per variant. The warm median is
+null and acceptance uses `normal_time_ratio`; repeat the pair in reverse order.
+This mode is useful when one baseline finishes within the measurement deadline
+but a baseline plus a repeat cannot. It does not establish a warm-cache speedup.

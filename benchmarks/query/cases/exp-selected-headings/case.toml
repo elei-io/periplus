@@ -1,0 +1,7 @@
+id = "exp-selected-headings"
+title = "Exact URL heading extraction"
+use_case = "Select matching content before reconstructing HTML, preserving full section partitions."
+classification = "optimizer"
+ordered = true
+memory_limit = "512MB"
+max_warm_ms = 60000

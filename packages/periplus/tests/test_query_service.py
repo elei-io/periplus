@@ -77,10 +77,40 @@ class QueryServiceTests(unittest.TestCase):
         self.assertEqual(stable.query_mode, QueryMode.STABLE)
         self.assertEqual(result.query_mode, QueryMode.EXPERIMENTAL)
         self.assertEqual(result.optimizations, [])
-        self.assertEqual(evidence.compiler_version, "public-query-v4:experimental")
+        self.assertEqual(evidence.compiler_version, "public-query-v5:experimental")
         self.assertNotEqual(result.compiler_version, stable.compiler_version)
         with self.assertRaises(ValueError):
             QueryService(self.config, mode="invalid")
+
+    def test_experimental_heading_scope_is_isolated_and_preserves_results(self):
+        from periplus.query.service import QueryMode
+        self.service.close()
+        writer = DuckLakeConnectionFactory(self.config).connect(read_only=False)
+        writer.execute("UPDATE periplus.ingest.visits SET effective_url=requested_url")
+        writer.execute("INSERT INTO periplus.material.html_elements (content_sha256, element_index, subtree_end_index, tag, namespace) VALUES ('helper-fixture',4,6,'h1','HTML')")
+        writer.execute("INSERT INTO periplus.material.html_nodes (content_sha256,node_index,subtree_end_index,node_type,value) VALUES ('helper-fixture',5,6,'text','Heading')")
+        writer.close()
+        stable = QueryService(self.config)
+        experimental = QueryService(self.config, mode=QueryMode.EXPERIMENTAL)
+        self.addCleanup(stable.close)
+        self.addCleanup(experimental.close)
+        request = QueryRequest(sql="SELECT c.effective_url, h.text FROM capture c JOIN html_heading h USING(content_id) WHERE c.effective_url = ? ORDER BY h.node_index", parameters=['https://example.com/inline'])
+        before = stable.execute(request)
+        after = experimental.execute(request)
+        self.assertEqual(before.rows, [['https://example.com/inline', 'Heading']])
+        self.assertEqual(after.rows, before.rows)
+        self.assertEqual(after.columns, before.columns)
+        self.assertEqual(after.types, before.types)
+        self.assertEqual(after.sql, request.sql)
+        self.assertEqual(before.optimizations, [])
+        self.assertEqual(before.compiler_version, 'public-query-v4:stable')
+        self.assertEqual(after.optimizations, ['capture_heading_content_scope_v1'])
+        self.assertIn('__periplus_scope_', after.plan)
+        self.assertEqual(experimental.prepare(request).optimizations, after.optimizations)
+        with patch('periplus.query.content_scope.ContentScope.matches', return_value=False):
+            self.assertEqual(experimental.execute(request).optimizations, [])
+        broad = QueryRequest(sql=request.sql.replace('c.effective_url = ?', 'c.effective_url LIKE ?'), parameters=['%'])
+        self.assertEqual(experimental.execute(broad).optimizations, [])
 
     def test_unmodified_preparation_execution_and_reuse(self):
         from periplus.operations.query_history.schemas import PreparationEvidence

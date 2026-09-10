@@ -15,7 +15,7 @@ from periplus.materialization.projections.prose import project as prose_project
 from periplus.platform.catalogue.client import _column_type
 from periplus.platform.catalogue.public import public_objects
 from periplus.platform.catalogue.schema import expected_columns
-from periplus.query.content_scope import content_scope, _source
+from periplus.query.content_scope import content_scope, experimental_scope, _source
 from periplus.query.validation import _bounded_query
 from periplus.query.scope_plan import shared_html_inputs
 
@@ -71,6 +71,37 @@ class ContentScopeTests(unittest.TestCase):
         encode = lambda rows: Counter(json.dumps(row, default=str, sort_keys=True) for row in rows)
         self.assertEqual(encode(rows), encode(after.fetchall()), sql)
         return scoped, rows
+
+    def test_activation_requires_exact_capture_url_and_measured_relations(self):
+        sql = "SELECT h.text FROM capture c JOIN html_heading h USING(content_id) WHERE c.effective_url = ?"
+        self.assertIsNotNone(experimental_scope(sql))
+        self.assertIsNotNone(experimental_scope(sql.replace('c.effective_url = ?', "'https://example.com/a' = c.effective_url")))
+        for other in (sql.replace(' = ?', ' LIKE ?'),
+                      sql.replace('html_heading', 'html_section'),
+                      sql.replace('c.effective_url = ?', 'c.effective_url = ? OR h.level = 1'),
+                      sql + ' LIMIT 1', sql.replace('JOIN', 'LEFT JOIN')):
+            self.assertIsNone(experimental_scope(other), other)
+
+    def test_research_materialized_inputs_and_heading_discovery(self):
+        for heading_driver in (False, True):
+            for materialize_inputs in (False, True):
+                for pattern in ('%Robot%', '%Benefits%', '%', '%absent%'):
+                    sql = """SELECT c.capture_id, h.text AS heading, s.*
+                      FROM capture c JOIN html_heading h USING(content_id)
+                      JOIN html_section s ON s.content_id=h.content_id
+                       AND s.heading_node_index=h.node_index
+                      WHERE h.text LIKE ? AND c.effective_url LIKE ?
+                      ORDER BY c.capture_id, h.node_index"""
+                    params = [pattern, 'https://example.com/%']
+                    candidate = content_scope(sql, heading_driver=heading_driver,
+                                              materialize_inputs=materialize_inputs)
+                    self.assertIsNotNone(candidate)
+                    self.assertTrue(candidate.matches(self.db, self.installed))
+                    before = self.db.execute(sql, params)
+                    description, rows = before.description, before.fetchall()
+                    after = self.db.execute(candidate.sql, params)
+                    self.assertEqual(description, after.description)
+                    self.assertEqual(rows, after.fetchall())
 
     def test_every_reviewed_view_selective_empty_and_full_domains(self):
         for item in public_objects():

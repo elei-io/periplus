@@ -1,6 +1,6 @@
 """Restrict reviewed document-local views to keys selected by a simple join.
 
-Research-only benchmark candidate; the public API does not invoke this module.
+Experimental activation is restricted separately from research eligibility.
 This is deliberately not a general SQL optimizer. Eligibility is conservative,
 and the installed view definitions must match the reviewed catalogue sources.
 """
@@ -87,7 +87,7 @@ def _conjuncts(expression: exp.Expression):
         yield expression
 
 
-def content_scope(sql: str) -> ContentScope | None:
+def content_scope(sql: str, *, materialize_inputs: bool = False, heading_driver: bool = False) -> ContentScope | None:
     """Produce at most one alternative; unsupported syntax retains original SQL."""
     numbered = _number_parameters(sql)
     if numbered is None:
@@ -161,7 +161,7 @@ def content_scope(sql: str) -> ContentScope | None:
     where = tree.args['where'].this
     predicates = list(where.flatten()) if isinstance(where, exp.And) else [where]
     for driver in tables:
-        if driver.name not in _DRIVERS:
+        if driver.name not in ({"html_heading"} if heading_driver else _DRIVERS):
             continue
         filters, remaining = [], []
         for predicate in predicates:
@@ -204,7 +204,7 @@ def content_scope(sql: str) -> ContentScope | None:
                 primitive_names[name] = prefix+name
                 restricted = parse_one(
                     f'SELECT b.* FROM public_v1.{name} b SEMI JOIN {keys} USING (content_id)', read='duckdb')
-                ctes.append(exp.CTE(this=restricted, alias=exp.TableAlias(this=exp.to_identifier(primitive_names[name])), materialized=False))
+                ctes.append(exp.CTE(this=restricted, alias=exp.TableAlias(this=exp.to_identifier(primitive_names[name])), materialized=materialize_inputs))
             return exp.select('*').from_(primitive_names[name])
         body = parse_one(definitions[name], read='duckdb').expression.copy()
         for table in list(body.find_all(exp.Table)):
@@ -227,3 +227,28 @@ def content_scope(sql: str) -> ContentScope | None:
     if len(result) > _MAX_SQL:
         return None
     return ContentScope(result, definitions, keys)
+
+
+def experimental_scope(sql: str) -> ContentScope | None:
+    """Activate only the measured exact-URL capture/heading inner-join family."""
+    tree = _one_statement(sql)
+    if not isinstance(tree, exp.Select) or tree.args.get('with_'):
+        return None
+    tables = list(tree.find_all(exp.Table))
+    if len(tables) != 2 or sorted(t.name for t in tables) != ['capture', 'html_heading']:
+        return None
+    capture = next(t for t in tables if t.name == 'capture')
+    where = tree.args.get('where')
+    if where is None:
+        return None
+    for predicate in _conjuncts(where.this):
+        if not isinstance(predicate, exp.EQ):
+            continue
+        for column, value in ((predicate.this.unnest(), predicate.expression.unnest()),
+                              (predicate.expression.unnest(), predicate.this.unnest())):
+            if (isinstance(column, exp.Column) and column.table == capture.alias_or_name
+                    and column.name == 'effective_url'
+                    and ((isinstance(value, exp.Literal) and value.is_string)
+                         or isinstance(value, exp.Placeholder))):
+                return content_scope(sql)
+    return None

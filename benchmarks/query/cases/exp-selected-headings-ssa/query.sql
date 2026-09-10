@@ -1,0 +1,1 @@
+SELECT c.capture_id, h.node_index, h.text FROM public_v1.capture c JOIN public_v1.html_heading h USING(content_id) WHERE c.effective_url = 'https://www.ssa.gov/deposit/' ORDER BY c.capture_id, h.node_index;

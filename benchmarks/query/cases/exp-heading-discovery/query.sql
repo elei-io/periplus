@@ -1,0 +1,1 @@
+SELECT h.text AS heading, s.* FROM public_v1.html_heading h JOIN public_v1.html_section s ON s.content_id=h.content_id AND s.heading_node_index=h.node_index WHERE lower(h.text) LIKE '%artificial intelligence%' ORDER BY h.content_id, h.node_index;
