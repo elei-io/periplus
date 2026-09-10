@@ -1,4 +1,4 @@
-CREATE OR REPLACE VIEW public_v1.html_jsonld AS
+SELECT * FROM (
 WITH scripts AS (
     SELECT s.content_id, s.node_index,
            s.text_direct AS source_text
@@ -14,4 +14,5 @@ SELECT content_id, node_index, value,
             WHEN trim(source_text, chr(9) || chr(10) || chr(12) || chr(13) || ' ') = ''
                 THEN 'Empty JSON-LD script'
             ELSE 'Invalid JSON syntax' END::VARCHAR AS parse_error
-FROM parsed;
+FROM parsed
+) j WHERE content_id >= '0' AND content_id < '1';

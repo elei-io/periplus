@@ -46,6 +46,7 @@ class QueryBenchmarkingTests(unittest.TestCase):
             connection.execute("CREATE TABLE public_v1.link(capture_id UUID, resolved_url VARCHAR)")
             connection.execute("CREATE TABLE public_v1.html_heading(content_id VARCHAR, node_index INTEGER, text VARCHAR)")
             connection.execute("CREATE TABLE public_v1.html_section(content_id VARCHAR, heading_node_index INTEGER)")
+            connection.execute("CREATE TABLE public_v1.html_jsonld(content_id VARCHAR, node_index INTEGER, value JSON, parse_error VARCHAR)")
             for case in discover_cases(root).values():
                 parameters = {"scope": case.scales[0]} if case.scales[0] else None
                 connection.execute("EXPLAIN " + case.sql, parameters)

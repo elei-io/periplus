@@ -411,8 +411,8 @@ This validates the filtered shape, not unfiltered corpus-scale performance.
 ### JSON-LD view validation (2026-09-08)
 
 Initial filtered validation found no schema or optimizer performance defect.
-html_jsonld joins selected script nodes to their direct text children and uses
-TRY_CAST to retain parser failures as rows. It adds no compiler rewrite or
+The original html_jsonld implementation joined selected script nodes to their
+direct text children and used TRY_CAST to retain parser failures as rows. It adds no compiler rewrite or
 physical materialization and does not depend on the private JSON-LD projection.
 
 ```sql
@@ -427,6 +427,10 @@ on both primitive scans, each reading two files and emitting one row. This is
 filtered-query evidence, not a guarantee for unfiltered corpus workloads.
 Fixtures cover complete arrays/graphs, repeated scripts, invalid/empty declarations,
 JSON null, type matching and foreign namespaces.
+
+The follow-up [direct-text investigation](query-investigations/jsonld-direct-text/README.md)
+removes that redundant reconstruction using existing `html_element.text_direct`.
+The public columns and parse semantics remain unchanged.
 
 ### List view validation (2026-09-08)
 

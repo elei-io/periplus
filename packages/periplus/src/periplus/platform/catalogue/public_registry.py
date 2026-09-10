@@ -112,7 +112,7 @@ PUBLIC_OBJECTS = (
         ("value", "Complete document parsed as DuckDB JSON; SQL null on parse failure."),
         ("parse_error", "Empty JSON-LD script or Invalid JSON syntax; null on successful parsing."),
     ), "Embedded JSON-LD declarations, including invalid scripts, without semantic expansion.",
-        ("material.html_nodes", "material.html_elements"), content_local=True),
+        ("material.html_elements",), content_local=True),
     _view("html_image", (
         ("content_id", "SHA-256 identity of captured bytes."),
         ("node_index", "Source img node position."),
