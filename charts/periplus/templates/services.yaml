@@ -98,3 +98,24 @@ spec:
       port: {{ $worker.port }}
       targetPort: metrics
 {{- end }}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "periplus.fullname" . }}-query-experimental
+  labels:
+    {{- include "periplus.labels" . | nindent 4 }}
+    app.kubernetes.io/component: query-experimental
+  {{- with .Values.queryExperimental.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.queryExperimental.service.type }}
+  selector:
+    {{- include "periplus.componentSelectorLabels" (dict "root" . "component" "query-experimental") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.queryExperimental.service.port }}
+      targetPort: http

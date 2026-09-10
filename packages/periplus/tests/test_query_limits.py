@@ -54,7 +54,7 @@ class LimitsTests(unittest.IsolatedAsyncioTestCase):
             captured.append(limits)
             return PreparedQuery(query_id='00000000-0000-4000-8000-000000000001', sql=payload.sql,
                                  parameters=payload.parameters, diagnostics=[], plan='plan')
-        app.state.query_service = SimpleNamespace(prepare=prepare)
+        app.state.query_service = SimpleNamespace(prepare=prepare, compiler_version="public-query-v4:stable")
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://query.test') as client:
             for count in (7, 3):
                 reader.read.return_value = QueryLimits(max_rows=count)

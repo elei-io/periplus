@@ -61,6 +61,27 @@ class QueryServiceTests(unittest.TestCase):
         self.service = QueryService(self.config)
         self.addCleanup(self.service.close)
 
+    def test_modes_preserve_results_and_have_separate_admission(self):
+        from periplus.query.service import QueryMode
+        from periplus.operations.query_history.schemas import PreparationEvidence
+        experimental = QueryService(self.config, mode=QueryMode.EXPERIMENTAL)
+        self.addCleanup(experimental.close)
+        payload = QueryRequest(sql="SELECT ? AS value", parameters=[42])
+        stable = self.service.execute(payload)
+        evidence = PreparationEvidence()
+        with self.service._lock:
+            result = experimental.execute(payload, evidence=evidence)
+        self.assertEqual(result.rows, stable.rows)
+        self.assertEqual(result.sql, payload.sql)
+        self.assertEqual(result.parameters, payload.parameters)
+        self.assertEqual(stable.query_mode, QueryMode.STABLE)
+        self.assertEqual(result.query_mode, QueryMode.EXPERIMENTAL)
+        self.assertEqual(result.optimizations, [])
+        self.assertEqual(evidence.compiler_version, "public-query-v4:experimental")
+        self.assertNotEqual(result.compiler_version, stable.compiler_version)
+        with self.assertRaises(ValueError):
+            QueryService(self.config, mode="invalid")
+
     def test_unmodified_preparation_execution_and_reuse(self):
         from periplus.operations.query_history.schemas import PreparationEvidence
         request = QueryRequest(sql="""SELECT c.requested_url AS url, m.value AS title
@@ -130,7 +151,7 @@ class QueryServiceTests(unittest.TestCase):
             result = self.service.execute(request)
         self.assertEqual(prepared.sql, request.sql)
         self.assertEqual(result.sql, request.sql)
-        self.assertEqual(evidence.compiler_version, 'public-query-v4')
+        self.assertEqual(evidence.compiler_version, 'public-query-v4:stable')
         self.assertEqual(evidence.plan, prepared.plan)
         self.assertFalse(any(d.code.startswith('content_scope') for d in result.diagnostics))
         self.assertEqual(self.service.connection.execute("SELECT current_setting('disabled_optimizers')").fetchone(), before)

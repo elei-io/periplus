@@ -10,7 +10,7 @@ from starlette.concurrency import run_in_threadpool
 
 from periplus.platform.catalogue.config import catalogue_config_from_env
 from periplus.query.server_http import QueryAccessMiddleware, router
-from periplus.query.service import QueryService
+from periplus.query.service import QueryMode, QueryService
 from periplus.query.limits import QueryLimitsClient
 
 
@@ -19,7 +19,7 @@ async def lifespan(app: FastAPI):
     if not os.environ.get("PERIPLUS_QUERY_API_TOKEN"):
         raise RuntimeError("PERIPLUS_QUERY_API_TOKEN is required")
     configure_logging("query")
-    service = await run_in_threadpool(QueryService, catalogue_config_from_env())
+    service = await run_in_threadpool(QueryService, catalogue_config_from_env(), mode=QueryMode(os.environ.get("PERIPLUS_QUERY_MODE", "stable")))
     from periplus.query.history import HistoryClient
     app.state.query_history = HistoryClient()
     app.state.query_limits = QueryLimitsClient()

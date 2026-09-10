@@ -33,7 +33,7 @@ class SdkQueryTests(unittest.IsolatedAsyncioTestCase):
                                rows=[[1]], elapsed_ms=1, source_snapshot=7, truncated=False)
         app.state.query_limits = AsyncMock()
         app.state.query_limits.read.return_value = QueryLimits()
-        app.state.query_service = Mock(prepare=prepare, execute=execute)
+        app.state.query_service = Mock(prepare=prepare, execute=execute, compiler_version="public-query-v4:stable")
         # This fixture exercises the service adapter; the real Next gateway supplies authentication.
         async with AsyncClient('http://public.test') as client:
             await client._http.aclose()

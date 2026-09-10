@@ -161,12 +161,13 @@ services:
         condition: service_completed_successfully
     restart: "no"
 
-  periplus-query:
+  periplus-query: &periplus-query
     <<: *periplus-core
     command: fastapi run src/periplus/entrypoints/query.py --host 0.0.0.0 --port 8000
     ports:
       - "127.0.0.1:${PERIPLUS_QUERY_PORT:-8010}:8000"
-    environment:
+    environment: &periplus-query-environment
+      PERIPLUS_QUERY_MODE: stable
       PERIPLUS_API_URL: http://periplus-api:8000
       PERIPLUS_SERVICE_VERSION: ${PERIPLUS_IMAGE_TAG:-development}
       PERIPLUS_QUERY_API_TOKEN: ${PERIPLUS_QUERY_API_TOKEN:?Set PERIPLUS_QUERY_API_TOKEN}
@@ -191,6 +192,14 @@ services:
     restart: unless-stopped
 
 
+  periplus-query-experimental:
+    <<: *periplus-query
+    ports:
+      - "127.0.0.1:${PERIPLUS_QUERY_EXPERIMENTAL_PORT:-8011}:8000"
+    environment:
+      <<: *periplus-query-environment
+      PERIPLUS_QUERY_MODE: experimental
+
   periplus-public:
     container_name: periplus-public
     build:
@@ -204,6 +213,7 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       PERIPLUS_AI_MODEL: ${PERIPLUS_AI_MODEL:-}
       PERIPLUS_QUERY_URL: http://periplus-query:8000
+      PERIPLUS_QUERY_EXPERIMENTAL_URL: http://periplus-query-experimental:8000
       PERIPLUS_API_URL: http://periplus-api:8000
       PERIPLUS_PUBLIC_API_TOKEN: ${PERIPLUS_PUBLIC_API_TOKEN:?Set PERIPLUS_PUBLIC_API_TOKEN}
       PERIPLUS_QUERY_API_TOKEN: ${PERIPLUS_QUERY_API_TOKEN:?Set PERIPLUS_QUERY_API_TOKEN}

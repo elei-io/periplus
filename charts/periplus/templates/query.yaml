@@ -1,13 +1,18 @@
+{{- $root := . -}}
+{{- range $mode := list "stable" "experimental" }}
+{{- $component := ternary "query" "query-experimental" (eq $mode "stable") }}
+{{- $config := ternary $root.Values.query $root.Values.queryExperimental (eq $mode "stable") }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "periplus.fullname" . }}-query
+  name: {{ include "periplus.fullname" $root }}-{{ $component }}
   labels:
-    {{- include "periplus.labels" . | nindent 4 }}
-    app.kubernetes.io/component: query
+    {{- include "periplus.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $component }}
 spec:
-{{- if not .Values.query.autoscaling.enabled }}
-  replicas: {{ .Values.query.replicas }}
+{{- if not $config.autoscaling.enabled }}
+  replicas: {{ $config.replicas }}
 {{- end }}
   strategy:
     type: RollingUpdate
@@ -16,72 +21,74 @@ spec:
       maxSurge: 1
   selector:
     matchLabels:
-      {{- include "periplus.componentSelectorLabels" (dict "root" . "component" "query") | nindent 6 }}
+      {{- include "periplus.componentSelectorLabels" (dict "root" $root "component" $component) | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "periplus.componentSelectorLabels" (dict "root" . "component" "query") | nindent 8 }}
-        {{- with .Values.podLabels }}
+        {{- include "periplus.componentSelectorLabels" (dict "root" $root "component" $component) | nindent 8 }}
+        {{- with $root.Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- with .Values.podAnnotations }}
+      {{- with $root.Values.podAnnotations }}
       annotations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
     spec:
-      {{- include "periplus.corePodSpec" . | nindent 6 }}
+      {{- include "periplus.corePodSpec" $root | nindent 6 }}
       containers:
-        - name: query
-          image: {{ include "periplus.coreImage" . | quote }}
-          imagePullPolicy: {{ .Values.images.core.pullPolicy }}
+        - name: {{ $component }}
+          image: {{ include "periplus.coreImage" $root | quote }}
+          imagePullPolicy: {{ $root.Values.images.core.pullPolicy }}
           command: [fastapi, run, src/periplus/entrypoints/query.py, --host, 0.0.0.0, --port, "8000"]
           workingDir: /app/packages/periplus
           ports:
             - name: http
               containerPort: 8000
           env:
-            {{- include "periplus.duckdbEnv" .Values.query.duckdb | nindent 12 }}
+            - name: PERIPLUS_QUERY_MODE
+              value: {{ $mode | quote }}
+            {{- include "periplus.duckdbEnv" $config.duckdb | nindent 12 }}
             - name: PERIPLUS_API_URL
-              value: "http://{{ include "periplus.fullname" . }}-api:{{ .Values.api.service.port }}"
+              value: "http://{{ include "periplus.fullname" $root }}-api:{{ $root.Values.api.service.port }}"
             - name: PERIPLUS_SERVICE_VERSION
-              value: {{ .Values.images.core.tag | quote }}
+              value: {{ $root.Values.images.core.tag | quote }}
             - name: PERIPLUS_QUERY_API_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.secrets.apiAccess.name }}
-                  key: {{ .Values.secrets.apiAccess.queryTokenKey }}
+                  name: {{ $root.Values.secrets.apiAccess.name }}
+                  key: {{ $root.Values.secrets.apiAccess.queryTokenKey }}
             - name: PERIPLUS_DUCKLAKE_METADATA_PATH
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.secrets.queryDucklakeMetadata.name }}
-                  key: {{ .Values.secrets.queryDucklakeMetadata.pathKey }}
+                  name: {{ $root.Values.secrets.queryDucklakeMetadata.name }}
+                  key: {{ $root.Values.secrets.queryDucklakeMetadata.pathKey }}
             - name: PERIPLUS_DUCKLAKE_ALIAS
-              value: {{ .Values.config.ducklake.alias | quote }}
+              value: {{ $root.Values.config.ducklake.alias | quote }}
             - name: PERIPLUS_DUCKLAKE_METADATA_SCHEMA
-              value: {{ .Values.config.ducklake.metadataSchema | quote }}
+              value: {{ $root.Values.config.ducklake.metadataSchema | quote }}
             - name: PERIPLUS_DUCKLAKE_DATA_PATH
-              value: {{ .Values.config.ducklake.dataPath | quote }}
+              value: {{ $root.Values.config.ducklake.dataPath | quote }}
             - name: PERIPLUS_DUCKLAKE_S3_ENDPOINT
-              value: {{ .Values.config.ducklake.s3Endpoint | quote }}
+              value: {{ $root.Values.config.ducklake.s3Endpoint | quote }}
             - name: PERIPLUS_DUCKLAKE_S3_URL_STYLE
-              value: {{ .Values.config.ducklake.s3UrlStyle | quote }}
+              value: {{ $root.Values.config.ducklake.s3UrlStyle | quote }}
             - name: PERIPLUS_DUCKLAKE_S3_USE_SSL
-              value: {{ .Values.config.ducklake.s3UseSSL | quote }}
+              value: {{ $root.Values.config.ducklake.s3UseSSL | quote }}
             - name: PERIPLUS_DUCKLAKE_S3_REGION
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.secrets.queryS3.name }}
-                  key: {{ .Values.secrets.queryS3.regionKey }}
+                  name: {{ $root.Values.secrets.queryS3.name }}
+                  key: {{ $root.Values.secrets.queryS3.regionKey }}
             - name: PERIPLUS_DUCKLAKE_S3_KEY_ID
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.secrets.queryS3.name }}
-                  key: {{ .Values.secrets.queryS3.accessKeyIdKey }}
+                  name: {{ $root.Values.secrets.queryS3.name }}
+                  key: {{ $root.Values.secrets.queryS3.accessKeyIdKey }}
             - name: PERIPLUS_DUCKLAKE_S3_SECRET_ACCESS_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.secrets.queryS3.name }}
-                  key: {{ .Values.secrets.queryS3.secretAccessKeyKey }}
+                  name: {{ $root.Values.secrets.queryS3.name }}
+                  key: {{ $root.Values.secrets.queryS3.secretAccessKeyKey }}
           startupProbe:
             httpGet:
               path: /healthz
@@ -99,4 +106,6 @@ spec:
               port: http
             periodSeconds: 10
           resources:
-            {{- toYaml .Values.query.resources | nindent 12 }}
+            {{- toYaml $config.resources | nindent 12 }}
+
+{{- end }}

@@ -5,6 +5,7 @@ import base64
 import hashlib
 from datetime import date, datetime, time as datetime_time
 from decimal import Decimal
+from enum import StrEnum
 import json
 import logging
 import math
@@ -28,6 +29,11 @@ from periplus.operations.query_history.schemas import PreparationEvidence
 
 COMPILER_VERSION = "public-query-v4"
 
+class QueryMode(StrEnum):
+    STABLE = "stable"
+    EXPERIMENTAL = "experimental"
+
+
 logger = logging.getLogger(__name__)
 _active_queries = Gauge("periplus_query_active_operations", "Occupied query admission slots.")
 
@@ -46,6 +52,9 @@ class Diagnostic(BaseModel):
 
 
 class PreparedQuery(BaseModel):
+    query_mode: QueryMode = QueryMode.STABLE
+    compiler_version: str = COMPILER_VERSION + ":stable"
+    optimizations: list[str] = Field(default_factory=list)
     schema_version: Literal["public_v1"] = PUBLIC_SCHEMA
     query_id: str
     sql: str
@@ -70,7 +79,9 @@ class BusyError(Exception):
 class QueryService:
     """One connection and admission slot; no unbounded request queue."""
 
-    def __init__(self, config: CatalogueConfig, *, deadline: float | None = None):
+    def __init__(self, config: CatalogueConfig, *, deadline: float | None = None, mode: QueryMode = QueryMode.STABLE):
+        self.mode = QueryMode(mode)
+        self.compiler_version = f"{COMPILER_VERSION}:{self.mode.value}"
         self.alias = config.alias
         self.deadline = deadline
         self._lock = threading.Lock()
@@ -137,7 +148,7 @@ class QueryService:
         duration = limits.max_duration_seconds if self.deadline is None else min(self.deadline, limits.max_duration_seconds)
         if evidence is not None:
             evidence.duckdb_version = duckdb.__version__
-            evidence.compiler_version = COMPILER_VERSION
+            evidence.compiler_version = self.compiler_version
             evidence.effective_limits = dict(max_rows=limits.max_rows, max_duration_seconds=duration,
                                              max_result_bytes=limits.max_result_bytes)
         timer = threading.Timer(duration, interrupt)
@@ -175,9 +186,9 @@ class QueryService:
                 evidence.plan_truncated = any(item.code == "plan_truncated" for item in diagnostics)
                 # Exact preview identity, not an operator-shape or regression claim.
                 evidence.plan_fingerprint = None if evidence.plan_truncated else hashlib.sha256(
-                    (COMPILER_VERSION + "\n" + duckdb.__version__ + "\n" + plan).encode()).hexdigest()
+                    (self.compiler_version + "\n" + duckdb.__version__ + "\n" + plan).encode()).hexdigest()
                 evidence.diagnostics = [item.model_dump() for item in diagnostics]
-            prepared = PreparedQuery(query_id=query_id, sql=payload.sql, parameters=payload.parameters, diagnostics=diagnostics, plan=plan)
+            prepared = PreparedQuery(query_mode=self.mode, compiler_version=self.compiler_version, query_id=query_id, sql=payload.sql, parameters=payload.parameters, diagnostics=diagnostics, plan=plan)
             if expired.is_set():
                 raise TimeoutError("Query time limit exceeded.")
             if not execute:

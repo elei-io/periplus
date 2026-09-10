@@ -7,7 +7,7 @@ import { extractApiError, responseJson } from "@/lib/api"
 import { usePublicAccess } from "@/hooks/use-public-access"
 import { sameSqlDraft, sqlAssistantInputSchema, type SqlAssistantInput, type SqlAssistantReply, type SqlDraft } from "@/types/sql-assistant"
 
-export function useSqlAssistant(draft: SqlDraft, selection: string, failure: SqlAssistantInput["failure"], onChange: (draft: SqlDraft) => void) {
+export function useSqlAssistant(draft: SqlDraft, selection: string, failure: SqlAssistantInput["failure"], onChange: (draft: SqlDraft) => void, queryMode: "stable" | "experimental" = "stable") {
   const access = usePublicAccess("assistant")
   const [open, setOpen] = useState(false)
   const [intent, setIntent] = useState("")
@@ -27,14 +27,14 @@ export function useSqlAssistant(draft: SqlDraft, selection: string, failure: Sql
     },
     onError: error => { access.onDenied(error); toast.error(extractApiError(error)) },
   })
-  const stale = !!mutation.variables && !sameSqlDraft(draft, mutation.variables.draft)
+  const stale = !!mutation.variables && (mutation.variables.queryMode !== queryMode || !sameSqlDraft(draft, mutation.variables.draft))
   function show(prompt?: string) {
     setOpen(true)
     if (prompt) setIntent(prompt)
   }
   function submit() {
     if (!intent.trim() || mutation.isPending) return
-    mutation.mutate({ intent: intent.trim(), draft: { ...draft }, proposal: !stale && mutation.data?.sql ? { sql: mutation.data.sql, parameters: mutation.data.parameters } : null, selection, failure, history })
+    mutation.mutate({ queryMode, intent: intent.trim(), draft: { ...draft }, proposal: !stale && mutation.data?.sql ? { sql: mutation.data.sql, parameters: mutation.data.parameters } : null, selection, failure, history })
   }
   function apply() {
     if (!mutation.data?.sql || !mutation.variables || stale || mutation.isPending || mutation.data.validation?.status === "invalid") return

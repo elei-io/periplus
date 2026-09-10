@@ -5,6 +5,7 @@ import { Database, ListTree, MessageSquare, Play, Share2, Table2 } from "lucide-
 import { toast } from "sonner"
 import dynamic from "next/dynamic"
 
+import type { QueryMode } from "@/types/sql"
 import { Button } from "@/components/ui/button"
 import { Spinner } from "@/components/ui/spinner"
 import { Progress } from "@/components/ui/progress"
@@ -32,7 +33,8 @@ const SqlEditor = dynamic(() => import("@/components/sql-editor").then(module =>
 
 
 
-export function QueryWorkbench({ initialSql, initialParameters, autoRun = false }: { initialSql?: string; initialParameters?: string; autoRun?: boolean }) {
+export function QueryWorkbench({ initialSql, initialParameters, autoRun = false, initialMode = "stable" }: { initialMode?: QueryMode; initialSql?: string; initialParameters?: string; autoRun?: boolean }) {
+  const [mode, setMode] = useState<QueryMode>(initialMode)
   const [sql, setSql] = useState(initialSql ?? "")
   const [parameters, setParameters] = useState(initialParameters ?? "[]")
   const [selection, setSelection] = useState("")
@@ -40,16 +42,16 @@ export function QueryWorkbench({ initialSql, initialParameters, autoRun = false 
   const query = useQueryExecution()
   const assistant = useSqlAssistant({ sql, parameters }, selection, query.error && query.variables ? {
     sql: query.variables.sql, parameters: JSON.stringify(query.variables.parameters), message: extractApiError(query.error).slice(0, 2_000),
-  } : null, draft => { setSql(draft.sql); setParameters(draft.parameters) })
+  } : null, draft => { setSql(draft.sql); setParameters(draft.parameters) }, mode)
   const { mutate } = query
   useEffect(() => {
     if (!query.access.enabled || !autoRun || !initialSql?.trim() || !consumeDiscoveryLaunch()) return
     try {
       const values: unknown = JSON.parse(initialParameters ?? "[]")
       if (!Array.isArray(values)) throw new Error("Parameters must be a JSON array.")
-      mutate({ sql: initialSql, parameters: values })
+      mutate({ sql: initialSql, parameters: values, mode: initialMode })
     } catch (error) { toast.error(extractApiError(error)) }
-  }, [autoRun, initialSql, initialParameters, mutate, query.access.enabled])
+  }, [autoRun, initialSql, initialParameters, initialMode, mutate, query.access.enabled])
   const loadSql = useCallback((value: string) => {
     setSql(value); setParameters("[]")
     editor.current?.querySelector<HTMLElement>('[contenteditable="true"]')?.focus()
@@ -60,7 +62,7 @@ export function QueryWorkbench({ initialSql, initialParameters, autoRun = false 
     try {
       const values: unknown = JSON.parse(parameters)
       if (!Array.isArray(values)) throw new Error("Parameters must be a JSON array.")
-      query.mutate({ sql, parameters: values })
+      query.mutate({ sql, parameters: values, mode })
     } catch (error) { toast.error(extractApiError(error)) }
   }
   async function share() {
@@ -68,6 +70,7 @@ export function QueryWorkbench({ initialSql, initialParameters, autoRun = false 
       const address = new URL(window.location.href)
       address.pathname = "/sql"
       address.search = ""
+      address.searchParams.set("mode", mode)
       address.searchParams.set("sql", sql)
       address.searchParams.set("parameters", parameters)
       await navigator.clipboard.writeText(address.toString())
@@ -75,7 +78,7 @@ export function QueryWorkbench({ initialSql, initialParameters, autoRun = false 
       let sameParameters = false
       try { sameParameters = JSON.stringify(query.data?.parameters) === JSON.stringify(JSON.parse(parameters)) } catch { /* An edited invalid draft is not a successful result. */ }
       captureAnalytics("sql_query_shared", {
-        flow: "sql", operation_id: query.operationId, has_successful_result: query.isSuccess && query.data.sql === sql && sameParameters && query.data.rows.length > 0,
+        flow: "sql", operation_id: query.operationId, has_successful_result: query.isSuccess && query.data.query_mode === mode && query.data.sql === sql && sameParameters && query.data.rows.length > 0,
       })
     } catch (error) { toast.error(extractApiError(error)) }
   }
@@ -84,13 +87,15 @@ export function QueryWorkbench({ initialSql, initialParameters, autoRun = false 
       <SchemaExplorer onLoadSql={loadSql} />
       <div id="explore" className="flex min-w-0 scroll-mt-6 flex-col gap-4">
         <Card size="sm" className="sql-input-surface gap-0 py-0">
-          <div className="flex flex-wrap items-center gap-2 p-3"><Button className="min-w-28" disabled={!query.access.enabled || query.isPending || !sql.trim()} onClick={run}>{query.isPending ? <Spinner aria-hidden="true" /> : <Play />}{query.isPending ? "Running…" : "Run query"}</Button><Button variant="outline" onClick={share}><Share2 />Share</Button><QuerySettings value={parameters} onChange={setParameters} /><Button variant="ghost" aria-expanded={assistant.open} aria-controls="sql-assistant" onClick={() => { if (assistant.open) { assistant.setOpen(false) } else { assistant.show(); captureAnalytics("sql_assistant_opened") } }}>{assistant.isPending ? <Spinner aria-hidden="true" /> : <MessageSquare />}Ask SQL</Button><CardDescription id="editor-help" className="ml-auto">⌘ / Ctrl + Enter to run · Tab to leave editor</CardDescription></div>
+          <div className="flex flex-wrap items-center gap-2 p-3"><Tabs value={mode} onValueChange={value => setMode(value as QueryMode)}><TabsList aria-label="Query execution mode"><TabsTrigger value="stable" disabled={query.isPending}>Stable</TabsTrigger><TabsTrigger value="experimental" disabled={query.isPending}>Experimental</TabsTrigger></TabsList></Tabs><Button className="min-w-28" disabled={!query.access.enabled || query.isPending || !sql.trim()} onClick={run}>{query.isPending ? <Spinner aria-hidden="true" /> : <Play />}{query.isPending ? "Running…" : "Run query"}</Button><Button variant="outline" onClick={share}><Share2 />Share</Button><QuerySettings value={parameters} onChange={setParameters} /><Button variant="ghost" aria-expanded={assistant.open} aria-controls="sql-assistant" onClick={() => { if (assistant.open) { assistant.setOpen(false) } else { assistant.show(); captureAnalytics("sql_assistant_opened") } }}>{assistant.isPending ? <Spinner aria-hidden="true" /> : <MessageSquare />}Ask SQL</Button><CardDescription id="editor-help" className="ml-auto">⌘ / Ctrl + Enter to run · Tab to leave editor</CardDescription></div>
           <div ref={editor} onKeyDownCapture={event => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); event.stopPropagation(); if (!query.isPending && sql.trim()) run() } }}><SqlEditor value={sql} onChange={setSql} onSelectionChange={setSelection} /></div>
           {!sql.trim() && !assistant.open && <div className="px-3"><Button variant="ghost" size="sm" onClick={() => assistant.show()}>Describe what you want to query…</Button></div>}
           <div className="flex flex-wrap items-center justify-between gap-2 p-3"><div className="flex flex-wrap items-center gap-3"><CardDescription role="status">{query.access.message ?? query.phase}</CardDescription><Badge variant="secondary">DuckDB SQL · Read-only</Badge></div><CardDescription>{query.access.data ? `${query.access.data.sql.max_rows.toLocaleString()} rows / ${query.access.data.sql.max_result_bytes / (1024 * 1024)} MiB · ${query.access.data.sql.max_duration_seconds}s limit` : query.access.message === "Checking availability…" ? "Loading query limits…" : "Query limits unavailable"}</CardDescription></div>
+          {mode === "experimental" && <CardDescription className="px-3 pb-3">Experimental execution. Same SQL semantics; performance may vary.</CardDescription>}
           <SqlAssistant assistant={assistant} />
         </Card>
         <Card size="sm" aria-label="Query output" className="sql-output-surface min-h-72" aria-busy={query.isPending}>
+          {query.data && <CardDescription className="px-3 py-2">{query.data.query_mode === "experimental" ? "Experimental" : "Stable"} result · {query.data.compiler_version}</CardDescription>}
           <Tabs defaultValue="results">
             <div className="flex flex-wrap items-center justify-between gap-3 px-3"><TabsList variant="line" aria-label="Query output"><TabsTrigger value="results"><Table2 />Results</TabsTrigger><TabsTrigger value="plan">Execution plan</TabsTrigger></TabsList><div className="flex flex-wrap gap-2">{query.data && query.data.rows.length > 0 && <Button variant="outline" disabled={query.isPending} nativeButton={false} render={<Link href={sqlBuildLink(query.data)} target="_blank" rel="noopener noreferrer" />}>Use as dataset ↗</Button>}<QueryExport operationId={query.operationId} result={query.data} disabled={query.isPending} /></div></div>
             <div className="relative">
