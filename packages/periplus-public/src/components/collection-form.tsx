@@ -59,7 +59,7 @@ export function CollectionForm({ onCreated, initialDescription }: { onCreated: (
     onError: error => { access.onDenied(error); if(error instanceof ApiError && error.code === "options_changed") setFrozen(null); toast.error(extractApiError(error)) },
   })
   return <Card>
-    <CardHeader><CardTitle><h2>Request coverage</h2></CardTitle><CardDescription>Which sources would you like to see in Periplus? Add a website URL or describe the topics you need.</CardDescription></CardHeader>
+    <CardHeader><CardTitle><h2>Request coverage</h2></CardTitle><CardDescription>Add websites for everyone to research. Enter a website or describe the sources you want to bring into the shared collection.</CardDescription></CardHeader>
     <CardContent>
       {access.message && <p role="status">{access.message}</p>}
       {options && !validOptions && <p role="alert">Available options changed. Please choose a supported page budget, depth, link limit and retention period.</p>}
@@ -67,11 +67,11 @@ export function CollectionForm({ onCreated, initialDescription }: { onCreated: (
         <fieldset disabled={frozen !== null || !access.enabled} className="flex min-w-0 flex-col gap-6">
         <div className="flex flex-wrap gap-2" role="group" aria-label="Request type">
           <Button type="button" variant={kind === "url" ? "secondary" : "outline"} aria-pressed={kind === "url"} onClick={() => setKind("url")}><Globe />Add a website URL</Button>
-          <Button type="button" variant={kind === "description" ? "secondary" : "outline"} aria-pressed={kind === "description"} onClick={() => setKind("description")}><MessageSquare />Describe the data</Button>
+          <Button type="button" variant={kind === "description" ? "secondary" : "outline"} aria-pressed={kind === "description"} onClick={() => setKind("description")}><MessageSquare />Describe the sources</Button>
         </div>
         <div className="flex flex-col gap-2">
           <label htmlFor="coverage-input">{kind === "url" ? "Public website URL" : "What should Periplus cover?"}</label>
-          {kind === "url" ? <Input id="coverage-input" type="url" required maxLength={4000} placeholder="https://example.com" value={url} onChange={event => setUrl(event.target.value)} /> : <Textarea id="coverage-input" required maxLength={4000} rows={4} placeholder="For example: Finnish companies building industrial robots, including their products and technical specifications." value={description} onChange={event => setDescription(event.target.value)} />}
+          {kind === "url" ? <Input id="coverage-input" type="url" required maxLength={4000} placeholder="https://example.com" value={url} onChange={event => setUrl(event.target.value)} /> : <Textarea id="coverage-input" required maxLength={4000} rows={4} placeholder="For example: Websites of Finnish industrial robot manufacturers, especially their product and specification pages." value={description} onChange={event => setDescription(event.target.value)} />}
           <CardDescription>{kind === "url" ? "The starting page is depth 0. Each additional level follows another link." : "Tell us the topic, region, or kinds of pages you need. Starting URLs will be chosen automatically using search."}</CardDescription>
         </div>
         <div className="grid gap-4 sm:grid-cols-3">

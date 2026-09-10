@@ -2,7 +2,6 @@
 
 import { observeCoverage } from "@/lib/coverage-analytics"
 import Link from "next/link"
-import { discoverLink } from "@/lib/workspace-links"
 import { memo, useEffect, useLayoutEffect, useRef } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { ArrowUpRight, Check } from "lucide-react"
@@ -91,19 +90,19 @@ export function RequestStory({id, playing}: {id:string;playing:boolean}) {
       {item.source === "current" && (item.shared_pages > 0 || item.reused_pages > 0) && <p>{item.shared_pages.toLocaleString()} shared connections · {item.reused_pages.toLocaleString()} earlier observations reused. These counts can overlap with the pages observed total.</p>}
     </div>
     </div><RequestObservationTail key={id} id={id} playing={playing}/></div>
-    <footer className="request-summary-footer"><p>{item.query_ready === true ? "Ready to explore in SQL" : item.supplied_pages === null ? "Explore any results recorded so far" : item.supplied_pages === 0 ? "No observations recorded yet" : "Newest observations may still be arriving"}</p>{seed && <Link className={buttonVariants({variant:"outline"})} href={discoverLink(`Explore captured data for ${seed}, associated with coverage request ${item.id}. What questions could it help answer?`)} target="_blank" rel="noopener noreferrer">Explore this source <ArrowUpRight size={14}/></Link>}{sql && <Link className={buttonVariants({variant:"default"})} href={sql} target="_blank" rel="noopener noreferrer">Query captures <ArrowUpRight size={14}/></Link>}</footer>
+    <footer className="request-summary-footer"><p>{item.query_ready === true ? "Ready to explore in SQL" : item.supplied_pages === null ? "Explore any results recorded so far" : item.supplied_pages === 0 ? "No observations recorded yet" : "Newest observations may still be arriving"}</p>{sql && <Link className={buttonVariants({variant:"default"})} href={sql} target="_blank" rel="noopener noreferrer">Query captures <ArrowUpRight size={14}/></Link>}</footer>
   </section>
 }
 
 export const PublicRequests = memo(function PublicRequests({playing, onOpenRequest}: {playing:boolean;onOpenRequest:(id:string)=>void}) {
   const query=useQuery({queryKey:["observatory-requests"],queryFn:({signal})=>read<CollectionPage>("/api/collections?request_class=public&limit=5&offset=0",signal),refetchInterval:playing ? 10000 : false,retry:false})
   const requests=query.data?.items.map(item=>({id:item.id,title:title(item),count:item.supplied_pages,status:item.status === "settled" ? "Finished" : item.status === "paused" ? "Paused" : "In progress",summary:item.status === "settled" ? item.failed_pages ? `${item.failed_pages} pages could not be observed. Recorded results remain available.` : "Recorded observations remain available." : item.status === "paused" ? "Waiting for this request to resume." : item.queued_pages ? `${item.queued_pages.toLocaleString()} pages waiting to be observed.` : !item.seeds_settled ? "Finding starting pages." : item.acquiring_pages ? "Observing pages now." : "Following links and recording progress."}))
-  return <section className="observatory-public-requests" aria-labelledby="public-requests-heading"><header className="observatory-section-heading"><div><span className="eyebrow">A shared view</span><h2 id="public-requests-heading">Recent coverage requests</h2><p>The latest five public coverage requests. Open a request to review its progress and available observations.</p></div></header>
+  return <section className="observatory-public-requests" aria-labelledby="public-requests-heading"><header className="observatory-section-heading"><div><span className="eyebrow">Growing the collection together</span><h2 id="public-requests-heading">Recent coverage requests</h2><p>The latest five public coverage requests. Open a request to review its progress and available observations.</p></div></header>
     {query.isPending && <p role="status">Loading recent requests…</p>}{query.error && <ReadError error={query.error}/>}{requests?.length===0 && <p>No recent requests. Request coverage above.</p>}
     <div className="observatory-request-list">{requests?.map(item=><article key={item.id}><div className="observatory-request-intent"><span className="observatory-request-state">{item.status === "Finished" ? <Check size={13}/> : <span className="crawler-dot"/>}{item.status}</span><h3>{item.title}</h3><p>{item.summary}</p></div><div className="observatory-request-result"><strong>{item.count?.toLocaleString() ?? "—"}</strong><span>{item.count === 1 ? "page observed" : "pages observed"}</span><Button variant="link" onClick={()=>onOpenRequest(item.id)}>View progress <ArrowUpRight/></Button></div></article>)}</div>
   </section>
 })
 
 export function ExploreObservedWeb() {
-  return <section className="observatory-explore" id="coverage"><div><span className="eyebrow">Already in Periplus</span><h2>Explore the databank</h2><p>Explore the websites and dated captures already in Periplus. Investigate a question in Discover, match your schema in Build, or query the shared tables in SQL.</p></div><div className="observatory-explore-links"><Link href="/discover">Discover data <ArrowUpRight/></Link><Link href="/build">Build a dataset <ArrowUpRight/></Link><Link href={datasetSqlUrl({sql:coverageSql})}>Explore sites and dates in SQL <ArrowUpRight/></Link><Link href="/docs#how-it-works">Understand captures and time <ArrowUpRight/></Link></div></section>
+  return <section className="observatory-explore" id="coverage"><div><span className="eyebrow">Already in Periplus</span><h2>Explore websites people have added</h2><p>Every request helps shape the shared collection. Explore websites others have added, ask your own questions, or contribute sources for the next person.</p></div><div className="observatory-explore-links"><Link href={datasetSqlUrl({sql:coverageSql})}>Explore sites and dates in SQL <ArrowUpRight/></Link><Link href="/docs#how-it-works">Understand captures and time <ArrowUpRight/></Link></div></section>
 }
