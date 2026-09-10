@@ -12,8 +12,6 @@ const settings: FrontierSettings = {
   admission_limit: 10000,
   dispatch_limit: 48,
   captures_per_minute: 60,
-  attempt_allowance: 10000,
-  capture_time_allowance_ms: 86400000,
   capture_timeout_ms: 120000,
 }
 
@@ -26,19 +24,17 @@ test("editing preserves untouched limits, exact milliseconds, and the starting v
   assert.equal(settings.exclusions[0].host, "*.example.com")
 })
 
-test("zero allowances remain zero while unlimited pace uses null", () => {
+test("unlimited pace uses null", () => {
   const draft = settingsDraft({ policy_version: 2, settings })
   draft.unlimitedRate = true
   const payload = settingsPayload(draft)
   assert.equal(payload.settings.captures_per_minute, null)
 })
 
-test("hours and seconds convert without changing other operating allowances", () => {
+test("seconds convert to the per-capture timeout", () => {
   const draft = settingsDraft({ policy_version: 1, settings })
-  draft.numbers.capture_time_allowance_ms = "1.5"
   draft.numbers.capture_timeout_ms = "45"
   const payload = settingsPayload(draft)
-  assert.equal(payload.settings.capture_time_allowance_ms, 5400000)
   assert.equal(payload.settings.capture_timeout_ms, 45000)
 })
 

@@ -193,11 +193,10 @@ stop at the cap before request completion. At frontier capacity, retain bounded 
 checkpoints and pinned navigation inputs; resume on capacity availability with bounded recovery scans.
 Bound aggregate pending requests and retained inputs too, rather than creating an unlimited second queue.
 
-Physical attempts reserve browser-time/spend allowance separately, once per attempt regardless of the
-number of participants. Reserve an enforceable upper bound and reconcile measured usage. Unknown usage
-retains its reservation or is charged at the bound. Hard monetary ceilings require a provider cost
-bound; otherwise label cost as estimated and enforce measurable time/attempt ceilings. Background-only
-attempts also require background allowance. All retries obey physical attempt/time limits.
+Each physical attempt freezes a capture timeout once regardless of the number of
+participants. Retries obey per-acquisition attempt limits, global concurrency/rate
+limits and domain pacing. There is no lifetime attempt or elapsed-time allowance.
+Unknown outcomes retain their frozen timeout and null measured time as evidence.
 
 ### Crash guarantees
 

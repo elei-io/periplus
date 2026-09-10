@@ -1,5 +1,9 @@
 # Frontier acceptance audit
 
+Historical allowance checks below describe the former cumulative-budget implementation.
+Those limits and counters were removed by `20260910_0013`; see
+[the current deployment contract](DEPLOYMENT.md#removing-lifetime-crawl-allowances).
+
 > Historical frontier design/verification record. Its independent background selection,
 > allocation and seen-check paths were removed on 2026-09-08. Current execution ownership
 > is described in [ARCHITECTURE.md](ARCHITECTURE.md); recurring exploration uses ordinary

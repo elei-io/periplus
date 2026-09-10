@@ -112,7 +112,7 @@ class LineageIngestionTests(unittest.TestCase):
             self.assertFalse(self.service.record_visits([evidence])[0].created)
             restored = self.service.get_visit_evidence([identity])[identity]
             self.assertEqual(restored, evidence)
-            self.assertEqual(restored.attempts[0].resource_usage.charged_ms, 125000 if measured is None else measured)
+            self.assertEqual(restored.attempts[0].resource_usage.measured_ms, measured)
 
     def test_collection_cause_is_immutable_and_idempotent(self):
         from periplus.platform.catalogue.lineage import AcquisitionReason

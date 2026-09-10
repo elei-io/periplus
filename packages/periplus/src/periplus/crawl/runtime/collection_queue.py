@@ -8,7 +8,7 @@ from sqlalchemy.orm import aliased
 
 from periplus.crawl.control.domain_policies.models import DomainPolicy
 from periplus.crawl.runtime.frontier_models import AcquisitionRecord, InterestRecord
-from periplus.crawl.runtime.frontier_store import FrontierStore, _current_domain_column
+from periplus.crawl.runtime.frontier_store import _current_domain_column
 
 
 class QueueConstraint(BaseModel):
@@ -42,7 +42,7 @@ def collection_queue(session, record, control, *, workers, now):
     domain_floor = and_(AcquisitionRecord.domain_policy_id == policy_id,
                        AcquisitionRecord.domain_policy_version == policy_version,
                        AcquisitionRecord.domain_eligible_at > now)
-    global_reason = FrontierStore._attempt_waiting_reason(control)
+    global_reason = ("crawler_paused" if control.paused else None)
     deadline = record.deadline_at
     if record.status == 'paused':
         global_reason = 'collection_paused'

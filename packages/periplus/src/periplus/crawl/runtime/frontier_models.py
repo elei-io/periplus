@@ -17,10 +17,8 @@ class FrontierControlRecord(Base):
     __tablename__ = "frontier_control"
     __table_args__ = (
         CheckConstraint("id = 1", name="ck_frontier_single_control"),
-        CheckConstraint("reserved_attempts >= 0 AND started_attempts >= 0 AND reserved_capture_ms >= 0 AND charged_capture_ms >= 0",
-                        name="ck_frontier_attempt_counters"),
-        CheckConstraint("attempt_allowance >= 0 AND capture_time_allowance_ms >= 0 AND capture_timeout_ms BETWEEN 1000 AND 3600000",
-                        name="ck_frontier_attempt_allowances"),
+        CheckConstraint("capture_timeout_ms BETWEEN 1000 AND 3600000",
+                        name="ck_frontier_capture_timeout"),
         CheckConstraint("pending_count >= 0 AND active_count >= 0 AND interest_count >= 0", name="ck_frontier_counts"),
         CheckConstraint("acquisition_limit > 0 AND admission_limit > 0 AND dispatch_limit > 0 AND collection_limit > 0 AND interest_limit > 0", name="ck_frontier_limits"),
         CheckConstraint("captures_per_minute >= 0", name="ck_frontier_rates"),
@@ -42,13 +40,7 @@ class FrontierControlRecord(Base):
     active_count: Mapped[int] = mapped_column(default=0)
     captures_per_minute: Mapped[int] = mapped_column(default=60)
     next_dispatch_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    attempt_allowance: Mapped[int] = mapped_column(BigInteger, default=10000)
-    capture_time_allowance_ms: Mapped[int] = mapped_column(BigInteger, default=86400000)
     capture_timeout_ms: Mapped[int] = mapped_column(default=120000)
-    reserved_attempts: Mapped[int] = mapped_column(BigInteger, default=0)
-    started_attempts: Mapped[int] = mapped_column(BigInteger, default=0)
-    reserved_capture_ms: Mapped[int] = mapped_column(BigInteger, default=0)
-    charged_capture_ms: Mapped[int] = mapped_column(BigInteger, default=0)
     policy_version: Mapped[int] = mapped_column(default=1)
     scheduling_turn: Mapped[int] = mapped_column(default=0)
     last_dispatch_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

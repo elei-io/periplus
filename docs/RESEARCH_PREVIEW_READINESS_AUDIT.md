@@ -78,9 +78,9 @@ An attacker can use a modest number of large or pathological pages to exhaust cr
 
 ### F7 — P1 for anonymous crawl policy: storage abuse and permanent retention
 
-Default public choices allow 1,000 pages per collection, six submissions per minute, and `retention_seconds = null` (forever). These authorize up to 6,000 requested page units per minute; **they do not imply 6,000 actual captures per minute**. Frontier dispatch rate, collection/interest capacity, and cumulative attempt/time allowances independently cap physical work.
+Default public choices allow 1,000 pages per collection, six submissions per minute, and `retention_seconds = null` (forever). These authorize up to 6,000 requested page units per minute; **they do not imply 6,000 actual captures per minute**. Frontier dispatch rate, concurrent capture limits, and collection/interest capacity bound work.
 
-Those controls are useful, but they neither provide per-caller fairness nor bound bytes per capture. One actor can occupy global capacity, consume cumulative allowances, and create indefinitely protected spam. Once an operator replenishes allowances, the storage risk resumes. Default retention is disabled operationally, and even purge mode cannot reclaim forever-protected observations merely because disk space is low.
+Those controls are useful, but they neither provide per-caller fairness nor bound bytes per capture. One actor can occupy global capacity, create indefinitely protected spam, and consume sustained browser capacity. Default retention is disabled operationally, and even purge mode cannot reclaim forever-protected observations merely because disk space is low.
 
 For research preview, use small public page choices, finite public retention options, and a deliberately small global crawl allowance. Pair these with verified storage alerts and an explicit policy for removal of abuse. Current retention is expiry-based, not a general abuse-takedown workflow; do not improvise raw object deletion around its integrity guarantees. Content hashing prevents byte substitution, not truthful-looking spam or malicious instructions inside correctly captured content.
 

@@ -314,7 +314,7 @@ Crawler pause prevents new physical authorization; already-started captures fini
 frozen bounds. It is not a browser kill switch. There is no force-abort API in this cutoff.
 For an emergency, stop outbound access at the CDP deployment/network boundary; stopping a Periplus
 worker alone cannot prove that a remote browser stopped. Lost in-flight outcomes are recovered as
-uncertain attempts within the configured attempt/time allowances, not reported as cancelled network I/O.
+uncertain attempts within the per-acquisition retry limit, not reported as cancelled network I/O.
 
 ### Request retention
 
@@ -379,3 +379,19 @@ credentials. Gate public queries through Next.js and keep direct service endpoin
 table in control Postgres, bounded best-effort recording, janitor cleanup and the
 `observatory/queries` dashboard. This is explicitly approved product analytics;
 no query results or crawl history are added to control Postgres.
+
+### Removing lifetime crawl allowances
+
+Revision `20260910_0013` removes the cumulative attempt/time limits and counters from
+`frontier_control`. Crawling has no lifetime usage stop. Concurrency, rate, pause,
+per-capture timeout, per-acquisition retry bounds, and collection budgets remain.
+Per-attempt `resource_usage` retains the frozen timeout (`reserved_ms`) and measured
+elapsed time as immutable evidence; it does not debit an allowance.
+
+This requires a coordinated backend restart: stop API and all control-database
+workers before the setup hook drops the old columns, then start the new release.
+Keep query/public ingress in mind during this short API outage. Preserve existing
+collections, acquisitions, outbox messages, policies and evidence. No lake schema
+change or data reset is required. Back up control Postgres before applying it.
+The migration deliberately refuses downgrade because deleted lifetime counters
+cannot be reconstructed; use a pre-upgrade control backup for an old-code rollback.

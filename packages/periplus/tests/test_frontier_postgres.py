@@ -458,12 +458,12 @@ class FrontierPostgresTests(unittest.TestCase):
         self.assertEqual(current.settings, winner.settings)
         self.assertEqual(current.updated_by, winner.updated_by)
 
-    def test_concurrent_dispatch_cannot_overreserve_physical_allowance(self):
+    def test_concurrent_dispatch_cannot_exceed_active_capacity(self):
         from periplus.crawl.control.collections.frontier_controls import ReplaceFrontierSettings
         initial = self.store.control_view()
         self.store.replace_controls(ReplaceFrontierSettings(
             expected_version=initial.policy_version,
-            settings=initial.settings.model_copy(update={"attempt_allowance": 1}),
+            settings=initial.settings.model_copy(update={"dispatch_limit": 1}),
         ), actor="test", now=self.now)
         candidates = [self.store.admit(self.collection(), f"https://example.com/{index}",
                                       self.context, self.policy, now=self.now) for index in range(2)]
@@ -474,9 +474,7 @@ class FrontierPostgresTests(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=2) as pool:
             results = list(pool.map(dispatch, candidates))
         self.assertEqual(sum(result is not None for result in results), 1)
-        current = self.store.control_view()
-        self.assertEqual((current.reserved_attempts, current.started_attempts), (1, 0))
-        self.assertEqual(current.reserved_capture_ms, 125000)
+        self.assertEqual(self.store.control_view().dispatched_acquisitions, 1)
         with self.sessions() as session:
             interests = list(session.scalars(select(InterestRecord)))
         self.assertEqual(sorted(interest.budget_state for interest in interests), ["consumed", "reserved"])
@@ -523,8 +521,6 @@ class FrontierPostgresTests(unittest.TestCase):
         acquisition = self.store.get_acquisition(own.acquisition_id)
         view = self.store.control_view()
         self.assertEqual(acquisition.status, "dispatched" if started else "cancelled")
-        self.assertEqual(view.started_attempts, int(started))
-        self.assertEqual(view.reserved_attempts, 0)
         self.assertEqual(view.dispatched_acquisitions, int(started))
 
     def test_long_url_admission_keeps_full_identity_and_deduplicates_concurrent_contexts(self):

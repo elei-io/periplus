@@ -714,9 +714,9 @@ detail reads; all retained evidence remains shared.
 
 Frontier attempt `resource_usage` retains the effective domain policy snapshot (identity, version,
 actor, concurrency, interval, and pause setting) and exclusion-policy version alongside the global
-physical-allowance version and reserved/measured milliseconds. Final start freezes this domain
+dispatch-policy version and frozen timeout/measured milliseconds. Final start freezes this domain
 snapshot after checking current policy; edits do not rewrite already-started attempt evidence.
-Unknown attempts retain the same frozen policy provenance and conservative time charge. Nested policy values use canonical JSON in DuckLake.
+Unknown attempts retain the same frozen policy provenance and frozen timeout bound. Nested policy values use canonical JSON in DuckLake.
 
 
 Current Postgres collection state retains an optional `admission_timing` observation containing the
