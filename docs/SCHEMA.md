@@ -86,6 +86,15 @@ prevents later visits from re-emitting content-grain HTML rows, while a determin
 minimum document identity selects one owner when genuinely new content first appears in parallel
 batches.
 
+### `material.html_jsonld`
+
+One row per `(content_sha256, node_index)` for an HTML JSON-LD script, storing
+`value JSON` and `parse_error VARCHAR`. The shared parsed element context supplies
+script text; a bounded standalone DuckDB connection preserves the public parser
+contract. Invalid scripts remain rows. Files use eight content-hash buckets and
+sort by `(content_sha256, node_index)`. This projection shares content ownership,
+replay, rebuild and atomic activation with the other fixed projections.
+
 ### `material.prose`
 
 One row per `content_sha256` with materialized searchable body `text`. It shares
@@ -352,10 +361,10 @@ ORDER BY item_index;
 
 ### `public_v1.html_jsonld`
 
-A content-owned view over existing HTML primitives, with one row per HTML script
+A content-owned view over `material.html_jsonld`, with one row per HTML script
 whose declared type has the application/ld+json media-type essence. Type matching
 ignores ASCII case, surrounding HTML ASCII whitespace and semicolon parameters.
-The key is `(content_id, node_index)`. There is no new materialization.
+The key is `(content_id, node_index)`. Parsing happens during materialization.
 
 | Column | SQL type | Meaning |
 | --- | --- | --- |
@@ -365,7 +374,8 @@ The key is `(content_id, node_index)`. There is no new materialization.
 | parse_error | VARCHAR | Null on success; otherwise a stable parse error |
 
 Ordered immediate script text comes from `html_element.text_direct` and is parsed
-using DuckDB's JSON parser and its accepted syntax; no node join or grouping is needed.
+during materialization using DuckDB's JSON parser and its accepted syntax. Queries
+read the stored records without scanning general HTML elements.
 Empty/whitespace-only scripts report `Empty JSON-LD script`; other parser failures
 report `Invalid JSON syntax`. Invalid declarations remain rows rather than failing
 the query. A valid JSON null is JSON `null`, with no parse error, distinct from

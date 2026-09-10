@@ -1,0 +1,7 @@
+id = "tori-latest-products"
+title = "Latest successful Tori captures joined to Product JSON-LD"
+use_case = "Select latest observations before reconstructing structured content."
+classification = "optimizer"
+ordered = false
+memory_limit = "512MB"
+max_warm_ms = 60000

@@ -9,9 +9,6 @@ import duckdb
 from periplus.materialization.document_projection import VisitBatchContext
 from periplus.materialization.dom.nodes import parse_document
 from periplus.materialization.registry import PROJECTIONS
-from periplus.materialization.projections.html_elements import project as elements_project
-from periplus.materialization.projections.html_nodes import project as nodes_project
-from periplus.materialization.projections.prose import project as prose_project
 from periplus.platform.catalogue.client import _column_type
 from periplus.platform.catalogue.public import public_objects
 from periplus.platform.catalogue.schema import expected_columns
@@ -48,7 +45,7 @@ class ContentScopeTests(unittest.TestCase):
         }.items()}
         context = VisitBatchContext((), (), (), {k: v[1] for k, v in parsed.items()},
                                     {k: v[0] for k, v in parsed.items()}, {}, frozenset(parsed))
-        for name, project in [('html_nodes', nodes_project), ('html_elements', elements_project), ('prose', prose_project)]:
+        for name, project in [(spec.name, spec.rows) for spec in PROJECTIONS]:
             self.db.register('projection_rows', project(context))
             self.db.execute(f'INSERT INTO material.{name} SELECT * FROM projection_rows')
             self.db.unregister('projection_rows')
