@@ -26,7 +26,7 @@ _ALLOWED = {
     'like', 'ilike', 'in', 'between', 'lower', 'upper', 'coalesce',
     'order', 'ordered', 'distinct', 'limit', 'offset', 'star',
 }
-_PRIMITIVES = {'html_node', 'html_element'}
+_PRIMITIVES = {'html_node', 'html_element', 'html_jsonld'}
 _DRIVERS = {'prose', 'capture', *_PRIMITIVES}
 _MAX_NODES = 1500
 _MAX_SQL = 100_000
