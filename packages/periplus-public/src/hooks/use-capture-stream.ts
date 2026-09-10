@@ -3,11 +3,13 @@
 import { useEffect, useRef, useState } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { responseJson } from "@/lib/api"
+import { CaptureRate } from "@/lib/capture-rate"
 import { CaptureBuffer, type CaptureBufferSnapshot } from "@/lib/capture-buffer"
 import type { CapturePage, CaptureBatch } from "@/types/live"
 
 export function useCaptureStream(enabled: boolean, playing: boolean) {
   const cache = useQueryClient()
+  const [rate] = useState(() => new CaptureRate())
   const [buffer] = useState(() => new CaptureBuffer())
   const lastBatch = useRef<CaptureBatch | null>(null)
   const [presentation, setPresentation] = useState<CaptureBufferSnapshot>(() => buffer.snapshot())
@@ -31,7 +33,7 @@ export function useCaptureStream(enabled: boolean, playing: boolean) {
       }
       const tail = new Map((combined!.bootstrap ? [] : previous?.tail ?? []).map(item => [item.observation_id, item]))
       for (const item of combined!.items) tail.set(item.observation_id, item)
-      return {...combined!, tail: [...tail.values()].sort((a,b) => Date.parse(a.completed_at) - Date.parse(b.completed_at) || a.observation_id.localeCompare(b.observation_id)).slice(-7)}
+      return {...combined!, rate: rate.accept(combined!, performance.now()), tail: [...tail.values()].sort((a,b) => Date.parse(a.completed_at) - Date.parse(b.completed_at) || a.observation_id.localeCompare(b.observation_id)).slice(-7)}
     },
     refetchInterval: query => query.state.data?.has_more ? 100 : 5000,
     staleTime: 0,
