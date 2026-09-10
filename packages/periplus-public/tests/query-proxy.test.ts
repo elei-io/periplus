@@ -88,7 +88,7 @@ test("execution modes route independently and experimental never falls back", as
     calls.length = 0
     delete process.env.PERIPLUS_QUERY_EXPERIMENTAL_URL
     assert.equal((await proxy(new Request("https://public.example", { method: "POST" }), "/query/exec", "experimental")).status, 503)
-    assert.deepEqual(calls, [])
+    assert.equal(calls.length, 0)
     process.env.PERIPLUS_QUERY_EXPERIMENTAL_URL = "http://experimental.internal"
     globalThis.fetch = async url => { calls.push(String(url)); throw new Error("unavailable") }
     assert.equal((await proxy(new Request("https://public.example", { method: "POST" }), "/query/exec", "experimental")).status, 503)
