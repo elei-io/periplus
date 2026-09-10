@@ -69,3 +69,50 @@ multiple dispersed keys, not only the minimum content hash. Minimum-hash prefixe
 cluster requested keys and must not be treated as representative random lookups
 or a controlled unrelated-corpus scaling test. All reports remain private campaign
 artifacts. No runtime changes or new PR are proposed from this investigation yet.
+
+## Dispersed20-key validation
+
+Hash-ranked20-key selection avoids the minimum-hash clustering in the first test.
+Both complete comparisons preserve results/types (20rows):
+
+| Order | Snapshot | Baseline ordinary / warm | Candidate ordinary / warm | Node files baseline / candidate |
+| --- | ---: | ---: | ---: | ---: |
+| Candidate first | 88554 | 9.689 s / 5.034 s | 25.120 s / 4.371 s | 355 / 259 |
+| Baseline first | 88635 | 30.585 s / 5.008 s | 4.609 s / 4.476 s | 322 / 250 |
+
+The candidate improves warm time11–13%, but node scan output remains44.62–44.87
+million rows versus baseline80.95–81.18million. This is not adequate selective
+access for20 keys. Do not present the earlier one-key result as general evidence
+of stable lookup cost. The native key-join access path remains a separate blocker.
+A fixed-key literal-membership versus key-table comparison is the next experiment;
+it separates key propagation from physical file layout without capture selection.
+Different snapshots and ongoing compaction explain why file counts are compared
+within each pair rather than treated as controlled corpus-growth evidence.
+
+## Fixed-key access-path isolation
+
+Resolve20 distinct keys once and hold that exact set fixed, then compare grouped
+counts over a VALUES-key semijoin with literal IN membership in each snapshot.
+Private key literals stay in ignored artifacts; neither keys nor rows are published.
+Both orders return19 equal rows/types (one selected key has no nodes).
+
+- Snapshot88758: semijoin ordinary13.150 s/warm3.750 s, IN3.727 s/4.075 s.
+  Both read261 node files; scan output45.10million versus48.87million.
+- Snapshot88823 reverse: semijoin3.912 s/3.883 s, IN13.532 s/3.789 s.
+  There is no repeatable latency improvement from literal IN.
+- Snapshot88899, exact-key UNION ALL candidate first: equal19rows. Semijoin
+  ordinary10.297 s/warm3.877 s, one scan263files and45.46million output rows;
+  20 exact equality branches23.291 s/17.663 s,689 summed file reads and109,595
+  scan output rows. Summed file reads can include the same file repeatedly and
+  must not be called689 distinct files. This candidate is4.56x slower warm and
+  is rejected without another reverse-order production run.
+
+These measurements distinguish filter propagation from efficient batched access.
+Exact predicates reduce scan output, but issuing one scan per key is too costly.
+The current application declarations bucket both primitives by content_sha256
+into8 partitions; dispersed keys quickly cover many buckets. This is a layout
+risk, not proof of the active production partition specification or a recommendation
+to increase buckets blindly. More buckets alone do not remove corpus-size scaling.
+Next inspect the active partition specification and file key-range overlap, then
+compare a clustered bounded-file layout in an isolated corpus. Avoid introducing
+a generic compiler rewrite before there is a proven batched access path.
