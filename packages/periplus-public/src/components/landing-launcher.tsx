@@ -17,7 +17,7 @@ export function LandingLauncher() {
   const [pending, startTransition] = useTransition()
   function launch(text = value) {
     if (!text.trim() || pending) return
-    captureAnalytics("landing_dataset_launched", { prompt_length: text.length })
+    captureAnalytics("landing_discovery_launched", { prompt_length: text.length })
     startTransition(() => router.push(`/discover?${new URLSearchParams({ run: "1", question: text })}`))
   }
   return <div className="landing-launcher">

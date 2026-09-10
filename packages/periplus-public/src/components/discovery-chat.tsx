@@ -19,6 +19,7 @@ import { AnalysisAnswer, ChatActivity } from "@/components/analysis-answer"
 import { DiscoveryFindings } from "@/components/discovery-findings"
 import { DatasetResult } from "@/components/dataset-result"
 import { DatasetSpecification, emptyDatasetBrief } from "@/components/dataset-specification"
+import { workspaceOutput } from "@/lib/workspace-analytics"
 import { analysisHistory, analysisView } from "@/lib/analysis-view"
 import { datasetBriefSchema, datasetRequestSchema, sameDatasetBrief, type DatasetBrief, type DatasetMode } from "@/types/answer"
 import type { DiscoveryMessage } from "@/types/assistant"
@@ -37,6 +38,8 @@ export function DiscoveryChat({ initialPrompt, initialDraft, autoRun = false, mo
   const [panel, setPanel] = useState("schema")
   const [editedContract, setEditedContract] = useState<DatasetBrief | undefined>(initialDraft)
   const operation = useRef<AnalyticsOperation | null>(null)
+  const evidenceOperation = useRef<string | null>(null)
+  const validating = useRef(false)
   const composer = useRef<HTMLTextAreaElement>(null)
   const access = usePublicAccess("assistant")
   const { onDenied } = access
@@ -50,21 +53,43 @@ export function DiscoveryChat({ initialPrompt, initialDraft, autoRun = false, mo
   }), [mode, onDenied])
   const [prompt, setPrompt] = useState(autoRun ? "" : initialPrompt ?? "")
   const { messages, sendMessage, status, stop, error, setMessages } = useChat<DiscoveryMessage>({ transport, messages: [], onError: error => {
-    if (operation.current) finishAnalyticsOperation(operation.current, "discovery_finished", { flow: "discovery", mode, outcome: "failed", error_category: analyticsErrorCategory(error) })
+    if (operation.current && !operation.current.finished) {
+      finishAnalyticsOperation(operation.current, "workspace_turn_finished", { workspace: mode, outcome: "failed", validation_requested: validating.current, error_category: analyticsErrorCategory(error) })
+      if (validating.current) captureAnalytics("dataset_validation_finished", { workspace: mode, operation_id: operation.current.id, outcome: "failed" })
+    }
     toast.error(extractApiError(error))
   }, onFinish: ({ message, isAbort, isError, isDisconnect }) => {
     setInterrupted(Boolean(isAbort || isError || isDisconnect))
-    if (!operation.current) return
-    const presentation = analysisView(message).presentation
-    if (presentation?.dataset?.rows.length) captureAnalytics("discovery_result_produced", { flow: "discovery", mode, operation_id: operation.current.id, result_id: message.id, row_count: presentation.dataset.rows.length, stage: presentation.status, time_to_first_result_ms: Math.round(performance.now() - operation.current.started) })
-    finishAnalyticsOperation(operation.current, "discovery_finished", { flow: "discovery", mode, outcome: isAbort ? "cancelled" : isError || isDisconnect ? "failed" : presentation?.status === "ready" ? "success" : presentation?.status ?? "blocked", row_count: presentation?.dataset?.rows.length ?? 0, truncated: presentation?.dataset?.truncated ?? false, result_id: message.id })
+    if (!operation.current || operation.current.finished) return
+    const output = workspaceOutput(message)
+    const outcome = isAbort ? "cancelled" : isError || isDisconnect ? "failed" : "completed"
+    const metadata = message.metadata
+    finishAnalyticsOperation(operation.current, "workspace_turn_finished", {
+      workspace: mode, outcome, ...output, validation_requested: validating.current,
+      result_id: message.id, model: metadata?.model,
+      input_tokens: metadata?.input_tokens, output_tokens: metadata?.output_tokens,
+    })
+    if (validating.current) captureAnalytics("dataset_validation_finished", {
+      workspace: mode, operation_id: operation.current.id,
+      outcome: outcome !== "completed" ? outcome : output.dataset_status === "ready" ? "validated" : output.dataset_status === "none" ? "no_result" : "needs_changes",
+      issue_count: output.issue_count, row_count: output.row_count, truncated: output.truncated,
+    })
   } })
   useEffect(() => {
     if (access.enabled && autoRun && initialPrompt?.trim() && consumeDiscoveryLaunch()) {
-      operation.current = startAnalyticsOperation("discovery_started", { flow: "discovery", mode, entry: "landing" })
+      operation.current = startAnalyticsOperation("workspace_turn_started", { workspace: mode, entry: "landing", validation_requested: false })
       void sendMessage({ text: initialPrompt }, { body: { operation_id: operation.current.id } })
     }
   }, [autoRun, initialPrompt, sendMessage, access.enabled, mode])
+  useEffect(() => {
+    const current = operation.current
+    const message = messages.at(-1)
+    if (!current || !message || message.role !== "assistant" || message.metadata?.operation_id !== current.id || evidenceOperation.current === current.id) return
+    const output = workspaceOutput(message)
+    if (!output.has_evidence) return
+    evidenceOperation.current = current.id
+    captureAnalytics("workspace_evidence_shown", { workspace: mode, operation_id: current.id, has_nonempty_evidence: output.has_nonempty_evidence, time_to_first_evidence_ms: Math.round(performance.now() - current.started) })
+  }, [messages, mode])
   const busy = status === "submitted" || status === "streaming"
   const findingsMessage = [...messages].reverse().find(message => message.role === "assistant")
   const schemaMessage = [...messages].reverse().find(message => message.role === "assistant" && analysisView(message).schema)
@@ -81,9 +106,10 @@ export function DiscoveryChat({ initialPrompt, initialDraft, autoRun = false, mo
     if (!parsed.success) { toast.error("Complete the schema, row definition and source scope. Column names must be unique."); return }
     setInterrupted(false)
     if (mode === "build") setPanel(requiredContract ? "preview" : "schema")
-    operation.current = startAnalyticsOperation("discovery_started", { flow: "discovery", mode, stage: requiredContract ? "build" : "sample", entry: "workspace" })
+    validating.current = Boolean(requiredContract)
+    operation.current = startAnalyticsOperation("workspace_turn_started", { workspace: mode, validation_requested: Boolean(requiredContract), entry: initialPrompt || initialDraft ? "contextual" : "workspace" })
     void sendMessage({ text }, { body: { contract: requiredContract, operation_id: operation.current.id } }); setPrompt("")
-  }, [access.enabled, busy, sendMessage, mode])
+  }, [access.enabled, busy, sendMessage, mode, initialPrompt, initialDraft])
   const suggestedBuildLink = presented ? buildLink(`Build this proposed dataset. Use this SQL as a starting point and verify it against the specification.\n\n${presented.dataset?.sql ?? ""}`, presented.brief) : "/build"
   return <section className="discovery-panels grid items-start gap-6 pb-8 lg:grid-cols-12" aria-label={mode === "discover" ? "Data discovery" : "Dataset builder"}>
     <div className="discovery-conversation flex min-w-0 flex-col gap-4 lg:col-span-5">

@@ -10,6 +10,7 @@ import { Switch } from "@/components/ui/switch"
 import type { AnalysisQueryResult } from "@/types/analysis"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { datasetDraftSchema, type DatasetBrief } from "@/types/answer"
+import { captureAnalytics } from "@/lib/analytics"
 import { extractApiError } from "@/lib/api"
 
 export const emptyDatasetBrief: DatasetBrief = { title: "", grain: "", population: "", fields: [] }
@@ -33,6 +34,7 @@ export function DatasetSpecification({ draft, busy, onChange, preview }: { draft
       const url = URL.createObjectURL(new Blob([JSON.stringify(draft, null, 2)], { type: "application/json" }))
       const link = document.createElement("a")
       link.href = url; link.download = "periplus-draft.json"; link.click(); URL.revokeObjectURL(url)
+      captureAnalytics("dataset_definition_saved", { workspace: "build", validated: false, field_count: draft.fields.length })
     } catch (error) { toast.error(extractApiError(error)) }
   }
   async function importDefinition(file?: File) {
@@ -43,6 +45,7 @@ export function DatasetSpecification({ draft, busy, onChange, preview }: { draft
       const parsed = datasetDraftSchema.parse(value.brief ?? value)
       onChange(parsed)
       setStarted(true)
+      captureAnalytics("dataset_schema_imported", { workspace: "build", field_count: parsed.fields.length })
       toast.success("Schema imported. Complete any unfinished fields before validating.")
     } catch (error) { toast.error(extractApiError(error)) }
     finally { if (fileInput.current) fileInput.current.value = "" }

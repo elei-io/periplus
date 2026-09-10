@@ -8,7 +8,7 @@ export function analyticsUrl(value: string): string {
 }
 
 export function redactAnalyticsProperties(value: unknown, key = ""): unknown {
-  if (/exception.*(message|value)|^(sql|parameters|prompt|question|rows|body|text|message|value|context_line|pre_context|post_context)$/i.test(key)) return "[redacted]"
+  if (/exception.*(message|value)|^(sql|parameters|prompt|question|draft|schema|specification|fields|meaning|population|grain|rows|body|text|message|value|context_line|pre_context|post_context)$/i.test(key)) return "[redacted]"
   if (typeof value === "string") {
     if (/url|referrer|href|filename/i.test(key)) return analyticsUrl(value)
     return value

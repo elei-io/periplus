@@ -21,3 +21,9 @@ test("structured content and exception source context cannot escape redaction", 
   const redacted = JSON.stringify(redactAnalyticsProperties(properties));
   assert.doesNotMatch(redacted, /private|123/);
 })
+
+test("builder specifications and handoff URLs are redacted", () => {
+  const result = redactAnalyticsProperties({ draft: { title: "private" }, schema: { fields: ["private"] }, specification: "private", $current_url: "https://periplus.dev/build?draft=private", field_count: 2 })
+  assert.doesNotMatch(JSON.stringify(result), /private/)
+  assert.equal((result as { field_count: number }).field_count, 2)
+})
