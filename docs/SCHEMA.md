@@ -364,7 +364,8 @@ The key is `(content_id, node_index)`. There is no new materialization.
 | value | JSON | Complete parsed document; SQL null on failure |
 | parse_error | VARCHAR | Null on success; otherwise a stable parse error |
 
-Ordered script text is parsed using DuckDB's JSON parser and its accepted syntax.
+Ordered immediate script text comes from `html_element.text_direct` and is parsed
+using DuckDB's JSON parser and its accepted syntax; no node join or grouping is needed.
 Empty/whitespace-only scripts report `Empty JSON-LD script`; other parser failures
 report `Invalid JSON syntax`. Invalid declarations remain rows rather than failing
 the query. A valid JSON null is JSON `null`, with no parse error, distinct from

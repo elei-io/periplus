@@ -1,4 +1,3 @@
-CREATE OR REPLACE VIEW public_v1.html_jsonld AS
 WITH scripts AS (
     SELECT s.content_id, s.node_index,
            s.text_direct AS source_text
