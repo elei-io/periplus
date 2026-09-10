@@ -1,0 +1,117 @@
+{{- if .Values.upgradeCoordination.enabled }}
+{{- $root := . }}
+{{- $name := printf "%s-upgrade" (include "periplus.fullname" .) }}
+{{- $targets := dict }}
+{{- range $role := list "api" "query" "queryExperimental" "crawler" "ingestor" "materializer" "janitor" "admin" "public" }}
+{{- $settings := index $root.Values $role }}
+{{- $component := ternary "query-experimental" $role (eq $role "queryExperimental") }}
+{{- $replicas := 1 }}
+{{- if hasKey $settings "replicas" }}{{- $replicas = $settings.replicas }}{{- end }}
+{{- if and $settings.autoscaling $settings.autoscaling.enabled }}
+{{- $replicas = $settings.autoscaling.minReplicas }}
+{{- end }}
+{{- $image := include "periplus.coreImage" $root }}
+{{- if eq $role "admin" }}{{- $image = include "periplus.adminImage" $root }}{{- end }}
+{{- if eq $role "public" }}{{- $image = include "periplus.publicImage" $root }}{{- end }}
+{{- $_ := set $targets (printf "%s-%s" (include "periplus.fullname" $root) $component) (dict "role" $component "replicas" $replicas "image" $image) }}
+{{- end }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  annotations:
+    helm.sh/hook: pre-upgrade
+    helm.sh/hook-weight: "-40"
+    helm.sh/hook-delete-policy: before-hook-creation
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $name }}
+  annotations:
+    helm.sh/hook: pre-upgrade
+    helm.sh/hook-weight: "-40"
+    helm.sh/hook-delete-policy: before-hook-creation
+rules:
+  - apiGroups: [apps]
+    resources: [deployments]
+    resourceNames: {{ keys $targets | sortAlpha | toJson }}
+    verbs: [get, patch]
+  - apiGroups: [keda.sh]
+    resources: [scaledobjects]
+    resourceNames: {{ keys $targets | sortAlpha | toJson }}
+    verbs: [get, patch]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $name }}
+  annotations:
+    helm.sh/hook: pre-upgrade
+    helm.sh/hook-weight: "-35"
+    helm.sh/hook-delete-policy: before-hook-creation
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $name }}
+{{- range $phase := list "stop" "start" }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}-{{ $phase }}
+  labels:
+    {{- include "periplus.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: upgrade
+  annotations:
+    helm.sh/hook: {{ ternary "pre-upgrade" "post-upgrade" (eq $phase "stop") }}
+    helm.sh/hook-weight: {{ ternary "-20" "10" (eq $phase "stop") | quote }}
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ $root.Values.upgradeCoordination.timeoutSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "periplus.componentSelectorLabels" (dict "root" $root "component" "upgrade") | nindent 8 }}
+    spec:
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: true
+      restartPolicy: Never
+      {{- with $root.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- include "periplus.podPlacement" $root | nindent 6 }}
+      containers:
+        - name: coordinate
+          image: {{ include "periplus.coreImage" $root | quote }}
+          imagePullPolicy: {{ $root.Values.images.core.pullPolicy }}
+          command:
+            - python
+            - -c
+            - |
+              {{- $root.Files.Get "files/upgrade.py" | nindent 14 }}
+          env:
+            - name: PHASE
+              value: {{ $phase }}
+            - name: NAMESPACE
+              value: {{ $root.Release.Namespace }}
+            - name: RELEASE
+              value: {{ $root.Release.Name }}
+            - name: TARGETS
+              value: {{ $targets | toJson | quote }}
+            - name: TIMEOUT_SECONDS
+              value: {{ $root.Values.upgradeCoordination.timeoutSeconds | quote }}
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {cpu: 100m, memory: 64Mi}
+{{- end }}
+{{- end }}

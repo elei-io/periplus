@@ -24,6 +24,29 @@ class HelmScalingTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return [document for document in yaml.safe_load_all(result.stdout) if document]
 
+    def test_upgrade_hooks_drain_before_setup_and_use_only_release_scoped_permissions(self):
+        docs = self.render({'upgradeCoordination': {'enabled': True}})
+        jobs = {d['metadata']['name'].rsplit('-', 1)[-1]: d for d in docs if d['kind'] == 'Job'}
+        self.assertLess(int(jobs['stop']['metadata']['annotations']['helm.sh/hook-weight']),
+                        int(jobs['setup']['metadata']['annotations']['helm.sh/hook-weight']))
+        self.assertEqual(jobs['stop']['metadata']['annotations']['helm.sh/hook'], 'pre-upgrade')
+        self.assertEqual(jobs['start']['metadata']['annotations']['helm.sh/hook'], 'post-upgrade')
+        import json
+        container = jobs['start']['spec']['template']['spec']['containers'][0]
+        targets = json.loads(next(e['value'] for e in container['env'] if e['name'] == 'TARGETS'))
+        deployments = [d for d in docs if d['kind'] == 'Deployment']
+        self.assertEqual(set(targets), {d['metadata']['name'] for d in deployments})
+        for deployment in deployments:
+            self.assertEqual(targets[deployment['metadata']['name']]['image'],
+                             deployment['spec']['template']['spec']['containers'][0]['image'])
+        role = next(d for d in docs if d['kind'] == 'Role')
+        for rule in role['rules']:
+            if 'patch' in rule['verbs']:
+                self.assertEqual(set(rule['resourceNames']), set(targets))
+        self.assertNotIn('envFrom', container)
+        self.assertTrue(jobs['start']['spec']['template']['spec']['automountServiceAccountToken'])
+        self.assertFalse(jobs['setup']['spec']['template']['spec']['automountServiceAccountToken'])
+
     def test_operational_replication_is_shared_by_core_roles(self):
         for replicas in (1, 3, 5):
             docs = self.render({"config": {"nats": {"operationalReplicas": replicas}}})

@@ -328,6 +328,24 @@
           "$ref": "#/definitions/duckdb"
         }
       }
+    },
+    "upgradeCoordination": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "timeoutSeconds"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "minimum": 360,
+          "maximum": 3600
+        }
+      }
     }
   },
   "definitions": {

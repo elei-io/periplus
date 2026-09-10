@@ -272,3 +272,12 @@ services independently with the same core image and read-only credentials.
 capacity; it uses fixed replicas. Pod monitoring includes both modes. The public
 application receives both internal URLs and offers the mode selector in the SQL
 console. See [query semantics](../../docs/QUERY.md#stable-and-experimental-execution).
+
+### Coordinated migration upgrades
+
+Enable `upgradeCoordination.enabled` to drain old runtime pods and pause KEDA before
+setup, then restore and verify the new release afterward. This creates a maintenance
+window on every upgrade. Hook pods need Kubernetes API/DNS egress; their RBAC is
+scoped to this release's deployment/scaler names and read-only pod listing.
+Use retry-without-rollback failure handling in Flux. See
+[deployment and recovery behavior](../../docs/DEPLOYMENT.md#automatic-coordinated-upgrades).
