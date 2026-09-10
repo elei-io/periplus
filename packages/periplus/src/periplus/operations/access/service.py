@@ -65,6 +65,7 @@ class AccessStore:
             if specification is not None:
                 if (specification.page_limit not in policy.crawl.page_budgets
                         or specification.max_depth not in policy.crawl.max_depths
+                        or specification.follow_link_limit not in policy.crawl.follow_link_limits
                         or specification.retention_seconds not in policy.crawl.retention_seconds):
                     raise AccessDenied("options_changed", "Public crawl options changed. Refresh and choose supported options.", 422)
             if not consume:

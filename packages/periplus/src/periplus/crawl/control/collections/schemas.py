@@ -30,6 +30,7 @@ class CollectionSpec(BaseModel):
         default="SELECT target_url AS url FROM nav.links", max_length=20000
     )
     max_depth: int = Field(default=0, ge=0, le=100)
+    follow_link_limit: int = Field(default=1000, ge=1, le=10000)
     page_limit: int = Field(default=25, ge=1, le=100000)
     result_max_age_seconds: int = Field(default=300, ge=0, le=3600)
     retention_seconds: int | None = Field(default=None, ge=1, le=315360000)

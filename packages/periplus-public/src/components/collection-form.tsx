@@ -29,12 +29,14 @@ export function CollectionForm({ onCreated, initialDescription }: { onCreated: (
   const [description, setDescription] = useState(initialDescription ?? "")
   const [chosenDepth, setDepth] = useState<number>()
   const depth = chosenDepth ?? options?.default_max_depth ?? 0
+  const [chosenLinks, setMaxLinks] = useState<number>()
+  const maxLinks = chosenLinks ?? options?.default_follow_link_limit ?? 0
   const [scope, setScope] = useState<"internal" | "external" | "both">("internal")
   const [chosenPages, setMaxPages] = useState<number>()
   const maxPages = chosenPages ?? options?.default_page_budget ?? 0
   const [chosenRetention, setRetention] = useState<number | null | undefined>()
   const retention = chosenRetention === undefined ? options?.default_retention_seconds ?? null : chosenRetention
-  const validOptions = !!options && options.page_budgets.includes(maxPages) && options.max_depths.includes(depth) && options.retention_seconds.includes(retention)
+  const validOptions = !!options && options.page_budgets.includes(maxPages) && options.max_depths.includes(depth) && options.follow_link_limits.includes(maxLinks) && options.retention_seconds.includes(retention)
   const [sections, setSections] = useState("")
   const [frozen, setFrozen] = useState<CreateCollection | null>(null)
   const submit = useMutation({
@@ -60,8 +62,8 @@ export function CollectionForm({ onCreated, initialDescription }: { onCreated: (
     <CardHeader><CardTitle><h2>Request coverage</h2></CardTitle><CardDescription>Which sources would you like to see in Periplus? Add a website URL or describe the topics you need.</CardDescription></CardHeader>
     <CardContent>
       {access.message && <p role="status">{access.message}</p>}
-      {options && !validOptions && <p role="alert">Available options changed. Please choose a supported page budget, depth and retention period.</p>}
-      <form className="flex flex-col gap-6" onSubmit={event => { event.preventDefault(); if (frozen || !access.enabled || !validOptions) return; try { const payload = { id: createRequestId(), specification: publicCollectionSpec({ kind, input: kind === "url" ? url : description, depth, scope, maxPages, sections, retentionSeconds: retention }), priority: 0 }; setFrozen(payload); submit.mutate(payload) } catch (error) { toast.error(extractApiError(error)) } }}>
+      {options && !validOptions && <p role="alert">Available options changed. Please choose a supported page budget, depth, link limit and retention period.</p>}
+      <form className="flex flex-col gap-6" onSubmit={event => { event.preventDefault(); if (frozen || !access.enabled || !validOptions) return; try { const payload = { id: createRequestId(), specification: publicCollectionSpec({ kind, input: kind === "url" ? url : description, depth, scope, maxPages, maxLinks, sections, retentionSeconds: retention }), priority: 0 }; setFrozen(payload); submit.mutate(payload) } catch (error) { toast.error(extractApiError(error)) } }}>
         <fieldset disabled={frozen !== null || !access.enabled} className="flex min-w-0 flex-col gap-6">
         <div className="flex flex-wrap gap-2" role="group" aria-label="Request type">
           <Button type="button" variant={kind === "url" ? "secondary" : "outline"} aria-pressed={kind === "url"} onClick={() => setKind("url")}><Globe />Add a website URL</Button>
@@ -91,6 +93,13 @@ export function CollectionForm({ onCreated, initialDescription }: { onCreated: (
               <SelectContent>{(options?.page_budgets ?? []).map(value => <SelectItem key={value} value={value}>{pageLabel(value)} pages</SelectItem>)}</SelectContent>
             </Select>
           </div>
+        </div>
+        <div className="flex flex-col gap-2"><label id="links-label">Maximum links per page</label>
+          <Select value={maxLinks} disabled={depth === 0} onValueChange={value => { if (value !== null) setMaxLinks(value) }}>
+            <SelectTrigger aria-labelledby="links-label"><SelectValue>{maxLinks.toLocaleString()} links</SelectValue></SelectTrigger>
+            <SelectContent>{(options?.follow_link_limits ?? []).map(value => <SelectItem key={value} value={value}>{value.toLocaleString()} links</SelectItem>)}</SelectContent>
+          </Select>
+          <CardDescription>Follow up to this many distinct links from each page. Remaining links are not followed. The total page budget still applies.</CardDescription>
         </div>
         <CardDescription>Internal means within each observed page’s site, including subdomains; external means other sites. The page budget covers the whole request, including starting pages. Available budgets and depths are controlled by current public access settings.</CardDescription>
         <div className="flex flex-col gap-2">

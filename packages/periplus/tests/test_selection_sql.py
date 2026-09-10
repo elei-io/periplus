@@ -30,10 +30,26 @@ class SelectionSqlTests(unittest.TestCase):
             with self.subTest(sql=sql), self.assertRaises(ValueError):
                 validate_follow_sql(sql)
 
-    def test_result_limit_is_explicit_and_not_silent_truncation(self):
-        with self.assertRaisesRegex(ValueError, "row limit"):
-            select_links("SELECT target_url AS url FROM nav.links",
-                         navigation_bytes(["https://example.com/"] * 1001))
+    def test_request_cap_counts_distinct_normalized_urls_and_preserves_order(self):
+        payload = navigation_bytes(["https://example.com/a#one"] * 1100 + [
+            "https://example.com/a#two", "https://example.com/b", "https://example.com/c"])
+        self.assertEqual(select_links("SELECT target_url AS url FROM nav.links", payload, max_links=2),
+                         ("https://example.com/a", "https://example.com/b"))
+
+    def test_request_can_select_and_checkpoint_more_than_one_thousand_links(self):
+        from periplus.crawl.runtime.selection_contract import SelectionCheckpoint
+        payload = navigation_bytes([f"https://example.com/{i}" for i in range(1500)])
+        urls = select_links("SELECT target_url AS url FROM nav.links", payload, max_links=1200)
+        self.assertEqual(len(urls), 1200)
+        checkpoint = SelectionCheckpoint(urls=urls, cursor=1100)
+        self.assertEqual(SelectionCheckpoint.model_validate_json(checkpoint.model_dump_json()), checkpoint)
+        self.assertEqual(len(select_links("SELECT target_url AS url FROM nav.links", payload)), 1000)
+
+    def test_follow_limit_bounds_are_validated(self):
+        for limit in (0, 10001):
+            with self.assertRaisesRegex(ValueError, "follow link limit"):
+                select_links("SELECT target_url AS url FROM nav.links",
+                             navigation_bytes(["https://example.com/"]), max_links=limit)
 
     def test_invalid_syntax_and_binding_are_terminal_selection_errors(self):
         payload = navigation_bytes(["https://example.com/"])

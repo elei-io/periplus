@@ -68,7 +68,7 @@ class PublicAccessTests(unittest.TestCase):
         self.store.admit('assistant', now=self.now)
 
     def test_unsupported_crawl_options_do_not_consume_quota(self):
-        for change in ({'page_limit': 7}, {'max_depth': 3}, {'retention_seconds': 42}):
+        for change in ({'page_limit': 7}, {'follow_link_limit': 7}, {'max_depth': 3}, {'retention_seconds': 42}):
             with self.assertRaises(AccessDenied) as caught:
                 self.store.admit('crawl', specification=CollectionSpec(**change), now=self.now)
             self.assertEqual(caught.exception.detail['code'], 'options_changed')
@@ -107,7 +107,7 @@ class PublicAccessTests(unittest.TestCase):
             self.store.admit('crawl', specification=CollectionSpec(), now=self.now)
 
     def test_defaults_must_be_allowed_and_options_unique(self):
-        for change in ({'page_budgets': [5]}, {'max_depths': [0, 0, 1]}, {'retention_seconds': [0, None]}):
+        for change in ({'page_budgets': [5]}, {'follow_link_limits': [5000]}, {'follow_link_limits': [1000, 10001]}, {'max_depths': [0, 0, 1]}, {'retention_seconds': [0, None]}):
             with self.assertRaises(ValidationError):
                 AccessPolicy.model_validate({'crawl': change})
 

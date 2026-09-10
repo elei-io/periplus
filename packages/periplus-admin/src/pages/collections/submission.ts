@@ -42,6 +42,7 @@ export function collectionSubmission(form: FormData): CollectionSpec {
     seed_sql,
     seed_parameters,
     follow_sql,
+    follow_link_limit: integer("follow_link_limit", 1, 10000),
     max_depth: integer("max_depth", 0, 100),
     page_limit: integer("page_limit", 1, 100000),
     retention_seconds: text("retention_seconds") ? integer("retention_seconds", 1, 315360000) : null,

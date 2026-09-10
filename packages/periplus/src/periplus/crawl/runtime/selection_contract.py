@@ -3,7 +3,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from periplus.crawl.runtime.selection_sql import selected_urls
+from periplus.crawl.runtime.selection_sql import MAX_FOLLOW_LINKS, selected_urls
 
 
 class SelectionCheckpoint(BaseModel):
@@ -18,7 +18,7 @@ class SelectionCheckpoint(BaseModel):
     @field_validator("urls")
     @classmethod
     def bounded_urls(cls, values):
-        return selected_urls(values)
+        return selected_urls(values, max_rows=MAX_FOLLOW_LINKS)
 
     @model_validator(mode="after")
     def valid_cursor(self):

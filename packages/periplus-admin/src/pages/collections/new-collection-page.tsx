@@ -188,6 +188,9 @@ export function NewCollectionPage({
                 depth, scope, and budget. It cannot join historical catalogue
                 tables.
               </p>
+              <label htmlFor="follow-link-limit">Maximum links per page</label>
+              <Input id="follow-link-limit" name="follow_link_limit" type="number" min={1} max={10000} step={1} required defaultValue={spec?.follow_link_limit ?? 1000} />
+              <p>Follow up to this many distinct URLs from each page, in SQL result order. Remaining links are not followed.</p>
               <label htmlFor="max-depth">Maximum depth</label>
               <Input
                 id="max-depth"

@@ -630,6 +630,30 @@ class FrontierStoreTests(unittest.TestCase):
                 urls = set(session.scalars(select(InterestRecord.url).where(InterestRecord.collection_id == identity)))
                 self.assertEqual(urls, {"https://example.com/", selected})
 
+    def test_shared_capture_honors_each_requests_follow_link_limit(self):
+        import hashlib
+        import io
+        from types import SimpleNamespace
+        from test_selection_sql import navigation_bytes
+        from periplus.crawl.runtime.frontier_selection import process_link_selection
+        from periplus.crawl.runtime.navigation_contract import NavigationPackage
+        first = self.collection(max_depth=1, follow_link_limit=1)
+        second = self.collection(max_depth=1, follow_link_limit=2)
+        a, b = self.admit(first), self.admit(second)
+        payload = navigation_bytes(["https://example.com/a", "https://example.com/b"])
+        package = NavigationPackage(object_name="runtime/navigation/test.arrow", sha256=hashlib.sha256(payload).hexdigest(),
+                                    schema_version=1, recipe="test", row_count=2, byte_size=len(payload))
+        objects = SimpleNamespace(size=lambda name: len(payload), open=lambda name: io.BytesIO(payload))
+        work = self.store.dispatch(a.acquisition_id, now=self.now)
+        self.complete(work.acquisition_id, work.generation, success=True, outcome={}, navigation=package, now=self.now)
+        for item in (a, b):
+            self.assertEqual(process_link_selection(self.store, item.interest_id, lambda url: self.policy, objects), "settled")
+        with self.sessions() as session:
+            for identity, selected in ((first, {"https://example.com/a"}),
+                                       (second, {"https://example.com/a", "https://example.com/b"})):
+                urls = set(session.scalars(select(InterestRecord.url).where(InterestRecord.collection_id == identity)))
+                self.assertEqual(urls, {"https://example.com/"} | selected)
+
     def test_expired_seed_selection_settles_without_evaluating_sql(self):
         from unittest.mock import Mock
         from periplus.crawl.runtime.frontier_selection import process_seed_selection
