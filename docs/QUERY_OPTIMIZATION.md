@@ -154,8 +154,10 @@ same unrecorded experiments.
 
 ## Execution-mode promotion
 
-Develop compiler candidates only in experimental; stable begins with no custom
-rewrites. Replay stable and experimental against the same frozen snapshot using
+Stable contains the promoted compiler baseline. Experimental includes that same
+baseline plus explicitly gated new candidates; it is currently identical to stable.
+Develop new candidates only in experimental, then replay stable and experimental
+against the same frozen snapshot using
 `benchmarks/query/`. Require equivalent results (including duplicates, nulls and
 ordering guarantees), repeatable performance gains, and regression checks before
 promoting a candidate to stable. Record mode and compiler version with evidence.

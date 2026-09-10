@@ -45,7 +45,7 @@ const extensions = [
   ])),
 ]
 
-const editableExtensions = [...extensions, EditorView.contentAttributes.of({ "aria-label": "SQL query", "aria-describedby": "editor-help" })]
+const editableExtensions = [...extensions, EditorView.contentAttributes.of({ "aria-label": "SQL query" })]
 const readonlyExtensions = [...extensions, EditorView.contentAttributes.of({ "aria-label": "SQL statement", tabindex: "0" })]
 const editableSetup = { foldGutter: false, highlightActiveLine: true, autocompletion: true, bracketMatching: true }
 const readonlySetup = { ...editableSetup, highlightActiveLine: false, autocompletion: false }
