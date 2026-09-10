@@ -1,0 +1,59 @@
+name: Deploy homelab
+
+on:
+  workflow_run:
+    workflows: [CI, Secret scan, Publish images and chart]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: deploy-homelab
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      vars.HOMELAB_AUTO_DEPLOY == 'true' &&
+      ((github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ekkuleivonen/homelab
+          ref: main
+          ssh-key: ${{ secrets.HOMELAB_DEPLOY_KEY }}
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+      - name: Install homelab tools
+        run: make setup
+      - name: Gate release and resolve immutable pins
+        run: uv run --locked python scripts/periplus-release.py "$RELEASE_SHA"
+      - name: Check for an update
+        id: update
+        run: |
+          if ! git diff --quiet -- k3s/applications/periplus/release.yaml; then
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Validate homelab
+        if: steps.update.outputs.changed == 'true'
+        run: make validate
+      - name: Commit and publish release pins
+        if: steps.update.outputs.changed == 'true'
+        run: |
+          # Recheck after validation; never promote a superseded or failed release.
+          uv run --locked python scripts/periplus-release.py "$RELEASE_SHA" --check-only
+          git config user.name 'Periplus deployment bot'
+          git config user.email 'periplus-deploy@users.noreply.github.com'
+          git add k3s/applications/periplus/release.yaml
+          git commit -m "Deploy Periplus ${RELEASE_SHA:0:7}"
+          # A concurrent homelab edit rejects this push; rerun against fresh main.
+          git push origin HEAD:main
