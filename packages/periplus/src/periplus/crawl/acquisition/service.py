@@ -59,7 +59,7 @@ async def acquire_page(
 
     async def perform_capture():
         if context.attempt_reserved_ms < 6000:
-            raise ValueError("capture requires a frozen physical allowance")
+            raise ValueError("capture requires a frozen timeout")
         started = time.perf_counter()
         result = await capture_page(
             normalized, policy, attempt_number=attempt_number, browser=browser,

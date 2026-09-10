@@ -137,9 +137,9 @@ class FrontierItemTests(unittest.TestCase):
         self.assertEqual(view.waiting_reason, "global_pacing")
         self.assertEqual(view.eligibility_not_before, later)
         with self.sessions.begin() as session:
-            session.get(FrontierControlRecord, 1).attempt_allowance = 0
+            session.get(FrontierControlRecord, 1).paused = True
         view = acquisition_view(self.sessions, acquisition)
-        self.assertEqual(view.waiting_reason, "attempt_allowance_exhausted")
+        self.assertEqual(view.waiting_reason, "crawler_paused")
         self.assertIsNone(view.next_start_estimate)
 
     def test_capacity_reason_does_not_expose_other_callers_or_counts(self):

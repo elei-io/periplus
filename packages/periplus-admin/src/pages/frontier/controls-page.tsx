@@ -34,9 +34,6 @@ import {
 
 const reasons: Record<string, string> = {
   crawler_paused: "New captures are paused.",
-  attempt_allowance_exhausted: "The attempt allowance is exhausted.",
-  capture_time_allowance_exhausted:
-    "The remaining time allowance cannot cover another capture.",
   dispatch_capacity: "All dispatch slots are occupied.",
   dispatch_rate: "Waiting for the configured dispatch interval.",
   retained_acquisition_capacity:
@@ -44,9 +41,6 @@ const reasons: Record<string, string> = {
 }
 const reason = (value: string | null) =>
   value ? (reasons[value] ?? value.replaceAll("_", " ")) : null
-const time = (milliseconds: number) =>
-  `${(milliseconds / 3600000).toLocaleString(undefined, { maximumFractionDigits: 2 })} h`
-
 export function CrawlerControls({ children }: { children: ReactNode }) {
   const query = useFrontierControls()
   const replace = useReplaceFrontierControls()
@@ -217,14 +211,12 @@ export function CrawlerControls({ children }: { children: ReactNode }) {
                   </Label>
                 </div>
               </div>
-              {(["pace", "budget", "capacity"] as const).map((group) => (
+              {(["pace", "capacity"] as const).map((group) => (
                 <fieldset key={group} className="space-y-3">
                   <legend className="text-sm font-medium">
                     {group === "pace"
                       ? "Dispatch pace"
-                      : group === "budget"
-                        ? "Cumulative operating allowances"
-                        : "Retention and admission capacity"}
+                      : "Retention and admission capacity"}
                   </legend>
 
                   <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -404,61 +396,11 @@ export function CrawlerControls({ children }: { children: ReactNode }) {
         />
       </div>
       {children}
-      <div className="grid gap-4 md:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle>Physical attempt allowance</CardTitle>
-            <CardDescription>
-              Cumulative across manual and scheduled requests. Sharing does not
-              multiply physical attempts.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            <p className="text-2xl font-semibold tabular-nums">
-              {state.started_attempts.toLocaleString()}{" "}
-              <span className="text-sm font-normal text-muted-foreground">
-                started / {state.settings.attempt_allowance.toLocaleString()}{" "}
-                allowed
-              </span>
-            </p>
-            <p>
-              {state.reserved_attempts.toLocaleString()} reserved ·{" "}
-              {Math.max(
-                0,
-                state.settings.attempt_allowance -
-                  state.started_attempts -
-                  state.reserved_attempts
-              ).toLocaleString()}{" "}
-              unreserved
-            </p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader>
-            <CardTitle>Capture time allowance</CardTitle>
-            <CardDescription>
-              Measured client time, or the reserved bound when usage is unknown.
-              Provider billing is separate.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            <p className="text-2xl font-semibold tabular-nums">
-              {time(state.charged_capture_ms)}{" "}
-              <span className="text-sm font-normal text-muted-foreground">
-                accounted / {time(state.settings.capture_time_allowance_ms)}{" "}
-                allowed
-              </span>
-            </p>
-            <p>{time(state.reserved_capture_ms)} reserved</p>
-          </CardContent>
-        </Card>
-      </div>
       <p className="text-xs text-muted-foreground">
         Retained acquisitions: {state.retained_acquisitions.toLocaleString()} /{" "}
         {state.settings.acquisition_limit.toLocaleString()} · Collection URL
         records: {state.retained_interests.toLocaleString()} /{" "}
-        {state.settings.interest_limit.toLocaleString()}. Allowances remain
-        cumulative until an operator increases their limits.
+        {state.settings.interest_limit.toLocaleString()}.
       </p>
     </div>
   )

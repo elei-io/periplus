@@ -114,10 +114,6 @@ class AttemptUsage(CatalogueRecord):
     reserved_ms: int = Field(ge=1)
     measured_ms: int | None = Field(default=None, ge=0)
 
-    @property
-    def charged_ms(self) -> int:
-        return self.reserved_ms if self.measured_ms is None else self.measured_ms
-
 
 class AttemptRecord(CatalogueRecord):
     resource_usage: AttemptUsage | None = None

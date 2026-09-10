@@ -9,7 +9,7 @@ from sqlalchemy.orm import aliased, load_only
 
 from periplus.crawl.control.domain_policies.models import DomainPolicy
 from periplus.crawl.runtime.start_estimates import StartEstimate, estimate_start
-from periplus.crawl.runtime.frontier_store import FrontierStore, _current_domain_column
+from periplus.crawl.runtime.frontier_store import _current_domain_column
 from periplus.crawl.control.collections.models import CollectionRecord
 from periplus.crawl.control.collections.schemas import SelectionContext
 from periplus.crawl.runtime.frontier_models import AcquisitionRecord, FrontierControlRecord, InterestRecord
@@ -121,7 +121,7 @@ def _view(record: AcquisitionRecord, callers: list[Caller], control: FrontierCon
             eligible = max(eligible, domain_floor)
         if control.next_dispatch_at is not None:
             eligible = max(eligible, _aware(control.next_dispatch_at))
-        waiting = FrontierStore._attempt_waiting_reason(control)
+        waiting = ("crawler_paused" if control.paused else None)
         if waiting is None:
             if policy_id is None:
                 waiting = "domain_policy_unavailable"

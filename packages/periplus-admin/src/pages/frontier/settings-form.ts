@@ -14,7 +14,7 @@ export const settingFields: {
   unit: number
   min: number
   max: number
-  group: "pace" | "budget" | "capacity"
+  group: "pace" | "capacity"
 }[] = [
   {
     key: "dispatch_limit",
@@ -31,22 +31,6 @@ export const settingFields: {
     min: 1000,
     max: 3600000,
     group: "pace",
-  },
-  {
-    key: "attempt_allowance",
-    label: "Total attempt allowance",
-    unit: 1,
-    min: 0,
-    max: 1000000000,
-    group: "budget",
-  },
-  {
-    key: "capture_time_allowance_ms",
-    label: "Total capture time (hours)",
-    unit: 3600000,
-    min: 0,
-    max: 1000000000000,
-    group: "budget",
   },
   {
     key: "admission_limit",

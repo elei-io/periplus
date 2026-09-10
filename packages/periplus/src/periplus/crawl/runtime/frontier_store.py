@@ -173,10 +173,8 @@ class FrontierStore:
             acquisition_admission_waiting_reason=("retained_acquisition_capacity" if retained_acquisitions >= control.acquisition_limit else None),
             pending_acquisitions=control.pending_count, dispatched_acquisitions=control.active_count,
             retained_interests=control.interest_count,
-            reserved_attempts=control.reserved_attempts, started_attempts=control.started_attempts,
-            reserved_capture_ms=control.reserved_capture_ms, charged_capture_ms=control.charged_capture_ms,
             dispatch_waiting_reason=(
-                FrontierStore._attempt_waiting_reason(control)
+                ("crawler_paused" if control.paused else None)
                 or ("dispatch_capacity" if control.active_count >= control.dispatch_limit else None)
                 or ("dispatch_rate" if control.next_dispatch_at and _aware(control.next_dispatch_at) > now else None)
             ),
@@ -749,28 +747,13 @@ class FrontierStore:
             return Admission(interest.id, acquisition.id, True, mode)
 
     @staticmethod
-    def _attempt_waiting_reason(control: FrontierControlRecord) -> str | None:
-        if control.paused:
-            return "crawler_paused"
-        if control.reserved_attempts + control.started_attempts >= control.attempt_allowance:
-            return "attempt_allowance_exhausted"
-        if (control.reserved_capture_ms + control.charged_capture_ms
-                + control.capture_timeout_ms + 5000 > control.capture_time_allowance_ms):
-            return "capture_time_allowance_exhausted"
-        return None
-
-
-
-    @staticmethod
-    def _reserve_attempt(control: FrontierControlRecord, acquisition: AcquisitionRecord) -> None:
+    def _freeze_attempt_timeout(control: FrontierControlRecord, acquisition: AcquisitionRecord) -> None:
         if acquisition.attempt_reserved_ms:
             raise ValueError("dispatch already has an attempt reservation")
         acquisition.attempt_reserved_ms = control.capture_timeout_ms + 5000
-        control.reserved_attempts += 1
-        control.reserved_capture_ms += acquisition.attempt_reserved_ms
 
     @staticmethod
-    def _settle_attempt(control: FrontierControlRecord, acquisition: AcquisitionRecord,
+    def _settle_attempt(acquisition: AcquisitionRecord,
                         usage: AttemptUsage | None) -> None:
         reserved = acquisition.attempt_reserved_ms
         if reserved <= 0:
@@ -778,17 +761,12 @@ class FrontierStore:
         if acquisition.attempt_started_at is None:
             if usage is not None:
                 raise ValueError("unstarted dispatch cannot produce attempt usage")
-            control.reserved_attempts -= 1
         else:
             if (usage is None or usage.reserved_ms != reserved
                     or usage.policy_version != acquisition.dispatch_policy_version
                     or usage.domain_policy != DomainPolicySnapshot.model_validate(acquisition.attempt_domain_policy)
                     or usage.exclusion_policy_version != acquisition.attempt_exclusion_version):
                 raise ValueError("attempt usage differs from its frozen reservation")
-            # Never clip observed overrun. It consumes remaining allowance and
-            # becomes visible even when the remote provider exceeded its deadline.
-            control.charged_capture_ms += usage.charged_ms
-        control.reserved_capture_ms -= reserved
         acquisition.attempt_reserved_ms = 0
 
     def dispatch(self, acquisition_id: UUID, *, now: datetime | None = None,
@@ -801,7 +779,7 @@ class FrontierStore:
             return self._dispatch(session, control, acquisition_id, now, lease_seconds)
 
     def reconcile_exclusions(self) -> int:
-        """Bounded wraparound scan also runs when dispatch is paused or out of allowance."""
+        """Bounded wraparound scan also runs when dispatch is paused."""
         with self._sessions() as session, session.begin():
             control = self._control(session)
             if not control.exclusions:
@@ -840,7 +818,7 @@ class FrontierStore:
         if acquisition.attempt_started_at is not None:
             raise ValueError("cannot exclude an already started attempt")
         if acquisition.status == "dispatched":
-            self._settle_attempt(control, acquisition, None)
+            self._settle_attempt(acquisition, None)
             control.active_count -= 1
         else:
             control.pending_count -= 1
@@ -863,7 +841,7 @@ class FrontierStore:
 
     def _dispatch(self, session: Session, control: FrontierControlRecord,
                   acquisition_id: UUID, now: datetime, lease_seconds: int) -> Dispatch | None:
-        if self._attempt_waiting_reason(control) or control.active_count >= control.dispatch_limit:
+        if control.paused or control.active_count >= control.dispatch_limit:
             return None
         if control.next_dispatch_at and _aware(control.next_dispatch_at) > now:
             return None
@@ -892,7 +870,7 @@ class FrontierStore:
             acquisition.status = "dispatched"
             acquisition.generation += 1
             acquisition.claim_expires_at = now + timedelta(seconds=lease_seconds)
-            self._reserve_attempt(control, acquisition)
+            self._freeze_attempt_timeout(control, acquisition)
             acquisition.dispatch_policy_version = control.policy_version
             control.last_dispatch_at = now
             control.pending_count -= 1
@@ -980,7 +958,7 @@ class FrontierStore:
         acquisition.status = "dispatched"
         acquisition.generation += 1
         acquisition.claim_expires_at = now + timedelta(seconds=lease_seconds)
-        self._reserve_attempt(control, acquisition)
+        self._freeze_attempt_timeout(control, acquisition)
         acquisition.dispatch_policy_version = control.policy_version
         control.last_dispatch_at = now
         control.pending_count -= 1
@@ -1000,7 +978,7 @@ class FrontierStore:
         with self._sessions() as session, session.begin():
             control = self._control(session)
             now = self._transaction_now(session, now)
-            if self._attempt_waiting_reason(control) or control.active_count >= control.dispatch_limit:
+            if control.paused or control.active_count >= control.dispatch_limit:
                 return None
             if control.next_dispatch_at and _aware(control.next_dispatch_at) > now:
                 return None
@@ -1044,7 +1022,7 @@ class FrontierStore:
                         delay_seconds: float, now: datetime | None = None,
                         domain_policy: DomainPolicySnapshot | None = None,
                         reason: str | None = None) -> bool:
-        """Release delivery capacity and physical allowance before any CDP start.
+        """Release delivery capacity and clear the frozen timeout before any CDP start.
 
         Participants and their consumed page units stay frozen across redelivery.
         NATS owns domain pacing; versioned domain eligibility is only a scheduling hint.
@@ -1060,7 +1038,7 @@ class FrontierStore:
             if (acquisition is None or acquisition.status != "dispatched"
                     or acquisition.generation != generation or acquisition.attempt_started_at is not None):
                 return False
-            self._settle_attempt(control, acquisition, None)
+            self._settle_attempt(acquisition, None)
             acquisition.status = "retry"
             acquisition.defer_reason = reason
             acquisition.generation += 1
@@ -1274,9 +1252,7 @@ class FrontierStore:
             if not active_request:
                 return False
             if acquisition.attempt_reserved_ms <= 0:
-                raise ValueError("capture has no physical allowance reservation")
-            control.reserved_attempts -= 1
-            control.started_attempts += 1
+                raise ValueError("capture has no frozen capture timeout")
             acquisition.attempt_exclusions = list(control.exclusions)
             acquisition.attempt_exclusion_version = control.policy_version
             acquisition.attempt_count += 1
@@ -1304,7 +1280,7 @@ class FrontierStore:
             if (result.attempt_evidence.requested_url != acquisition.url
                     or result.attempt_evidence.attempt != acquisition.attempt_count):
                 raise ValueError("retry evidence differs from the active attempt")
-            self._settle_attempt(control, acquisition, result.attempt_evidence.resource_usage)
+            self._settle_attempt(acquisition, result.attempt_evidence.resource_usage)
             acquisition.prior_results = [*acquisition.prior_results, result.model_dump(
                 mode="json", exclude={"html", "document_bytes", "evidence"},
             )]
@@ -1368,7 +1344,7 @@ class FrontierStore:
                     "uncertain_at": now.isoformat(),
                     "resource_usage": usage.model_dump(mode="json"),
                 }]
-            self._settle_attempt(control, acquisition, usage)
+            self._settle_attempt(acquisition, usage)
             if acquisition.attempt_count >= acquisition.attempt_limit:
                 acquisition.generation += 1
                 acquisition.attempt_started_at = None
@@ -1500,7 +1476,7 @@ class FrontierStore:
             prior = attempt_records(acquisition.id, acquisition_context(acquisition).prior_attempts)
             if evidence.attempts[:-1] != prior:
                 raise ValueError("outcome changed previously recorded physical attempts")
-            self._settle_attempt(control, acquisition, evidence.attempts[-1].resource_usage)
+            self._settle_attempt(acquisition, evidence.attempts[-1].resource_usage)
             acquisition.attempt_started_at = None
             acquisition.status = "succeeded" if success else "failed"
             acquisition.outcome = outcome

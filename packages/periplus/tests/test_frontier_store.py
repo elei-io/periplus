@@ -96,9 +96,7 @@ class FrontierStoreTests(unittest.TestCase):
                              'ingestion_delivery_unavailable')
             with self.sessions() as session:
                 control = session.get(FrontierControlRecord, 1)
-                self.assertEqual((control.started_attempts, control.charged_capture_ms,
-                                  control.reserved_attempts, control.reserved_capture_ms, control.active_count),
-                                 (0, 0, 0, 0, 0))
+                self.assertEqual(control.active_count, 0)
             now += timedelta(seconds=31)
         self.assertEqual(self.store.get_collection(identity).consumed, 1)
         work = self.store.dispatch(admission.acquisition_id, now=now)
@@ -119,8 +117,7 @@ class FrontierStoreTests(unittest.TestCase):
         self.assertIsNone(value.observation_id)
         with self.sessions() as session:
             control = session.get(FrontierControlRecord, 1)
-            self.assertEqual((control.started_attempts, control.charged_capture_ms,
-                              control.reserved_attempts, control.reserved_capture_ms, control.active_count), (0,0,0,0,0))
+            self.assertEqual(control.active_count, 0)
 
     def collection(self, **kwargs):
         identity = uuid4()
@@ -169,9 +166,7 @@ class FrontierStoreTests(unittest.TestCase):
                                                    delay_seconds=60, now=self.now))
         with self.sessions() as session:
             control = session.get(FrontierControlRecord, 1)
-            self.assertEqual((control.active_count, control.pending_count, control.reserved_attempts,
-                              control.started_attempts, control.reserved_capture_ms, control.charged_capture_ms),
-                             (0, 3, 0, 0, 0, 0))
+            self.assertEqual((control.active_count, control.pending_count), (0, 3))
         self.assertEqual(self.store.get_collection(identity).consumed, 1)
         self.assertEqual(self.store.get_acquisition(first.acquisition_id).attempt_count, 0)
         self.assertIsNone(self.store.dispatch(second.acquisition_id, now=self.now))
@@ -831,70 +826,63 @@ class FrontierStoreTests(unittest.TestCase):
         self.assertIsNone(self.store.dispatch(second.acquisition_id, now=self.now + timedelta(seconds=2)))
         self.assertIsNotNone(self.store.dispatch(second.acquisition_id, now=self.now + timedelta(seconds=60)))
 
-    def test_physical_allowance_is_once_per_shared_dispatch_and_reconciles_once(self):
+    def test_shared_dispatch_consumes_each_request_once_and_releases_capacity(self):
         from periplus.crawl.control.collections.frontier_controls import ReplaceFrontierSettings
         first, second = self.collection(), self.collection()
         a, b = self.admit(first), self.admit(second)
         initial = self.store.control_view()
         self.store.replace_controls(ReplaceFrontierSettings(
             expected_version=initial.policy_version,
-            settings=initial.settings.model_copy(update={"attempt_allowance": 1}),
+            settings=initial.settings.model_copy(update={"dispatch_limit": 1}),
         ), actor="test", now=self.now)
         work = self.store.dispatch(a.acquisition_id, now=self.now)
-        reserved = self.store.control_view()
         self.assertEqual(a.acquisition_id, b.acquisition_id)
-        self.assertEqual((reserved.reserved_attempts, reserved.started_attempts), (1, 0))
-        self.assertEqual(reserved.reserved_capture_ms, 125000)
-        self.assertEqual(reserved.dispatch_waiting_reason, "attempt_allowance_exhausted")
+        self.assertEqual(self.store.control_view().dispatch_waiting_reason, "dispatch_capacity")
         other = self.admit(self.collection(), "https://other.example/")
         self.assertIsNone(self.store.dispatch(other.acquisition_id, now=self.now + timedelta(seconds=1)))
         self.assertEqual(self.store.get_interest(other.interest_id).budget_state, "reserved")
         self.complete(work.acquisition_id, work.generation, success=True, outcome={}, now=self.now)
-        settled = self.store.control_view()
-        self.assertEqual((settled.reserved_attempts, settled.started_attempts), (0, 1))
-        self.assertEqual((settled.reserved_capture_ms, settled.charged_capture_ms), (0, 100))
         self.assertFalse(self.complete(work.acquisition_id, work.generation, success=True, outcome={}, now=self.now))
-        self.assertEqual(self.store.control_view().charged_capture_ms, 100)
         self.assertEqual(self.store.get_collection(first).consumed, 1)
         self.assertEqual(self.store.get_collection(second).consumed, 1)
+        self.assertIsNotNone(self.store.dispatch(other.acquisition_id, now=self.now + timedelta(seconds=2)))
 
-    def test_unstarted_dispatch_releases_physical_allowance_but_uncertain_start_is_charged(self):
+    def test_unstarted_dispatch_releases_slot_and_uncertain_start_preserves_evidence(self):
         identity = self.collection()
         a = self.admit(identity)
         work = self.store.dispatch(a.acquisition_id, now=self.now, lease_seconds=1)
         self.store.recover_dispatch(a.acquisition_id, now=self.now + timedelta(seconds=2))
-        released = self.store.control_view()
-        self.assertEqual((released.reserved_attempts, released.started_attempts), (0, 0))
-        self.assertEqual((released.reserved_capture_ms, released.charged_capture_ms), (0, 0))
+        self.assertEqual(self.store.control_view().dispatched_acquisitions, 0)
         retry = self.store.dispatch(a.acquisition_id, now=self.now + timedelta(seconds=2), lease_seconds=1)
         self.store.begin_attempt(a.acquisition_id, retry.generation, now=self.now + timedelta(seconds=2), lease_seconds=1)
         self.store.recover_dispatch(a.acquisition_id, now=self.now + timedelta(seconds=4))
-        charged = self.store.control_view()
-        self.assertEqual((charged.reserved_attempts, charged.started_attempts), (0, 1))
-        self.assertEqual((charged.reserved_capture_ms, charged.charged_capture_ms), (0, 125000))
+        self.assertEqual(self.store.control_view().dispatched_acquisitions, 0)
         self.store.recover_dispatch(a.acquisition_id, now=self.now + timedelta(seconds=5))
-        self.assertEqual(self.store.control_view().charged_capture_ms, 125000)
         self.store.stop_collection(identity, now=self.now + timedelta(seconds=5))
         evidence = self.store.get_acquisition(a.acquisition_id).outcome
         self.assertEqual(evidence["attempts"][0]["resource_usage"]["reserved_ms"], 125000)
         self.assertIsNone(evidence["attempts"][0]["resource_usage"]["measured_ms"])
 
-    def test_time_allowance_blocks_dispatch_and_operator_can_increase_total(self):
-        from periplus.crawl.control.collections.frontier_controls import ReplaceFrontierSettings
-        initial = self.store.control_view()
-        limited = self.store.replace_controls(ReplaceFrontierSettings(
-            expected_version=initial.policy_version,
-            settings=initial.settings.model_copy(update={"capture_time_allowance_ms": 124999}),
-        ), actor="test", now=self.now)
-        a = self.admit(self.collection())
-        self.assertIsNone(self.store.dispatch(a.acquisition_id, now=self.now))
-        self.assertEqual(limited.dispatch_waiting_reason, "capture_time_allowance_exhausted")
-        self.store.replace_controls(ReplaceFrontierSettings(
-            expected_version=limited.policy_version,
-            settings=limited.settings.model_copy(update={"capture_time_allowance_ms": 125000}),
-        ), actor="test", now=self.now)
-        self.assertIsNotNone(self.store.dispatch(a.acquisition_id, now=self.now))
-        self.assertEqual(self.store.control_view().reserved_capture_ms, 125000)
+    def test_controls_reject_removed_lifetime_limits(self):
+        from pydantic import ValidationError
+        from periplus.crawl.control.collections.frontier_controls import FrontierSettings
+        settings = self.store.control_view().settings.model_dump()
+        for field in ('attempt_allowance', 'capture_time_allowance_ms'):
+            with self.subTest(field=field), self.assertRaises(ValidationError):
+                FrontierSettings.model_validate(settings | {field: 0})
+        view = self.store.control_view().model_dump()
+        self.assertTrue({'reserved_attempts', 'started_attempts', 'reserved_capture_ms',
+                         'charged_capture_ms', 'allowance_semantics', 'time_semantics'}.isdisjoint(view))
+
+    def test_successive_captures_have_no_lifetime_budget(self):
+        # Every completed attempt releases its slot for the next acquisition.
+        for index in range(5):
+            now = self.now + timedelta(seconds=index * 2)
+            a = self.admit(self.collection(), f"https://example.com/{index}")
+            work = self.store.dispatch(a.acquisition_id, now=now)
+            self.assertIsNotNone(work)
+            self.complete(a.acquisition_id, work.generation, success=True, outcome={}, now=now)
+            self.assertEqual(self.store.control_view().dispatched_acquisitions, 0)
 
     def test_known_time_overrun_is_not_clipped_and_mismatched_reservation_is_rejected(self):
         from periplus.platform.catalogue.records import VisitEvidence, VisitRecord
@@ -916,9 +904,8 @@ class FrontierStoreTests(unittest.TestCase):
         }),)})
         with self.assertRaisesRegex(ValueError, "frozen reservation"):
             self.store.complete(a.acquisition_id, work.generation, evidence=wrong, now=self.now)
-        self.assertEqual(self.store.control_view().reserved_capture_ms, 125000)
         self.store.complete(a.acquisition_id, work.generation, evidence=evidence, now=self.now)
-        self.assertEqual(self.store.control_view().charged_capture_ms, 130000)
+        self.assertEqual(self.store.get_acquisition(a.acquisition_id).outcome["attempts"][0]["resource_usage"]["measured_ms"], 130000)
 
     def test_retry_usage_remains_in_terminal_evidence_without_second_page_charge(self):
         from periplus.crawl.acquisition.models import AcquisitionAttemptEvidence, AcquisitionResult
@@ -957,9 +944,6 @@ class FrontierStoreTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "previously recorded"):
             self.store.complete(a.acquisition_id, second.generation, evidence=changed, now=later)
         self.store.complete(a.acquisition_id, second.generation, evidence=evidence, now=later)
-        self.assertEqual(self.store.control_view().charged_capture_ms, 300)
-        self.assertEqual(self.store.control_view().started_attempts, 2)
-        self.assertEqual(self.store.control_view().reserved_capture_ms, 0)
         self.assertEqual(self.store.get_collection(identity).consumed, 1)
         self.assertEqual(self.store.get_acquisition(a.acquisition_id).outcome["attempts"][0]["resource_usage"]["measured_ms"], 100)
 
@@ -1059,7 +1043,6 @@ class FrontierStoreTests(unittest.TestCase):
         with self.sessions.begin() as session:
             control = session.get(FrontierControlRecord, 1)
             control.paused = True
-            control.attempt_allowance = 0
         self.assertEqual(self.store.reconcile_exclusions(), 1)
         self.assertEqual(self.store.reconcile_exclusions(), 0)
         self.assertEqual(self.store.get_interest(own.interest_id).budget_state, "released")
@@ -1072,8 +1055,7 @@ class FrontierStoreTests(unittest.TestCase):
         work = self.store.dispatch(own.acquisition_id, now=self.now)
         self.exclude()
         self.assertFalse(self.store.begin_attempt(own.acquisition_id, work.generation, now=self.now))
-        view = self.store.control_view()
-        self.assertEqual((view.reserved_attempts, view.reserved_capture_ms, view.dispatched_acquisitions), (0, 0, 0))
+        self.assertEqual(self.store.control_view().dispatched_acquisitions, 0)
         self.assertEqual(self.store.get_collection(request).consumed, 1)
         self.assertEqual(self.store.get_interest(own.interest_id).status, "cancelled")
         self.assertFalse(self.store.begin_attempt(own.acquisition_id, work.generation, now=self.now))
@@ -1089,7 +1071,6 @@ class FrontierStoreTests(unittest.TestCase):
         acquisition = self.store.get_acquisition(own.acquisition_id)
         self.assertEqual(acquisition.outcome["visit"]["outcome"], "cancelled")
         self.assertEqual(len(acquisition.outcome["attempts"]), 1)
-        self.assertEqual(self.store.control_view().charged_capture_ms, 125000)
 
 
     def test_recent_result_with_excluded_effective_url_cannot_be_reused(self):

@@ -131,7 +131,7 @@ Shutdown drains that operation. The janitor scans bounded metadata batches and r
 older than two hours after a process crash. Immutable HTML/document evidence is never a probe target.
 
 Capture deliveries recheck delivery and storage health and establish the browser connection before
-physical-attempt authorization. Failures defer unstarted work and release physical allowance;
+physical-attempt authorization. Failures defer unstarted work and release the dispatch slot;
 `ingestion_delivery_unavailable`, `storage_unavailable`, and `cdp_unavailable` explain that wait.
 The original request page charge, if dispatch already committed, remains consumed and is not repeated.
 
@@ -147,7 +147,7 @@ unreadable presence leaves availability unknown. Public responses omit worker ID
 
 Item reads resolve current domain policy with the same specificity as dispatch, for only the bounded
 visible page. They distinguish domain pause, version-matching domain pacing, domain/global capacity,
-global pacing, and physical allowance exhaustion. A policy edit invalidates an older stored domain
+global pacing, and dispatch capacity. A policy edit invalidates an older stored domain
 pacing hint. The eligibility floor combines applicable persisted timing constraints; it is not a
 promised dispatch time. Reads return constraint names without exposing unrelated caller details,
 or occupancy counts. Live domain permits and future worker capacity can still prevent a start after
@@ -188,7 +188,7 @@ Current collection responses partition admitted waiting interests into `queue.ru
 `deferred_pages`, and `unknown_pages`; these sum to `queued_pages`. Counts include retry waits,
 exclude captures already dispatched and candidates not yet admitted, and are scoped to the request.
 Runnable means eligible under the observed stored controls and fresh worker readiness. It reserves
-no domain permit or browser slot. Domain/global pacing, capacity, pauses and attempt/time allowances
+no domain permit or browser slot. Domain/global pacing, capacity, pauses and per-acquisition retry limits
 produce explicit constraints. Missing readiness/policy evidence and exclusions requiring candidate
 inspection produce unknown eligibility rather than an optimistic runnable count.
 

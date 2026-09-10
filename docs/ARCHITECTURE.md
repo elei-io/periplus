@@ -157,7 +157,7 @@ four outstanding slots per event loop; timed-out lookups retain a slot until the
 Protection against redirects, subresources, other targets, and DNS rebinding reaching sensitive
 internal services belongs at the CDP deployment's network boundary. The configured Stolosio
 deployment's isolation has not been verified; Periplus's initial DNS check does not establish it.
-Short PostgreSQL transactions reserve global physical budgets and collection page units. Time-dependent
+Short PostgreSQL transactions reserve concurrent dispatch slots and collection page units. Time-dependent
 control transitions read PostgreSQL wall-clock time after acquiring the control row. Lock waiting
 cannot extend an expired authorization or consume part of a newly issued lease.
 Independent outbox publication and retry transitions likewise lock their row before checking
@@ -165,7 +165,7 @@ expiry. Collection, outbox, and receipt claims use a database-time selection bou
 duration only after their bounded selection has acquired the rows. NATS
 operation leases suppress duplicate execution; per-domain permits enforce website pacing.
 Timeout after authorization can leave an uncertain remote attempt, so recovery records uncertainty
-and charges the conservative bound rather than claiming exactly-once physical execution.
+and preserves the frozen timeout in evidence rather than claiming exactly-once physical execution.
 
 Description discovery runs in bounded checkpointed passes in the crawler. Corpus seed SQL uses
 the isolated query service; follow SQL uses only the current page's bounded navigation package.
