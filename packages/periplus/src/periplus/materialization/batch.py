@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -31,6 +32,7 @@ from periplus.platform.catalogue.storage import (
 from periplus.urls import normalize_url
 from periplus.retention.identities import retired_ids, write_claims
 from periplus.materialization import state
+from periplus.materialization.metrics import step
 from periplus.platform.catalogue.exceptions import CatalogueOutcomePending
 
 
@@ -82,18 +84,19 @@ def prepare_batch(
         return applied
 
     project_started = time.perf_counter()
-    visits = _visit_rows(catalogue, batch)
-    normalized_visits = {
-        str(visit_id): (normalize_url(str(raw_url)), observed_at)
-        for visit_id, _document_id, raw_url, observed_at in visits
-    }
-    sources, owned_hashes, documents = _document_sources(
-        catalogue,
-        run,
-        batch,
-        visits,
-        normalized_visits,
-    )
+    with step("source_lookup"):
+        visits = _visit_rows(catalogue, batch)
+        normalized_visits = {
+            str(visit_id): (normalize_url(str(raw_url)), observed_at)
+            for visit_id, _document_id, raw_url, observed_at in visits
+        }
+        sources, owned_hashes, documents = _document_sources(
+            catalogue,
+            run,
+            batch,
+            visits,
+            normalized_visits,
+        )
     context = build_visit_batch_context(
         html_repository,
         sources,
@@ -109,7 +112,8 @@ def prepare_batch(
     file_set_id = uuid4().hex
     for spec in PROJECTIONS:
         project_started = time.perf_counter()
-        output = spec.rows(context)
+        with step("projection_rows"):
+            output = spec.rows(context)
         project_seconds += time.perf_counter() - project_started
         output_rows += output.num_rows
         parquet_started = time.perf_counter()
@@ -156,16 +160,18 @@ def commit_prepared_batch(
     """
     commit_started = time.perf_counter()
     storage = _catalogue_storage(catalogue)
-    with write_claims({
-        "generation": [str(run.id)],
-        "observation": prepared.retained_visit_ids,
-        "content": prepared.retained_content_hashes,
-    }):
+    with ExitStack() as claims:
+        with step("commit_claim_acquire"):
+            claims.enter_context(write_claims({
+                "generation": [str(run.id)],
+                "observation": prepared.retained_visit_ids,
+                "content": prepared.retained_content_hashes,
+            }))
         if active_generation and not _is_active_generation(catalogue, run.id):
             return _result(prepared, commit_started, superseded=True)
         if _is_applied(catalogue, batch.id):
             return _result(prepared, commit_started, already_applied=True)
-        with catalogue.remote_transaction():
+        with step("lake_transaction"), catalogue.remote_transaction():
             for spec in PROJECTIONS:
                 identities = (prepared.owned_content_hashes if spec.ownership_grain == "content"
                               else prepared.retained_visit_ids)
@@ -183,7 +189,8 @@ def commit_prepared_batch(
                         "schema => 'material')")
         result = _result(prepared, commit_started)
         try:
-            state.record_applied(run.id, batch.id, batch.snapshot, result)
+            with step("receipt_write"):
+                state.record_applied(run.id, batch.id, batch.snapshot, result)
         except Exception as exc:
             raise CatalogueOutcomePending('lake batch committed; Postgres receipt must be retried') from exc
     from periplus.platform.telemetry import event
@@ -423,14 +430,16 @@ def _write_partitioned_parquet(
                     strict=True,
                 )
             ) or "true"
-            connection.execute(
-                f"COPY (SELECT * FROM {typed} "
-                f"WHERE {predicates} "
-                f"ORDER BY {order_by}) "
-                f"TO {sql_string(path)} "
-                "(FORMAT PARQUET, COMPRESSION ZSTD)"
-            )
-            size = storage.file_size(connection, path)
+            with step("parquet_encode_upload"):
+                connection.execute(
+                    f"COPY (SELECT * FROM {typed} "
+                    f"WHERE {predicates} "
+                    f"ORDER BY {order_by}) "
+                    f"TO {sql_string(path)} "
+                    "(FORMAT PARQUET, COMPRESSION ZSTD)"
+                )
+            with step("file_size_lookup"):
+                size = storage.file_size(connection, path)
             files.append(PreparedFile(path=path, size=size))
         return tuple(files)
     finally:

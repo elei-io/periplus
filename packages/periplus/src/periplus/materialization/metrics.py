@@ -1,5 +1,9 @@
 """Prometheus telemetry for visit-scoped rebuild batches."""
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from time import perf_counter
+
 from prometheus_client import Counter, Gauge, Histogram
 from periplus.platform.telemetry import DURATION_BUCKETS
 
@@ -106,3 +110,26 @@ _queue_observed = Gauge("periplus_materialization_queue_observed_timestamp_secon
 def progress(*, completed: int, total: int) -> None:
     _progress_observed.set_to_current_time()
     _progress.set(0 if total <= 0 else min(1, max(0, completed / total)))
+
+
+_step = Histogram(
+    "periplus_materialization_step_duration_seconds",
+    "Materialization operation wall time, including failed attempts; not CPU time.",
+    ("step", "outcome"),
+    buckets=DURATION_BUCKETS,
+)
+
+
+@contextmanager
+def step(name: str) -> Iterator[None]:
+    """Observe completed operation attempts, including exceptions and retries.
+
+    Callers use fixed operation names, never document or batch identities.
+    """
+    started = perf_counter()
+    outcome = "error"
+    try:
+        yield
+        outcome = "success"
+    finally:
+        _step.labels(name, outcome).observe(max(0.0, perf_counter() - started))

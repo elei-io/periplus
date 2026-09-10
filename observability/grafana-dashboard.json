@@ -383,6 +383,34 @@
           "unit": "s"
         }
       }
+    },
+    {
+      "id": 17,
+      "title": "Materialization time by operation (all attempts)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${prometheus}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 64,
+        "w": 24,
+        "h": 8
+      },
+      "description": "Worker-seconds per second, summed across replicas. Includes completed failed attempts and retries. Not CPU utilization or rebuild elapsed time. HTML read includes decompression; DuckDB COPY combines encoding and upload. Claim acquisition includes database work and waiting; lake transaction excludes that wait. Operations have different counts; compare totals, not per-operation averages.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (step, outcome) (rate(periplus_materialization_step_duration_seconds_sum[5m]))",
+          "legendFormat": "{{step}} {{outcome}}"
+        }
+      ]
     }
   ]
 }
