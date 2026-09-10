@@ -7,6 +7,8 @@ import unittest
 import duckdb
 
 from periplus.materialization.dom.nodes import parse_document
+from periplus.materialization.document_projection import VisitBatchContext
+from periplus.materialization.registry import BY_NAME
 
 
 class HtmlJsonldTests(unittest.TestCase):
@@ -14,6 +16,8 @@ class HtmlJsonldTests(unittest.TestCase):
         self.db = duckdb.connect()
         self.addCleanup(self.db.close)
         self.db.execute('CREATE SCHEMA public_v1')
+        self.db.execute('CREATE SCHEMA material')
+        self.db.execute('CREATE TABLE material.html_jsonld(content_sha256 VARCHAR, node_index INTEGER, value JSON, parse_error VARCHAR)')
         self.db.execute('''CREATE TABLE public_v1.html_node (
             content_id VARCHAR, node_index INTEGER, parent_index INTEGER,
             subtree_end_index INTEGER, sibling_index INTEGER, node_type VARCHAR,
@@ -25,6 +29,10 @@ class HtmlJsonldTests(unittest.TestCase):
 
     def load(self, html, content='fixture'):
         nodes, elements = parse_document(html)
+        context = VisitBatchContext((), (), (), {content: elements}, {content: nodes}, {}, frozenset({content}))
+        self.db.register('projected_jsonld', BY_NAME['html_jsonld'].rows(context))
+        self.db.execute('INSERT INTO material.html_jsonld SELECT content_sha256,node_index,value::JSON,parse_error FROM projected_jsonld')
+        self.db.unregister('projected_jsonld')
         self.db.executemany('INSERT INTO public_v1.html_node VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                            [(content, *astuple(n)) for n in nodes])
         self.db.executemany('INSERT INTO public_v1.html_element VALUES (?, ?, ?, ?, ?, ?)',
@@ -77,5 +85,6 @@ class HtmlJsonldTests(unittest.TestCase):
         before = self.db.execute('SELECT * FROM public_v1.html_jsonld').fetchall()
         # The public view must remain usable without reading the node relation.
         self.db.execute('DROP TABLE public_v1.html_node')
+        self.db.execute('DROP TABLE public_v1.html_element')
         self.assertEqual(self.db.execute('SELECT * FROM public_v1.html_jsonld').fetchall(), before)
         self.assertEqual(json.loads(before[0][2]), {"name": "two parts"})
