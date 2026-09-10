@@ -2,10 +2,7 @@ CREATE OR REPLACE MACRO public_v1.subtree_text(
     source_content_id VARCHAR, root_node_index INTEGER,
     max_chars := 20000, max_nodes := 10000
 ) AS TABLE (
-    WITH page_nodes AS MATERIALIZED (
-        SELECT * FROM public_v1.html_node
-        WHERE content_id = source_content_id
-    ), args AS (
+    WITH args AS (
         SELECT source_content_id AS wanted_content,
                CASE WHEN root_node_index IS NOT NULL AND root_node_index >= 0
                     THEN root_node_index ELSE error('node_index must be non-negative') END AS wanted_index,
@@ -21,11 +18,11 @@ CREATE OR REPLACE MACRO public_v1.subtree_text(
                     THEN n.subtree_end_index
                     ELSE error('subtree exceeds max_nodes; select a smaller root') END AS root_end,
                a.wanted_content, a.char_limit
-        FROM page_nodes n, args a
+        FROM public_v1.html_node n, args a
         WHERE n.content_id = a.wanted_content AND n.node_index = a.wanted_index
     ), text_nodes AS (
         SELECT n.node_index, n.value AS piece, r.char_limit
-        FROM page_nodes n, root r
+        FROM public_v1.html_node n, root r
         WHERE n.content_id = r.wanted_content
           AND n.node_index >= r.root_index AND n.node_index < r.root_end
           AND n.node_type = 'text'

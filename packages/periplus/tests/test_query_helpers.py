@@ -1,4 +1,5 @@
 from importlib.resources import files
+import json
 from pathlib import Path
 import tomllib
 import unittest
@@ -72,6 +73,40 @@ class SubtreeTextTests(unittest.TestCase):
             SELECT r.id,r.cap,t.text,t.total_chars FROM roots r,
             LATERAL public_v1.subtree_text(r.id,r.idx,max_chars := r.cap) t ORDER BY r.id,r.cap""").fetchall()
         self.assertEqual(result, [('a',2,'AB',3),('a',20,'ABC',3),('b',1,'X',3)])
+
+    def test_bulk_lateral_calls_match_baseline_and_bound_shared_nodes(self):
+        a = self.load('<main><a>A<b>日本</b>C</a><a></a><a>third</a></main>', 'a')
+        b = self.load('<main><a>other<script>raw</script><!--comment--></a></main>', 'b')
+        anchors = [('a', row) for row in a if row.tag == 'a'] + [('b', row) for row in b if row.tag == 'a']
+        selected_nodes = self.db.execute('SELECT count(*) FROM public_v1.html_node').fetchone()[0]
+        self.db.execute("INSERT INTO public_v1.html_node SELECT 'unrelated', i::INTEGER, (i+1)::INTEGER, 'text', 'unrelated' FROM range(100000) r(i)")
+        self.db.execute('CREATE TABLE roots(seq INTEGER, id VARCHAR, idx INTEGER, cap INTEGER)')
+        refs = [(index, content, row.element_index, index % 3) for index, (content, row) in enumerate(anchors)]
+        refs += [(10, 'a', anchors[0][1].element_index, 100), (11, 'a', anchors[0][1].element_index, 100),
+                 (12, 'missing', 0, 100), (13, None, 0, 100), (14, 'a', 99999, 100)]
+        self.db.executemany('INSERT INTO roots VALUES (?,?,?,?)', refs)
+        baseline = Path(__file__).resolve().parents[3] / 'docs/query-investigations/anchor-subtree/baseline.sql'
+        self.db.execute(baseline.read_text().replace('public_v1.subtree_text', 'public_v1.baseline_subtree'))
+        query = """SELECT r.seq, r.id, r.idx, t.* FROM roots r
+            LEFT JOIN LATERAL public_v1.subtree_text(r.id,r.idx,max_chars := r.cap) t ON TRUE
+            ORDER BY r.seq"""
+        expected = self.db.execute(query.replace('public_v1.subtree_text', 'public_v1.baseline_subtree')).fetchall()
+        expected_types = self.db.description
+        actual = self.db.execute(query).fetchall()
+        self.assertEqual(self.db.description, expected_types)
+        self.assertEqual(actual, expected)
+        self.assertEqual(len(actual), len(refs))
+        profile = json.loads(self.db.execute('EXPLAIN (ANALYZE, FORMAT JSON) ' + query).fetchone()[1])
+        def producers(node):
+            if node.get('extra_info', {}).get('CTE Name') == 'page_nodes':
+                yield node['children'][0]['operator_cardinality']
+            for child in node.get('children', []):
+                yield from producers(child)
+        cardinalities = list(producers(profile))
+        self.assertEqual(len(cardinalities), 1)
+        # DuckDB may repeat the scoped input for distinct lateral bindings,
+        # but unrelated corpus nodes must not reach that materialization.
+        self.assertLessEqual(sum(cardinalities), selected_nodes * len(refs))
 
     def test_registry_documentation_and_examples_are_executable(self):
         rows = self.load('<pre>x = 1\n</pre>')
