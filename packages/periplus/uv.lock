@@ -762,7 +762,7 @@ requires-dist = [
     { name = "html5lib", specifier = ">=1.1" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "magika", specifier = ">=1.0,<2" },
-    { name = "nats-py", extras = ["nkeys"], specifier = ">=2.11" },
+    { name = "nats-py", extras = ["nkeys"], specifier = ">=2.15.0" },
     { name = "playwright", specifier = "==1.55.0" },
     { name = "prometheus-client", specifier = ">=0.22" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.5" },
