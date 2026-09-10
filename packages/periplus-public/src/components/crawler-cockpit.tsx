@@ -41,8 +41,8 @@ function Speedometer({ rate }: { rate: number | undefined }) {
   return <div className="crawler-speed"><svg viewBox="0 0 120 78" aria-hidden="true"><path className="crawler-dial-track" d="M 12 61 A 48 48 0 0 1 108 61" /><path className="crawler-dial-fill" d="M 12 61 A 48 48 0 0 1 108 61" pathLength="100" strokeDasharray={`${Math.min(100, (rate ?? 0) / scale * 100)} 100`} /><g style={{transform: `rotate(${rotation}deg)`, transformOrigin: "60px 61px"}}><line x1="60" y1="61" x2="60" y2="23" /><circle cx="60" cy="61" r="4" /></g><text x="9" y="76">0</text><text x="108" y="76" textAnchor="end">{scale}</text></svg><div><span className="crawler-metric-label">Observation rate</span><strong>{rate === undefined ? "—" : rate.toLocaleString(undefined, {maximumFractionDigits:1})}<small>observations / min</small></strong><span>5-minute average · scale 0–{scale}</span></div></div>
 }
 
-export function CrawlerCockpit({ initialId }: { initialId?: string }) {
-  const [form, setForm] = useState(false)
+export function CrawlerCockpit({ initialId, initialDescription }: { initialId?: string; initialDescription?: string }) {
+  const [form, setForm] = useState(Boolean(initialDescription))
   const [requestId, setRequestId] = useState<string | null>(initialId ?? null)
   const [motion, setMotion] = useState(true)
   const stream = useRef<HTMLDivElement>(null)
@@ -98,7 +98,7 @@ export function CrawlerCockpit({ initialId }: { initialId?: string }) {
     </section>
       </aside>
     </div>
-    {form && <section ref={requestForm} tabIndex={-1} className="crawler-form"><div className="flex justify-end"><Button variant="ghost" onClick={() => setForm(false)}><X />Close</Button></div><CollectionForm onCreated={id => {setForm(false);setRequestId(id)}} /></section>}
+    {form && <section id="coverage-request" ref={requestForm} tabIndex={-1} className="crawler-form"><div className="flex justify-end"><Button variant="ghost" onClick={() => setForm(false)}><X />Close</Button></div><CollectionForm initialDescription={initialDescription} onCreated={id => {setForm(false);setRequestId(id)}} /></section>}
 
     <Dialog open={requestId !== null} onOpenChange={open => { if (!open) closeRequest() }}>
       <DialogContent className="observatory-request-dialog">

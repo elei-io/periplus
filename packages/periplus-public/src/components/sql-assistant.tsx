@@ -6,6 +6,8 @@ import type { useSqlAssistant } from "@/hooks/use-sql-assistant"
 import { sqlDiff } from "@/lib/sql-diff"
 import { extractApiError } from "@/lib/api"
 import { Button } from "@/components/ui/button"
+import { Spinner } from "@/components/ui/spinner"
+import { Progress } from "@/components/ui/progress"
 import { CardDescription, CardTitle } from "@/components/ui/card"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Separator } from "@/components/ui/separator"
@@ -18,7 +20,10 @@ export function SqlAssistant({ assistant }: { assistant: ReturnType<typeof useSq
   const reply = assistant.data
   const before = assistant.variables?.draft
   return <div id="sql-assistant" hidden={!assistant.open}>
-    <Separator />
+    <div className="relative">
+      <Separator />
+      {assistant.isPending && <Progress value={null} aria-label="Preparing SQL suggestion" className="query-progress absolute inset-x-0 top-0" />}
+    </div>
     <section aria-label="SQL assistant" className="flex flex-col gap-3 p-3">
       <div className="flex items-center justify-between gap-2">
         <CardTitle className="flex items-center gap-2"><MessageSquare className="size-4" />Ask SQL</CardTitle>
@@ -28,6 +33,10 @@ export function SqlAssistant({ assistant }: { assistant: ReturnType<typeof useSq
         </div>
       </div>
       <CardDescription>Describe the rows you want, or ask for a change. Review the SQL before applying it.</CardDescription>
+      {assistant.isPending && <div className="flex min-h-32 flex-col items-center justify-center gap-2" role="status">
+        <CardTitle>Preparing your suggestion</CardTitle>
+        <CardDescription>Drafting SQL and checking it with Periplus…</CardDescription>
+      </div>}
       {reply && !assistant.isPending && <div className="flex flex-col gap-3" aria-live="polite">
         <p>{reply.message}</p>
         {reply.sql !== null && <>
@@ -41,9 +50,9 @@ export function SqlAssistant({ assistant }: { assistant: ReturnType<typeof useSq
       {assistant.error && <Alert variant="destructive"><AlertDescription>{extractApiError(assistant.error)}</AlertDescription></Alert>}
       <form className="flex items-end gap-2" onSubmit={event => { event.preventDefault(); assistant.submit() }}>
         <Textarea ref={inputRef} aria-label="What should this query return?" placeholder={reply ? "Ask a follow-up or describe another change…" : "What should this query return?"} value={assistant.intent} maxLength={4_000} onChange={event => assistant.setIntent(event.target.value)} />
-        <Button type="submit" size="icon" aria-label="Send SQL request" disabled={assistant.isPending || !assistant.intent.trim() || !assistant.access.enabled}><ArrowUp /></Button>
+        <Button type="submit" size="icon" aria-label={assistant.isPending ? "Preparing SQL suggestion" : "Send SQL request"} disabled={assistant.isPending || !assistant.intent.trim() || !assistant.access.enabled}>{assistant.isPending ? <Spinner aria-hidden="true" /> : <ArrowUp />}</Button>
       </form>
-      <CardDescription role="status">{assistant.isPending ? "Drafting SQL and checking it with Periplus…" : assistant.access.message ?? "Uses your SQL, selected text, parameters and latest error. Apply does not run the query."}</CardDescription>
+      <CardDescription>{assistant.access.message ?? "Uses your SQL, selected text, parameters and latest error. Apply does not run the query."}</CardDescription>
     </section>
   </div>
 }

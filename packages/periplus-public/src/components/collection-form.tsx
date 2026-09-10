@@ -20,13 +20,13 @@ import { publicCollectionSpec } from "@/lib/collection-submission"
 
 function pageLabel(n: number) { return n === 1000000 ? "1M+" : n >= 1000 ? `${n / 1000}k` : String(n) }
 
-export function CollectionForm({ onCreated }: { onCreated: (id: string) => void }) {
+export function CollectionForm({ onCreated, initialDescription }: { onCreated: (id: string) => void; initialDescription?: string }) {
   const cache = useQueryClient()
   const access = usePublicAccess("crawl")
   const options = access.data?.crawl
-  const [kind, setKind] = useState<"url" | "description">("url")
+  const [kind, setKind] = useState<"url" | "description">(initialDescription ? "description" : "url")
   const [url, setUrl] = useState("")
-  const [description, setDescription] = useState("")
+  const [description, setDescription] = useState(initialDescription ?? "")
   const [chosenDepth, setDepth] = useState<number>()
   const depth = chosenDepth ?? options?.default_max_depth ?? 0
   const [scope, setScope] = useState<"internal" | "external" | "both">("internal")

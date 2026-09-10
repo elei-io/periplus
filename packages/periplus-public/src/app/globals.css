@@ -1049,52 +1049,6 @@ p .story-link { display: inline; font: inherit; text-decoration: underline; text
 
 .discovery-workspace > [data-slot=tabs] { margin-top:36px;border-top:1px solid var(--border);padding-top:20px; }
 
-/* Discovery pairs a working conversation with a persistent dataset definition. */
-.dataset-discovery-layout { gap: 40px; padding: 40px 0 48px; }
-.discovery-conversation-heading:empty { display: none; }
-.discovery-conversation-heading h2, .discovery-definition-label {
-  font: 12px/1.5 ui-monospace, monospace; letter-spacing: .04em;
-}
-.dataset-discovery-page .discovery-composer { background: color-mix(in srgb, var(--background) 75%, var(--card)); }
-.dataset-discovery-page .composer-caption { padding: 20px 24px 0; text-transform: uppercase; letter-spacing: .08em; }
-.dataset-discovery-page .composer-input { min-height: 150px; padding: 20px 24px; font-size: 20px; line-height: 1.6; }
-.dataset-discovery-page .composer-actions { margin-inline: 24px; padding-bottom: 20px; }
-.discovery-starters { display: flex; flex-direction: column; gap: 10px; }
-.discovery-starters > span { font-size: 12px; color: var(--muted-foreground); }
-.discovery-starters button { padding-left: 0; padding-right: 14px; font-weight: 400; }
-.discovery-starters svg { width: 12px; height: 12px; transform: rotate(45deg); color: var(--muted-foreground); }
-.discovery-definition { border-left: 1px solid var(--border); padding-left: 32px; }
-.discovery-definition-label { display: flex; align-items: center; gap: 10px; }
-.discovery-definition-label svg { width: 16px; height: 16px; color: var(--muted-foreground); }
-.discovery-definition-label > span { margin-left: auto; color: var(--muted-foreground); font-size: 10px; text-transform: uppercase; }
-.discovery-definition-empty h3 { font-size: 22px; font-weight: 500; letter-spacing: -.03em; margin: 30px 0 10px; }
-.discovery-definition-empty p { font-size: 14px; line-height: 1.7; color: var(--muted-foreground); }
-.discovery-definition-empty dl { margin-top: 28px; }
-.discovery-definition-empty dl > div { padding: 14px 0; border-top: 1px solid var(--border); }
-.discovery-definition-empty dt { font-size: 12px; }
-.discovery-definition-empty dd { font-size: 12px; margin-top: 4px; color: var(--muted-foreground); }
-.dataset-discovery-page .dataset-definition-card { background: transparent; border: 0; border-radius: 0; box-shadow: none; gap: 24px; padding: 0; }
-.dataset-definition-card [aria-label="Dataset columns"] li { padding: 14px 0; border-top: 1px solid var(--border); }
-.dataset-definition-card [aria-label="Dataset columns"] strong { font: 13px/1.6 ui-monospace, monospace; }
-.dataset-definition-card p { font-size: 14px; line-height: 1.7; color: var(--muted-foreground); }
-.dataset-discovery-page .discovery-user-message { background: transparent; box-shadow: none; border: 0; border-left: 2px solid var(--border); border-radius: 0; padding-block: 4px; gap: 8px; }
-.discovery-user-message [data-slot=card-title] { font-size: 12px; color: var(--muted-foreground); }
-.discovery-notes { font-size: 12px; line-height: 1.8; color: var(--muted-foreground); }
-.discovery-notes summary { cursor: pointer; padding-block: 8px; }
-.discovery-notes a { text-decoration: underline; text-underline-offset: 3px; }
-@media (max-width: 1023px) {
-  .discovery-definition { border-left: 0; border-top: 1px solid var(--border); padding: 24px 0 0; }
-  .discovery-definition-empty dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
-}
-@media (max-width: 600px) {
-  .dataset-discovery-layout { padding-top: 28px; gap: 32px; }
-  .dataset-discovery-page .composer-caption { padding-inline: 16px; }
-  .dataset-discovery-page .composer-input { padding-inline: 16px; font-size: 17px; min-height: 140px; }
-  .dataset-discovery-page .composer-actions { margin-inline: 16px; }
-  .dataset-discovery-page .composer-actions > span { max-width: 120px; }
-  .discovery-definition-empty dl { grid-template-columns: 1fr; gap: 0; }
-}
-
 /* Landing page: show the extraction before asking for a dataset. */
 .landing-page .discovery-hero { padding: 28px 0 20px; }
 .landing-page .discovery-hero h1 { font-size: clamp(40px, 4.6vw, 56px); margin: 18px 0; text-wrap: balance; }
@@ -1108,7 +1062,7 @@ p .story-link { display: inline; font: inherit; text-decoration: underline; text
 .landing-page .story-heading h3 { font-size: 18px; font-weight: 500; margin-top: 18px; }
 .landing-page .composer-footnote { font-size: 14px; }
 .landing-page .composer-footnote a { text-decoration: underline; text-underline-offset: 3px; }
-.landing-page #build-dataset { scroll-margin-top: 24px; }
+.landing-page #explore-data { scroll-margin-top: 24px; }
 @media (max-width: 760px) {
   .landing-page .discovery-hero { padding-top: 28px; }
   .landing-example .featured-dataset-heading { align-items: flex-start; }
@@ -1177,16 +1131,10 @@ body:has(.landing-page) .public-header { background: transparent; border-bottom-
 
 /* Shared public surfaces: a continuous canvas and emphasis on usable output. */
 .public-header, .dark .public-header { background: transparent; border-bottom-color: transparent; }
-:is(.dataset-discovery-page, .sql-workbench, .docs-page, .about-page) {
+:is(.sql-workbench, .docs-page, .about-page) {
   --quiet-surface: color-mix(in srgb, var(--background) 78%, var(--card));
   --output-shadow: inset 0 1px 0 color-mix(in srgb, var(--foreground) 5%, transparent), 0 8px 24px rgb(0 0 0 / 6%);
 }
-.dataset-discovery-page .discovery-composer { background: var(--quiet-surface); transition: border-color 180ms ease, box-shadow 180ms ease; }
-.dataset-discovery-page .discovery-composer:focus-within { border-color: color-mix(in srgb, var(--primary) 60%, var(--border)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 8%, transparent), var(--output-shadow); }
-.dataset-discovery-page .discovery-definition { border-left-color: color-mix(in srgb, var(--border) 55%, transparent); }
-.dataset-discovery-page .analysis-result { background: var(--card); box-shadow: var(--output-shadow); }
-.dataset-discovery-page .analysis-result[data-status=ready] { border-color: color-mix(in srgb, var(--primary) 35%, var(--border)); }
-.dataset-discovery-page .analysis-result[data-status=ready] > header { animation: useful-completion 700ms ease-out; }
 .sql-workbench .sql-support-surface, .sql-workbench .sql-input-surface { background: var(--quiet-surface); box-shadow: none; border: 1px solid color-mix(in srgb, var(--border) 65%, transparent); }
 .sql-workbench .sql-input-surface:focus-within { border-color: color-mix(in srgb, var(--primary) 45%, var(--border)); }
 .sql-workbench .sql-output-surface { background: var(--card); box-shadow: var(--output-shadow); }
@@ -1223,7 +1171,7 @@ body:has(.landing-page) .public-header { background: transparent; border-bottom-
   .sql-results-viewport .analysis-table { max-height: 340px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .dataset-discovery-page *, .sql-workbench *, .docs-page * { animation: none !important; transition: none !important; }
+  .sql-workbench *, .docs-page * { animation: none !important; transition: none !important; }
 }
 @media (max-width: 1023px) {
   .sql-workbench #schema-explorer { order: 2; }
@@ -1260,3 +1208,86 @@ body:has(.landing-page) .public-header { background: transparent; border-bottom-
   .query-progress [data-slot="progress-indicator"] { animation: none; width: 100%; opacity: .5; }
   [data-slot="spinner"] { animation: none; }
 }
+
+/* Discovery uses the same quiet surfaces and editorial rhythm as the public site. */
+.discovery-workspace .workspace-heading { padding-block: 40px 32px; }
+.workspace-heading h1 { font-size: 28px; letter-spacing: -.035em; font-weight: 500; }
+.workspace-heading p { color: var(--muted-foreground); font-size: 14px; }
+.discovery-panels { gap: 40px; }
+.discovery-panels [data-slot=card] { box-shadow: none; }
+.discovery-panels .conversation-surface { background: transparent; border-radius: 0; --tw-ring-shadow: 0 0 #0000; padding: 0; gap: 24px; }
+.conversation-surface > [data-slot=card-header],
+.conversation-surface > [data-slot=card-content] { padding-inline: 0; }
+.conversation-surface > [data-slot=card-header] [data-slot=card-title] { font: 11px/1.5 ui-monospace, monospace; letter-spacing: .08em; text-transform: uppercase; color: var(--muted-foreground); }
+.conversation-scroll { max-height: 55vh; padding: 0 12px 16px 0; scrollbar-width: thin; }
+
+.conversation-scroll > div { padding-block: 12px; }
+.conversation-scroll p, .conversation-prose { font-size: 14px; line-height: 1.8; }
+.conversation-prose > * + * { margin-top: 12px; }
+.conversation-prose ul, .conversation-prose ol { padding-left: 20px; }
+.conversation-prose ul { list-style: disc; }
+.conversation-prose ol { list-style: decimal; }
+.conversation-prose a { text-decoration: underline; text-underline-offset: 3px; }
+.workspace-composer { padding: 18px; border: 1px solid var(--border); border-radius: 12px; background: var(--card); }
+.workspace-composer:focus-within { border-color: var(--ring); }
+.workspace-composer label { font-size: 12px; font-weight: 500; }
+.workspace-composer textarea { border: none; border-radius: 0; background: transparent; box-shadow: none; padding: 0; font-size: 15px; line-height: 1.7; min-height: 1.7em; max-height: 240px; overflow-y: auto; field-sizing: content; }
+.workspace-composer textarea:focus-visible { outline: none; box-shadow: none; }
+.discovery-starters [data-slot=button] { font-size: 12px; }
+.workspace-disclosure { color: var(--muted-foreground); font-size: 12px; line-height: 1.8; }
+.workspace-disclosure summary { cursor: pointer; padding-block: 8px; }
+.workspace-disclosure[open] > :not(summary) { margin-top: 12px; }
+.workspace-disclosure pre { font-size: 11px; max-width: 100%; }
+.discovery-results .schema-disclosure { order: 2; border-top: 1px solid var(--border); padding-top: 8px; }
+.dataset-surface { min-height: 220px; --tw-ring-shadow: 0 0 #0000; border: 1px solid var(--border); }
+.dataset-surface [data-slot=card-title] { font-size: 20px; letter-spacing: -.025em; }
+.dataset-surface [data-slot=card-description] { font-size: 12px; }
+.dataset-surface [data-slot=card-content] > p { font-size: 13px; line-height: 1.8; color: var(--muted-foreground); }
+.dataset-surface img { width: 72px; height: 72px; object-fit: contain; border-radius: 6px; }
+@media (max-width: 1023px) {
+  .discovery-panels { gap: 28px; }
+  .conversation-scroll { max-height: 45vh; }
+}
+@media (max-width: 760px) {
+  .discovery-workspace .workspace-heading { padding-block: 28px 24px; }
+  .discovery-starters { flex-direction: column; }
+}
+
+.dark .workspace-composer [data-slot=textarea] { background: transparent; }
+.conversation-prose :is(h1, h2, h3) { font-size: 15px; font-weight: 600; margin-block: 20px 8px; }
+.conversation-prose :is(th, td) { padding: 10px 12px; font-size: 12px; }
+.conversation-prose th { color: var(--muted-foreground); }
+.conversation-prose code { font: 12px/1.7 ui-monospace, monospace; overflow-wrap: anywhere; }
+.conversation-prose pre { overflow-x: auto; padding: 12px; background: var(--muted); border-radius: var(--radius); }
+
+
+.conversation-scroll .chat-message[data-role=user] { align-self: flex-end; max-width: 85%; padding: 12px 16px; background: var(--accent); border-radius: 12px 12px 2px 12px; }
+.conversation-scroll .chat-message[data-role=assistant] { width: 100%; padding-block: 8px; }
+.chat-activity { color: var(--muted-foreground); font-size: 12px; }
+.chat-activity .chat-activity-toggle { height: auto; min-height: 32px; max-width: 100%; justify-content: flex-start; padding: 4px 0; white-space: normal; text-align: left; font-size: 12px; color: var(--muted-foreground); }
+.chat-activity-toggle:disabled { opacity: 1; }
+.chat-activity-toggle svg { width: 14px; height: 14px; flex-shrink: 0; }
+.chat-query-list { display: flex; flex-direction: column; gap: 16px; border-left: 1px solid var(--border); padding: 12px 0 12px 16px; margin-left: 6px; }
+.chat-query-list p { font-size: 12px; color: var(--muted-foreground); }
+.chat-query-list pre { overflow-x: auto; max-width: 100%; padding: 12px; margin-block: 8px; background: var(--muted); border-radius: var(--radius); font: 11px/1.7 ui-monospace, monospace; }
+
+.builder-schema-surface { background: transparent; border-radius: 0; --tw-ring-shadow: 0 0 #0000; padding-top: 20px; }
+.builder-schema-surface > [data-slot=card-header], .builder-schema-surface > [data-slot=card-content] { padding-inline: 0; }
+.builder-schema-surface [data-slot=card-title] { font-size: 14px; }
+.schema-caption { font-size: 12px; color: var(--muted-foreground); }
+.schema-editor { gap: 24px; }
+.schema-editor label { font-size: 12px; color: var(--muted-foreground); }
+.schema-editor .schema-title { font-size: 22px; letter-spacing: -.025em; height: auto; padding: 8px 0; border-color: transparent; background: transparent; box-shadow: none; }
+.schema-editor table { border-block: 1px solid var(--border); }
+.schema-editor th { font-size: 11px; color: var(--muted-foreground); padding: 12px 8px; }
+.schema-editor td { padding: 8px; vertical-align: middle; }
+.schema-editor td [data-slot=input] { border-color: transparent; background: transparent; box-shadow: none; font: 13px/1.5 ui-monospace, monospace; }
+.schema-editor td [data-slot=input]:is(:hover, :focus-visible) { border-color: var(--border); background: var(--card); }
+.column-details { display: flex; align-items: end; gap: 12px; padding-block: 8px; }
+.column-details label { display: flex; flex: 1; flex-direction: column; gap: 8px; }
+.schema-issue { color: var(--destructive); font-size: 11px; white-space: normal; }
+.builder-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 16px; padding: 40px 24px; border: 1px dashed var(--border); border-radius: var(--radius); }
+.builder-empty > svg { width: 24px; height: 24px; color: var(--primary); }
+.builder-empty h2 { font-size: 22px; letter-spacing: -.03em; }
+.builder-empty p { max-width: 45ch; color: var(--muted-foreground); font-size: 14px; line-height: 1.8; }
+@media (max-width: 760px) { .column-details { flex-direction: column; align-items: stretch; } }

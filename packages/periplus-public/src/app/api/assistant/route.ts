@@ -1,4 +1,4 @@
-import { approvedBrief } from "@/server/analysis-results";
+import { datasetRequestSchema } from "@/types/answer";
 import { beginOperation } from "@/server/telemetry";
 import { admitPublic } from "@/server/public-access"
 import { createAgentUIStreamResponse } from "ai";
@@ -33,7 +33,7 @@ export async function POST(request: Request) {
     );
   }
   let messages;
-  let approved;
+  let settings;
   try {
     const reader = request.body?.getReader();
     if (!reader) throw new Error("Missing body");
@@ -47,7 +47,7 @@ export async function POST(request: Request) {
         finish("invalid");
         await reader.cancel();
         return Response.json(
-          { detail: "Conversation is too long. Start a new dataset." },
+          { detail: "Conversation is too long. Start a new conversation." },
           { status: 413 },
         );
       }
@@ -55,11 +55,11 @@ export async function POST(request: Request) {
     }
     const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
     messages = assistantMessages(body);
-    approved = approvedBrief(body.approval, process.env.PERIPLUS_QUERY_API_TOKEN!);
+    settings = datasetRequestSchema.parse(body);
   } catch {
     finish("invalid");
     return Response.json(
-      { detail: "Please describe a dataset or start a new definition." },
+      { detail: "Provide a question and a valid workspace mode or dataset contract." },
       { status: 400 },
     );
   }
@@ -106,7 +106,7 @@ export async function POST(request: Request) {
     if (!helperResponse.ok) throw new Error("SQL helper catalogue unavailable");
     const helpers: QueryHelpers = await helperResponse.json();
     return await createAgentUIStreamResponse({
-      agent: createDiscoveryAgent(helpers, approved),
+      agent: createDiscoveryAgent(helpers, settings.mode, settings.contract),
       uiMessages: messages,
       abortSignal: signal,
       timeout: 180_000,
@@ -124,7 +124,7 @@ export async function POST(request: Request) {
       onError: () => {
         finish("failed");
         release();
-        return "The assistant could not finish. Retry with your dataset definition or use the SQL console.";
+        return "The assistant could not finish. Retry your request or use the SQL console.";
       },
     });
   } catch {

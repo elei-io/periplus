@@ -25,6 +25,7 @@ import { consumeDiscoveryLaunch } from "@/lib/discovery-launch"
 import { extractApiError } from "@/lib/api"
 import { useSqlAssistant } from "@/hooks/use-sql-assistant"
 import { SqlAssistant } from "@/components/sql-assistant"
+import { sqlBuildLink } from "@/lib/workspace-links"
 import { captureAnalytics } from "@/lib/analytics"
 
 const SqlEditor = dynamic(() => import("@/components/sql-editor").then(module => module.SqlEditor), { ssr: false, loading: () => <div className="sql-loading">Loading SQL editor…</div> })
@@ -83,7 +84,7 @@ export function QueryWorkbench({ initialSql, initialParameters, autoRun = false 
       <SchemaExplorer onLoadSql={loadSql} />
       <div id="explore" className="flex min-w-0 scroll-mt-6 flex-col gap-4">
         <Card size="sm" className="sql-input-surface gap-0 py-0">
-          <div className="flex flex-wrap items-center gap-2 p-3"><Button className="min-w-28" disabled={!query.access.enabled || query.isPending || !sql.trim()} onClick={run}>{query.isPending ? <Spinner aria-hidden="true" /> : <Play />}{query.isPending ? "Running…" : "Run query"}</Button><Button variant="outline" onClick={share}><Share2 />Share</Button><QuerySettings value={parameters} onChange={setParameters} /><Button variant="ghost" aria-expanded={assistant.open} aria-controls="sql-assistant" onClick={() => { if (assistant.open) { assistant.setOpen(false) } else { assistant.show(); captureAnalytics("sql_assistant_opened") } }}><MessageSquare />Ask SQL</Button><CardDescription id="editor-help" className="ml-auto">⌘ / Ctrl + Enter to run · Tab to leave editor</CardDescription></div>
+          <div className="flex flex-wrap items-center gap-2 p-3"><Button className="min-w-28" disabled={!query.access.enabled || query.isPending || !sql.trim()} onClick={run}>{query.isPending ? <Spinner aria-hidden="true" /> : <Play />}{query.isPending ? "Running…" : "Run query"}</Button><Button variant="outline" onClick={share}><Share2 />Share</Button><QuerySettings value={parameters} onChange={setParameters} /><Button variant="ghost" aria-expanded={assistant.open} aria-controls="sql-assistant" onClick={() => { if (assistant.open) { assistant.setOpen(false) } else { assistant.show(); captureAnalytics("sql_assistant_opened") } }}>{assistant.isPending ? <Spinner aria-hidden="true" /> : <MessageSquare />}Ask SQL</Button><CardDescription id="editor-help" className="ml-auto">⌘ / Ctrl + Enter to run · Tab to leave editor</CardDescription></div>
           <div ref={editor} onKeyDownCapture={event => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); event.stopPropagation(); if (!query.isPending && sql.trim()) run() } }}><SqlEditor value={sql} onChange={setSql} onSelectionChange={setSelection} /></div>
           {!sql.trim() && !assistant.open && <div className="px-3"><Button variant="ghost" size="sm" onClick={() => assistant.show()}>Describe what you want to query…</Button></div>}
           <div className="flex flex-wrap items-center justify-between gap-2 p-3"><div className="flex flex-wrap items-center gap-3"><CardDescription role="status">{query.access.message ?? query.phase}</CardDescription><Badge variant="secondary">DuckDB SQL · Read-only</Badge></div><CardDescription>{query.access.data ? `${query.access.data.sql.max_rows.toLocaleString()} rows / ${query.access.data.sql.max_result_bytes / (1024 * 1024)} MiB · ${query.access.data.sql.max_duration_seconds}s limit` : query.access.message === "Checking availability…" ? "Loading query limits…" : "Query limits unavailable"}</CardDescription></div>
@@ -91,7 +92,7 @@ export function QueryWorkbench({ initialSql, initialParameters, autoRun = false 
         </Card>
         <Card size="sm" aria-label="Query output" className="sql-output-surface min-h-72" aria-busy={query.isPending}>
           <Tabs defaultValue="results">
-            <div className="flex flex-wrap items-center justify-between gap-3 px-3"><TabsList variant="line" aria-label="Query output"><TabsTrigger value="results"><Table2 />Results</TabsTrigger><TabsTrigger value="plan">Execution plan</TabsTrigger></TabsList><QueryExport operationId={query.operationId} result={query.data} disabled={query.isPending} /></div>
+            <div className="flex flex-wrap items-center justify-between gap-3 px-3"><TabsList variant="line" aria-label="Query output"><TabsTrigger value="results"><Table2 />Results</TabsTrigger><TabsTrigger value="plan">Execution plan</TabsTrigger></TabsList><div className="flex flex-wrap gap-2">{query.data && query.data.rows.length > 0 && <Button variant="outline" disabled={query.isPending} nativeButton={false} render={<Link href={sqlBuildLink(query.data)} target="_blank" rel="noopener noreferrer" />}>Use as dataset ↗</Button>}<QueryExport operationId={query.operationId} result={query.data} disabled={query.isPending} /></div></div>
             <div className="relative">
               <Separator />
               {query.isPending && <Progress value={null} aria-label="Executing query" className="query-progress absolute inset-x-0 top-0" />}

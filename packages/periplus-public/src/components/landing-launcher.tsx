@@ -22,11 +22,11 @@ export function LandingLauncher() {
   }
   return <div className="landing-launcher">
     <form className="discovery-composer" onSubmit={event => { event.preventDefault(); launch() }}>
-      <div className="launcher-toolbar"><strong>Describe your dataset</strong><span>Free to explore · No account needed</span></div>
-      <Textarea ref={input} aria-label="Describe your dataset" className="composer-input" placeholder="For example: a list of websites, with one row per site and a count of pages in Periplus." value={value} maxLength={4000} onChange={event => setValue(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); launch() } }} rows={2} />
-      <div className="composer-actions"><span><Database />Shared web data → your dataset</span><Button type="submit" disabled={pending || !value.trim()}>{pending ? "Opening…" : "Start building"}<ArrowUpRight /></Button></div>
+      <div className="launcher-toolbar"><strong>What would you like to find out?</strong><span>Free to explore · No account needed</span></div>
+      <Textarea ref={input} aria-label="What would you like to find out?" className="composer-input" placeholder="Ask a question or describe what you want to investigate." value={value} maxLength={4000} onChange={event => setValue(event.target.value)} onKeyDown={event => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); launch() } }} rows={2} />
+      <div className="composer-actions"><span><Database />Explore questions and evidence</span><Button type="submit" disabled={pending || !value.trim()}>{pending ? "Opening…" : "Explore data"}<ArrowUpRight /></Button></div>
     </form>
-    <p className="composer-footnote">Start with the data already in Periplus. <Link href={sqlDraftLink(coverageSql)}>Explore websites in SQL.</Link></p>
-    <div className="launcher-examples"><span>Try a starting point</span>{["List websites in Periplus, with page counts and first and last observation dates.", "Show links between websites, with one row per source and destination and a linking-page count."].map((text, i) => <Button key={text} variant="ghost" disabled={pending} onClick={() => { setValue(text); input.current?.focus() }}>{["Explore available websites", "Find links between websites"][i]}<ArrowUpRight /></Button>)}</div>
+    <p className="composer-footnote">Already have a schema? <Link href="/build">Build a dataset.</Link> Prefer SQL? <Link href={sqlDraftLink(coverageSql)}>Explore websites directly.</Link></p>
+    <div className="launcher-examples"><span>Try a starting point</span>{["What websites are available in Periplus, and how recent are their captures?", "What can the links between websites in Periplus tell me?"].map((text, i) => <Button key={text} variant="ghost" disabled={pending} onClick={() => { setValue(text); input.current?.focus() }}>{["Explore available websites", "Find links between websites"][i]}<ArrowUpRight /></Button>)}</div>
   </div>
 }
