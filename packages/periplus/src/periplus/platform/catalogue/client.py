@@ -129,7 +129,6 @@ class Catalogue:
                 identity = (relation_name.schema, relation_name.table)
                 if (
                     relation_name.schema == MATERIAL_SCHEMA
-                    and identity in existing_tables
                     and not active_registry_matches
                 ):
                     # Keep the old active relation readable while the new
@@ -303,8 +302,12 @@ class Catalogue:
         actual: dict[str, set[str]] = {}
         for table, column in rows:
             actual.setdefault(str(table), set()).add(str(column))
-        return all(spec.name not in actual or actual[spec.name] == set(spec.physical_columns)
-                   for spec in PROJECTIONS)
+        # An empty lake can be initialized directly. An existing generation must
+        # contain every projection before setup may replace its public views.
+        return not actual or all(
+            actual.get(spec.name) == set(spec.physical_columns)
+            for spec in PROJECTIONS
+        )
 
     def create_materialization_generation(
         self,
@@ -426,6 +429,13 @@ class Catalogue:
                     self.config.alias,
                     relation_name.schema,
                     generation_table,
+                )
+                # A newly added projection has no old active table. Create its
+                # empty retirement marker inside the atomic swap, preserving the
+                # same replay proof as replacements without exposing empty data.
+                self.trusted_remote_execute(
+                    f"CREATE TABLE IF NOT EXISTS {current} AS "
+                    f"SELECT * FROM {generation} LIMIT 0"
                 )
                 self.trusted_remote_execute(
                     f"ALTER TABLE {current} RENAME TO "
