@@ -181,7 +181,7 @@ class QueryService:
             optimizations = []
             if self.mode == QueryMode.EXPERIMENTAL:
                 from periplus.query.content_scope import experimental_scope
-                scope = experimental_scope(payload.sql)
+                scope = experimental_scope(payload.sql, payload.parameters)
                 if scope is not None:
                     installed = dict(d.execute(
                         "SELECT view_name, sql FROM duckdb_views() WHERE database_name=? AND schema_name='public_v1'",

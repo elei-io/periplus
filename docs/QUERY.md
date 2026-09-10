@@ -874,7 +874,8 @@ console links preserve the selected mode with `mode=experimental`. Stable uses
 
 Stable retains the clean compiler baseline. Experimental `public-query-v5:experimental`
 activates `capture_heading_content_scope_v1` only for a conservative inner join of
-`capture` and `html_heading` with a required exact `capture.effective_url` equality.
+`capture` and `html_heading` with a single exact `capture.effective_url` equality,
+a plain content-ID join and string parameter bindings.
 The original SQL binds first, and installed view definitions must match the reviewed
 versions inside the pinned read transaction. Unsupported forms retain ordinary execution.
 Native DuckDB optimizers remain enabled in both modes. They share public catalogue semantics

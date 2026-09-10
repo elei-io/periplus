@@ -229,8 +229,10 @@ def content_scope(sql: str, *, materialize_inputs: bool = False, heading_driver:
     return ContentScope(result, definitions, keys)
 
 
-def experimental_scope(sql: str) -> ContentScope | None:
+def experimental_scope(sql: str, parameters: list[object] | tuple[object, ...] = ()) -> ContentScope | None:
     """Activate only the measured exact-URL capture/heading inner-join family."""
+    if any(not isinstance(value, str) for value in parameters):
+        return None
     tree = _one_statement(sql)
     if not isinstance(tree, exp.Select) or tree.args.get('with_'):
         return None
@@ -241,7 +243,20 @@ def experimental_scope(sql: str) -> ContentScope | None:
     where = tree.args.get('where')
     if where is None:
         return None
-    for predicate in _conjuncts(where.this):
+    predicates = list(_conjuncts(where.this))
+    if len(predicates) != 1:
+        return None
+    joins = tree.args.get('joins') or []
+    if len(joins) != 1:
+        return None
+    join = joins[0]
+    if not join.args.get('using'):
+        on = join.args.get('on')
+        if on is None or not isinstance(on.unnest(), exp.EQ):
+            return None
+        if not all(isinstance(c, exp.Column) and c.name == 'content_id' for c in (on.unnest().this, on.unnest().expression)):
+            return None
+    for predicate in predicates:
         if not isinstance(predicate, exp.EQ):
             continue
         for column, value in ((predicate.this.unnest(), predicate.expression.unnest()),

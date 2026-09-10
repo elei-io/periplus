@@ -55,8 +55,9 @@ discovery. No global native optimizer setting, persistent materialization,
 partition policy or shared catalogue definition changes are included.
 
 The activation requires exactly `capture` and `html_heading`, connected by an
-eligible inner content-ID join and a required exact capture `effective_url`
-equality. Existing conservative syntax/semantics guards still apply; LIKE,
+eligible plain inner content-ID join and a single exact capture `effective_url`
+equality predicate, with string parameter bindings. Additional predicates and
+join residuals remain unmodified in this initial activation. Existing conservative syntax/semantics guards still apply; LIKE,
 outer joins, user limits, sections and arbitrary discovery remain unmodified.
 Installed definitions are verified in the same transaction after binding the
 original SQL. Stable retains compiler `public-query-v4:stable`; experimental

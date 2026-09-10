@@ -74,7 +74,10 @@ class ContentScopeTests(unittest.TestCase):
 
     def test_activation_requires_exact_capture_url_and_measured_relations(self):
         sql = "SELECT h.text FROM capture c JOIN html_heading h USING(content_id) WHERE c.effective_url = ?"
-        self.assertIsNotNone(experimental_scope(sql))
+        self.assertIsNotNone(experimental_scope(sql, ["https://example.com/a"]))
+        self.assertIsNone(experimental_scope(sql, [1]))
+        self.assertIsNone(experimental_scope(sql + " AND c.content_id = 1", ["https://example.com/a"]))
+        self.assertIsNone(experimental_scope(sql.replace("USING(content_id)", "ON h.content_id=c.content_id AND h.text=1"), ["https://example.com/a"]))
         self.assertIsNotNone(experimental_scope(sql.replace('c.effective_url = ?', "'https://example.com/a' = c.effective_url")))
         for other in (sql.replace(' = ?', ' LIKE ?'),
                       sql.replace('html_heading', 'html_section'),
