@@ -11,7 +11,7 @@ from test_operation_leases import FakeBucket
 from test_ingestion_receipts import Results
 from periplus.ingestion.consumer import PreparedBatch, _claim_batch, _process_messages
 from periplus.ingestion.queue import lineage_ingestion_job, get_ingestion_state
-from periplus.platform.catalogue.lineage import CollectionDefinition
+from periplus.platform.catalogue.lineage import CollectionDefinition, CollectionOutcome
 from periplus.platform.catalogue.records import IngestionWriteResult
 from periplus.platform.messaging.leases import operation_leases, operation_lease_key, OperationLease
 
@@ -115,3 +115,69 @@ class BatchClaimTests(unittest.IsolatedAsyncioTestCase):
         delivery.term.assert_not_awaited()
         self.assertFalse(bucket.values)
         self.assertEqual((await get_ingestion_state(results, work.request_id)).status, "pending")
+
+    async def test_postgres_conflict_defers_shared_jobs_and_commits_unrelated(self):
+        from periplus.retention.identities import WriteClaimUnavailable
+        busy, free = job(), job()
+        shared = lineage_ingestion_job(CollectionOutcome(record_id=busy.identity, collection_id=busy.identity,
+            recorded_at=datetime.now(UTC), outcome="cancelled", consumed_pages=0, supplied_pages=0, failed_pages=0))
+        deliveries = [message(work) for work in [busy, shared, free]]
+        results = Results()
+        conflict = WriteClaimUnavailable("busy", blocked_until={
+            ("collection", str(busy.lineage.collection_id)): datetime.now(UTC)+timedelta(minutes=8)})
+        receipt = IngestionWriteResult(kind="lineage", identity=free.identity, created=True, repository_snapshot=9)
+        ingestor = SimpleNamespace(prepare=MagicMock(side_effect=lambda work: work),
+            commit_prepared_batch=MagicMock(side_effect=[conflict, [receipt]]))
+        await self.process(deliveries, results, ingestor)
+        self.assertEqual(ingestor.commit_prepared_batch.call_args_list[1].args[0], [free])
+        for delivery, work in zip(deliveries[:2], [busy, shared]):
+            delivery.ack.assert_not_awaited()
+            delivery.term.assert_not_awaited()
+            delay = delivery.nak.await_args.kwargs["delay"]
+            self.assertGreaterEqual(delay, 30)
+            self.assertLessEqual(delay, 31)
+            state = await get_ingestion_state(results, work.request_id)
+            self.assertEqual(state.status, "pending")
+            self.assertEqual(state.processing_failure_count, 0)
+        deliveries[2].ack.assert_awaited_once()
+
+    async def test_all_postgres_blocked_jobs_remain_pending(self):
+        from periplus.retention.identities import WriteClaimUnavailable
+        work = job(); delivery = message(work); results = Results()
+        conflict = WriteClaimUnavailable("busy", blocked_until={
+            ("collection", str(work.lineage.collection_id)): datetime.now(UTC)+timedelta(seconds=2)})
+        ingestor = SimpleNamespace(prepare=MagicMock(return_value=work),
+            commit_prepared_batch=MagicMock(side_effect=conflict))
+        await self.process([delivery], results, ingestor)
+        self.assertEqual(ingestor.commit_prepared_batch.call_count, 1)
+        delivery.ack.assert_not_awaited()
+        delivery.nak.assert_awaited_once()
+        self.assertEqual((await get_ingestion_state(results, work.request_id)).status, "pending")
+
+    async def test_partial_commit_is_replayed_safely_before_receipt_and_ack(self):
+        from periplus.retention.identities import WriteClaimUnavailable
+        busy, free = job(), job()
+        deliveries = [message(busy), message(free)]
+        results = Results()
+        durable = set()
+        conflict = WriteClaimUnavailable("busy", blocked_until={
+            ("collection", str(busy.identity)): datetime.now(UTC)+timedelta(seconds=10)})
+        def commit(evidence):
+            # An earlier transaction succeeded before a later claim rejection.
+            durable.add(free.request_id)
+            if busy in evidence:
+                raise conflict
+            return [IngestionWriteResult(kind="lineage", identity=free.identity,
+                created=False, repository_snapshot=10)]
+        ingestor = SimpleNamespace(prepare=MagicMock(side_effect=lambda work: work),
+            commit_prepared_batch=MagicMock(side_effect=commit))
+        deliveries[1].ack.side_effect = TimeoutError()
+        with self.assertRaises(TimeoutError):
+            await self.process(deliveries, results, ingestor)
+        self.assertEqual(durable, {free.request_id})
+        self.assertEqual((await get_ingestion_state(results, busy.request_id)).status, "pending")
+        self.assertEqual((await get_ingestion_state(results, free.request_id)).status, "succeeded")
+        replay = message(free)
+        await self.process([replay], results, ingestor)
+        replay.ack.assert_awaited_once()
+        self.assertEqual(ingestor.commit_prepared_batch.call_count, 2)

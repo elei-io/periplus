@@ -36,6 +36,10 @@ class EvidenceRetired(CatalogueConflictError):
 class WriteClaimUnavailable(CatalogueConflictError):
     """Another bounded writer still owns an overlapping identity."""
 
+    def __init__(self, message: str, *, blocked_until: Mapping[tuple[str, str], datetime] | None = None):
+        super().__init__(message)
+        self.blocked_until = dict(blocked_until or {})
+
 
 def _utc(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
@@ -62,8 +66,10 @@ def _acquire(keys, owner, allow_retired):
         ).order_by(LakeWriteClaimRecord.kind, LakeWriteClaimRecord.identity).with_for_update()))
         if len(rows) != len(keys):
             raise WriteClaimUnavailable('write claim changed during acquisition')
-        if any(row.owner != owner and _utc(row.expires_at) > now for row in rows):
-            raise WriteClaimUnavailable('overlapping lake write is still active')
+        blocked = {(row.kind, row.identity): _utc(row.expires_at) for row in rows
+                   if row.owner != owner and _utc(row.expires_at) > now}
+        if blocked:
+            raise WriteClaimUnavailable('overlapping lake write is still active', blocked_until=blocked)
         if not allow_retired and session.scalar(select(RetiredEvidenceRecord.identity).where(
             tuple_(RetiredEvidenceRecord.kind, RetiredEvidenceRecord.identity).in_(keys)
         ).limit(1)) is not None:

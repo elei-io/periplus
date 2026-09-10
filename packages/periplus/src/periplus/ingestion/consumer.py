@@ -8,11 +8,13 @@ from contextlib import AsyncExitStack
 from datetime import UTC, datetime
 import logging
 import os
+import random
 import time
 from typing import Never
 
 from nats.errors import TimeoutError as NatsTimeoutError
 
+from periplus.retention.identities import WriteClaimUnavailable
 from periplus.platform.config import get_float
 from periplus.platform.config.performance import INGESTION_CATALOGUE_HARD_TIMEOUT_SECONDS
 from periplus.ingestion import metrics as repository_metrics
@@ -149,7 +151,8 @@ async def _process_messages(
     lane: CatalogueLaneReporter,
     metrics: repository_metrics.IngestionLaneMetrics,
 ) -> None:
-    heartbeat = asyncio.create_task(_heartbeat_messages(messages))
+    heartbeat_messages = list(messages)
+    heartbeat = asyncio.create_task(_heartbeat_messages(heartbeat_messages))
     try:
         batch = await _prepare_batch(
             jetstream=jetstream,
@@ -158,6 +161,7 @@ async def _process_messages(
             messages=messages,
             metrics=metrics,
         )
+        heartbeat_messages[:] = batch.messages
         if not batch.evidence:
             return
 
@@ -167,15 +171,23 @@ async def _process_messages(
         try:
             async with AsyncExitStack() as claims:
                 batch = await _claim_batch(batch, leases, claims, metrics)
+                heartbeat_messages[:] = batch.messages
                 if not batch.evidence:
                     return
-                results = await _catalogue_call(
-                    _commit_prepared_batch,
-                    ingestor,
-                    batch.evidence,
-                    metrics,
-                    description="ingestion evidence commit",
-                )
+                while batch.evidence:
+                    results = await _catalogue_call(
+                        _commit_prepared_batch,
+                        ingestor,
+                        batch.evidence,
+                        metrics,
+                        description="ingestion evidence commit",
+                    )
+                    if not isinstance(results, WriteClaimUnavailable):
+                        break
+                    batch = await _defer_write_claims(batch, results, metrics)
+                    heartbeat_messages[:] = batch.messages
+                if not batch.evidence:
+                    return
         except (OperationLeaseUnavailable, OperationLeaseLost):
             for message in batch.messages:
                 await message.nak(delay=1)
@@ -378,13 +390,45 @@ async def _retry_or_fail(
         await message.term()
 
 
+async def _defer_write_claims(
+    batch: PreparedBatch, conflict: WriteClaimUnavailable,
+    metrics: repository_metrics.IngestionLaneMetrics,
+) -> PreparedBatch:
+    selected = PreparedBatch()
+    blocked_ids = {f"{kind}:{identity}" for kind, identity in conflict.blocked_until}
+    for message, job, evidence in zip(batch.messages, batch.jobs, batch.evidence, strict=True):
+        candidate = PreparedBatch([message], [job], [evidence])
+        overlapping = set(candidate.operation_ids) & blocked_ids
+        if not blocked_ids or overlapping:
+            expiries = [expiry for (kind, identity), expiry in conflict.blocked_until.items()
+                        if f"{kind}:{identity}" in overlapping]
+            remaining = max((expiry - datetime.now(UTC)).total_seconds() for expiry in expiries) if expiries else 5
+            # Released claims need no ten-minute delay; abandoned claims must not
+            # consume a worker while waiting. Jitter spreads durable redeliveries.
+            await message.nak(delay=max(1, min(30, remaining)) + random.uniform(0, 1))
+            metrics.recovery("write_claim_busy")
+        else:
+            selected.append(message, job, evidence)
+    if len(selected.jobs) == len(batch.jobs):
+        raise RuntimeError("write claim conflict did not match any ingestion job")
+    return selected
+
+
 def _commit_prepared_batch(
     ingestor,
     evidence: list[PreparedIngestion],
     metrics: repository_metrics.IngestionLaneMetrics,
 ):
+    def commit():
+        try:
+            return ingestor.commit_prepared_batch(evidence)
+        except WriteClaimUnavailable as conflict:
+            # Return the rejection to the async consumer rather than sleeping
+            # through catalogue retries with the whole batch held.
+            return conflict
+
     return run_with_catalogue_retry(
-        lambda: ingestor.commit_prepared_batch(evidence),
+        commit,
         description="ingestion evidence commit",
         on_conflict=lambda: metrics.recovery("commit_conflict"),
     )

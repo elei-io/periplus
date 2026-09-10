@@ -264,3 +264,12 @@ request IDs in a batch are deferred until their first delivery has a durable rec
 Receipt writes precede ACKs. Cancellation, lease expiry, missing receipts and failed
 acknowledgements leave replayable work, with immutable lake identity checks and
 Postgres write claims retaining their existing authority.
+
+Ingestion also attempts PostgreSQL write claims without waiting. A rejected claim
+reports its exact blocked identities and expiry; only jobs touching those identities
+are delayed, and the remaining batch retries its idempotent writes. A visit write
+that committed before a lineage rejection remains safe to replay. Deferred jobs
+receive no success receipt or acknowledgement and consume no processing-failure
+budget. Redelivery uses the remaining claim lifetime capped at 30 seconds plus
+jitter, allowing early releases to become useful without occupying a writer lane.
+Uncertain writes retain their original claims and fail-stop bounds.
