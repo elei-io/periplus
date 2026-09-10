@@ -79,3 +79,14 @@ one side of a query-latency comparison.
 DuckLake references: [partitioning](https://ducklake.select/docs/stable/duckdb/advanced_features/partitioning)
 and [sorted tables](https://ducklake.select/docs/stable/duckdb/advanced_features/sorted_tables).
 Periplus declares both policies; LakeDucktor owns production physical maintenance.
+
+### Deployment guard discovered before rollout
+
+Review after PR #41 found that `_active_registry_matches` accepted absent tables,
+so setup would create an empty new projection and publish its view before rebuild.
+The rollout was held. Require every projection in an existing active schema, defer
+all active material-table changes during a mismatch, and create the new relation's
+empty retirement marker only inside the atomic activation transaction. This uses
+the existing replay protocol. A real DuckLake regression test checks repeated
+setup, old-view availability, rollback, successful activation and replay after a
+lost control acknowledgement. Deploy the guard with the JSON-LD change.
