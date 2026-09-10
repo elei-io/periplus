@@ -4,11 +4,12 @@ import Link from "next/link"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { Badge } from "@/components/ui/badge"
 import { usePathname } from "next/navigation"
-import { Compass, ScanSearch, Globe2, BookOpen, FileCode2 } from "lucide-react"
+import { Compass, TableProperties, ScanSearch, Globe2, BookOpen, FileCode2 } from "lucide-react"
 
 const destinations = [
-  { href: "/sql", label: "SQL", icon: FileCode2 },
   { href: "/discover", label: "Discover", icon: ScanSearch },
+  { href: "/build", label: "Build", icon: TableProperties },
+  { href: "/sql", label: "SQL", icon: FileCode2 },
   { href: "/coverage", label: "Coverage", icon: Globe2 },
   { href: "/docs", label: "Docs", icon: FileCode2 },
   { href: "/about", label: "About", icon: BookOpen },

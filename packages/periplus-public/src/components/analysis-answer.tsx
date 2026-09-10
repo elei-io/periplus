@@ -1,57 +1,48 @@
 "use client"
 
 import Link from "next/link"
+import { Check, ChevronRight, LoaderCircle, CircleAlert } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { memo, useMemo, useState } from "react"
 import Markdown from "react-markdown"
-import { ArrowUpRight, Download } from "lucide-react"
-import { toast } from "sonner"
-import { Button } from "@/components/ui/button"
-import { QueryTable } from "@/components/query-table"
-import { analysisCsv, analysisView } from "@/lib/analysis-view"
-import { captureAnalytics } from "@/lib/analytics"
-import { extractApiError } from "@/lib/api"
+import remarkGfm from "remark-gfm"
+import { Table, TableHeader, TableHead, TableBody, TableRow, TableCell } from "@/components/ui/table"
+import { analysisView } from "@/lib/analysis-view"
 import type { DiscoveryMessage } from "@/types/assistant"
 
-function download(name: string, text: string, type: string) {
-  try {
-    const url = URL.createObjectURL(new Blob([text], { type }))
-    const link = document.createElement("a"); link.href = url; link.download = name; link.click(); URL.revokeObjectURL(url)
-    return true
-  } catch (error) { toast.error(extractApiError(error)); return false }
+export function ChatActivity({ message, running = false }: { message?: DiscoveryMessage; running?: boolean }) {
+  const queries = message ? analysisView(message).queries : []
+  const [open, setOpen] = useState(false)
+  const latest = queries.at(-1)
+  if (!running && !latest) return null
+  const pending = latest && (latest.state === "input-streaming" || latest.state === "input-available")
+  const failed = latest && (latest.state === "output-error" || (latest.state === "output-available" && latest.output.error))
+  const label = pending ? running ? `Executing SQL · ${latest.input?.purpose ?? "Query"}` : "SQL query interrupted"
+    : failed ? `SQL failed · ${latest.input?.purpose ?? "Query"}`
+    : latest ? `Completed · ${latest.input?.purpose ?? "SQL query"}` : "Thinking…"
+  const Icon = running && (!latest || pending) ? LoaderCircle : failed || pending ? CircleAlert : Check
+  return <div className="chat-activity">
+    <Button type="button" variant="ghost" size="sm" className="chat-activity-toggle" aria-label={label} aria-expanded={open} disabled={!queries.length} onClick={() => setOpen(!open)}>
+      <Icon className={running && (!latest || pending) ? "animate-spin" : undefined} />
+      <span role="status">{label}</span>
+      {queries.length > 0 && <ChevronRight className={open ? "rotate-90" : undefined} />}
+    </Button>
+    {open && <div className="chat-query-list">{queries.map(part => <div key={part.toolCallId}>
+      <p>{part.input?.purpose ?? "SQL query"}</p>
+      {part.input?.sql && <pre tabIndex={0}><code>{part.input.sql}</code></pre>}
+      {part.state === "output-available" && <p>{part.output.error ?? `${part.output.result?.rows.length ?? 0} rows returned`}</p>}
+      {part.state === "output-error" && <p>{part.errorText}</p>}
+    </div>)}</div>}
+  </div>
 }
 
-export const AnalysisAnswer = memo(function AnalysisAnswer({ message, running, current, busy, onApprove }: { message: DiscoveryMessage; running: boolean; current: boolean; busy: boolean; onApprove: (token: string) => void }) {
-  const { finding, presentation, queries } = useMemo(() => analysisView(message), [message])
-  const [activityOpen, setActivityOpen] = useState(false)
-  const dataset = presentation?.dataset
-  function exportDataset() {
-    if (!dataset) return
-    if (download("periplus-dataset.csv", analysisCsv(dataset.columns, dataset.rows), "text/csv;charset=utf-8")) captureAnalytics("sql_results_exported", { flow: "discovery", operation_id: message.metadata?.operation_id, result_id: message.id, format: "csv", method: "download", row_count: dataset.rows.length, truncated: dataset.truncated })
-  }
-  return <>
-    {finding && !presentation && <div aria-live="polite"><Markdown skipHtml allowedElements={["p", "strong", "em", "ul", "li"]} unwrapDisallowed>{finding}</Markdown></div>}
-    {presentation && <p>{presentation.message}</p>}
-    {current && presentation && <>
-      {presentation.needs_sources && <Button variant="outline" nativeButton={false} render={<Link href="/coverage" />}>Request broader coverage<ArrowUpRight /></Button>}
-      {dataset && <section className="analysis-result" data-status={presentation.status} aria-label={presentation.status === "sample" ? "Dataset sample" : "Your dataset"}>
-        <header><div><span className="eyebrow">{presentation.status === "sample" ? "Sample · review before building" : presentation.status === "ready" ? `${dataset.rows.length} rows · ready` : "Work in progress"}</span><h3>{presentation.brief.title}</h3></div></header>
-        <QueryTable columns={dataset.columns} types={dataset.types} rows={dataset.rows} />
-        {presentation.limitations && <p className="analysis-note">{presentation.limitations}</p>}
-        {dataset.truncated && <p className="analysis-note">Only part of the result was returned. Downloads contain the displayed rows.</p>}
-        <div className="analysis-actions">
-          {presentation.status === "sample" && presentation.approval && <Button disabled={busy} onClick={() => onApprove(presentation.approval!)}>Build dataset<ArrowUpRight /></Button>}
-          {presentation.status === "ready" && <>
-            <Button onClick={exportDataset}><Download />Download CSV</Button>
-            <Button variant="outline" nativeButton={false} render={<Link href={`/sql?${new URLSearchParams({ sql: dataset.sql })}`} target="_blank" rel="noopener noreferrer" />}>Open in SQL<ArrowUpRight /></Button>
-            <Button variant="ghost" onClick={() => download("periplus-dataset.json", JSON.stringify({ brief: presentation.brief, sql: dataset.sql, schema_version: dataset.schema_version, source_snapshot: dataset.source_snapshot, checks: presentation.checks.map(check => check.sql) }, null, 2), "application/json")}><Download />Save definition</Button>
-          </>}
-        </div>
-        {presentation.status === "sample" && <p className="analysis-note">Happy with these sources and fields? Build the full dataset, or describe what you’d like to change below.</p>}
-        {presentation.checks.length > 0 && <details className="analysis-method"><summary>Quality & coverage</summary><div className="analysis-method-body">{presentation.checks.map(check => <QueryTable key={check.query_id} columns={check.columns} types={check.types} rows={check.rows} />)}<p>Schema {dataset.schema_version}, snapshot {dataset.source_snapshot}. Rerunning SQL uses the captures available then; changes to sources may require revalidation.</p></div></details>}
-      </section>}
-      {!dataset && presentation.limitations && <p>{presentation.limitations}</p>}
-    </>}
-    {!running && queries.length > 0 && !presentation && <p>This attempt stopped before producing a sample or dataset. Continue below.</p>}
-    {queries.length > 0 && <details className="analysis-activity" onToggle={event => setActivityOpen(event.currentTarget.open)}><summary>Technical details · {queries.length} queries</summary>{activityOpen && <div className="analysis-activity-body">{queries.map(part => <details key={part.toolCallId}><summary>{part.input?.purpose ?? "Inspecting data"}</summary><pre className="overflow-auto text-xs">{part.input?.sql}</pre>{part.state === "output-available" && <p>{part.output.error ?? `${part.output.result?.rows.length ?? 0} rows returned`}</p>}</details>)}</div>}</details>}
-  </>
+export const AnalysisAnswer = memo(function AnalysisAnswer({ message, running = false, showCoverage = true }: { message: DiscoveryMessage; running?: boolean; showCoverage?: boolean }) {
+  const { finding, coverage } = useMemo(() => analysisView(message), [message])
+  return <div className="flex flex-col gap-3">
+    <ChatActivity message={message} running={running} />
+    {finding && <div className="conversation-prose" aria-live="polite"><Markdown remarkPlugins={[remarkGfm]} skipHtml allowedElements={["p", "strong", "em", "ul", "ol", "li", "a", "h1", "h2", "h3", "code", "pre", "table", "thead", "tbody", "tr", "th", "td"]} components={{ table: ({ children }) => <Table>{children}</Table>, thead: ({ children }) => <TableHeader>{children}</TableHeader>, tbody: ({ children }) => <TableBody>{children}</TableBody>, tr: ({ children }) => <TableRow>{children}</TableRow>, th: ({ children }) => <TableHead>{children}</TableHead>, td: ({ children }) => <TableCell>{children}</TableCell> }} unwrapDisallowed>{finding}</Markdown></div>}
+    {showCoverage && coverage.map((suggestion, index) => <Card key={index} size="sm"><CardHeader><CardTitle>Suggested coverage request</CardTitle></CardHeader><CardContent className="flex flex-col gap-2"><p>{suggestion.reason}</p><p>{suggestion.description}</p><Button variant="outline" nativeButton={false} render={<Link href={`/coverage?${new URLSearchParams({ description: suggestion.description })}#coverage-request`} target="_blank" rel="noopener noreferrer" />}>Review coverage request</Button></CardContent></Card>)}
+
+  </div>
 })

@@ -2,6 +2,7 @@
 
 import { observeCoverage } from "@/lib/coverage-analytics"
 import Link from "next/link"
+import { discoverLink } from "@/lib/workspace-links"
 import { memo, useEffect, useLayoutEffect, useRef } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { ArrowUpRight, Check } from "lucide-react"
@@ -90,7 +91,7 @@ export function RequestStory({id, playing}: {id:string;playing:boolean}) {
       {item.source === "current" && (item.shared_pages > 0 || item.reused_pages > 0) && <p>{item.shared_pages.toLocaleString()} shared connections · {item.reused_pages.toLocaleString()} earlier observations reused. These counts can overlap with the pages observed total.</p>}
     </div>
     </div><RequestObservationTail key={id} id={id} playing={playing}/></div>
-    <footer className="request-summary-footer"><p>{item.query_ready === true ? "Ready to explore in SQL" : item.supplied_pages === null ? "Explore any results recorded so far" : item.supplied_pages === 0 ? "No observations recorded yet" : "Newest observations may still be arriving"}</p>{sql && <Link className={buttonVariants({variant:"default"})} href={sql}>Explore observations <ArrowUpRight size={14}/></Link>}</footer>
+    <footer className="request-summary-footer"><p>{item.query_ready === true ? "Ready to explore in SQL" : item.supplied_pages === null ? "Explore any results recorded so far" : item.supplied_pages === 0 ? "No observations recorded yet" : "Newest observations may still be arriving"}</p>{seed && <Link className={buttonVariants({variant:"outline"})} href={discoverLink(`Explore captured data for ${seed}, associated with coverage request ${item.id}. What questions could it help answer?`)} target="_blank" rel="noopener noreferrer">Explore this source <ArrowUpRight size={14}/></Link>}{sql && <Link className={buttonVariants({variant:"default"})} href={sql} target="_blank" rel="noopener noreferrer">Query captures <ArrowUpRight size={14}/></Link>}</footer>
   </section>
 }
 
@@ -104,5 +105,5 @@ export const PublicRequests = memo(function PublicRequests({playing, onOpenReque
 })
 
 export function ExploreObservedWeb() {
-  return <section className="observatory-explore" id="coverage"><div><span className="eyebrow">Already in Periplus</span><h2>Explore the databank</h2><p>Explore the websites and dated captures already in Periplus. Define a dataset with an agent, query the shared tables in SQL, or learn how the data fits together.</p></div><div className="observatory-explore-links"><Link href="/discover">Define a dataset <ArrowUpRight/></Link><Link href={datasetSqlUrl({sql:coverageSql})}>Explore sites and dates in SQL <ArrowUpRight/></Link><Link href="/docs#how-it-works">Understand captures and time <ArrowUpRight/></Link></div></section>
+  return <section className="observatory-explore" id="coverage"><div><span className="eyebrow">Already in Periplus</span><h2>Explore the databank</h2><p>Explore the websites and dated captures already in Periplus. Investigate a question in Discover, match your schema in Build, or query the shared tables in SQL.</p></div><div className="observatory-explore-links"><Link href="/discover">Discover data <ArrowUpRight/></Link><Link href="/build">Build a dataset <ArrowUpRight/></Link><Link href={datasetSqlUrl({sql:coverageSql})}>Explore sites and dates in SQL <ArrowUpRight/></Link><Link href="/docs#how-it-works">Understand captures and time <ArrowUpRight/></Link></div></section>
 }

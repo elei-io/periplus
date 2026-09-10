@@ -68,30 +68,43 @@ The public contract has one versioned namespace, with no old-schema aliases.
 
 ### Query server boundary
 
-The public app separates the marketing landing page (`/`), dataset discovery conversation (`/discover`), a separate SQL workspace (`/sql`), live coverage (`/coverage`), curated dataset queries (`/datasets`), and one-time page requests (`/suggest`). Curated datasets are named SQL definitions with descriptions and scope notes; their previews execute through the same query API without storing separate result copies. Home submissions navigate to
-the workspace and execute once; ordinary shared SQL links restore a draft without executing. Next.js owns web-specific agent orchestration using Vercel AI SDK,
-with a read-only SQL tool that calls the Python query API. The assistant cannot crawl or access
-lake credentials. The SQL bench offers editable examples, schema queries, export, and share links.
-Coverage suggestions use the control API; crawl completion is not proof of indexing readiness.
-The dataset builder uses one agent with two tools: query the public catalogue and update a dataset
-draft. A draft contains its name, row grain, ordered typed fields and source scope. Unclear intent
-gets a focused question; clear intent gets source discovery and a real sample of at most five rows.
-The user can change the fields or sources conversationally, or approve the current sample with
-Build dataset. A signed, expiring sample receipt binds approval to the exact draft without adding
-persistence. The server rejects forged receipts and ready results whose draft differs from approval.
-Conversation history carries prior drafts and SQL as untrusted text, never trusted result evidence.
+The public app separates the marketing landing page (`/`), question-led data discovery
+(`/discover`), an explicit dataset builder (`/build`), SQL (`/sql`), and live coverage (`/coverage`).
+Next.js owns web-specific agent orchestration using Vercel AI SDK and a read-only SQL tool calling
+the Python query API. The assistant cannot crawl or access lake credentials. Coverage requests use
+the control API; crawl completion is not proof of indexing readiness.
 
-Only after approval does the agent build the complete standalone SQL and execute validation.
-Ready requires matching column names/types, nonempty complete returned rows, required values and
-executed one-row boolean checks that all pass. Inspection and validation results stay in collapsed
-technical details. The main view shows one selected table, first as a sample and then as the dataset;
-the compact sidebar retains fields and scope. Meaningful plain-language progress is visible during
-execution. Missing sources lead to the Observatory; operational failures do not imply missing data.
-The three draft statuses are draft, sample and ready; no stepper or separate SQL-drafting agent is
-part of discovery. SQL editing opens the separate /sql workspace. Users can download the final CSV
-and definition with SQL, check SQL and source snapshot. The snapshot records provenance; it does
-not pin future reruns or guarantee extraction after source layouts change. State remains temporary
-in the browser. The model sees at most 20 rows per query; the UI retains returned rows up to the configured query limits (1,000 rows by default).
+Discover starts from a question, retrieves real examples, and explains their sources and limitations.
+Partial coverage and missing optional values do not block a useful preview. It has no schema-approval
+step. Its Findings panel keeps successful SQL evidence available independently of dataset suggestions,
+including after interruption. Evidence is explicitly labelled as inspection results, with at most five
+rows shown per query on expansion; exploratory answers need not create datasets. Users can
+export displayed rows, inspect SQL, or carry the result and proposed fields into the builder.
+
+The builder accepts written specifications or imported JSON definitions and exposes ordered column
+names, exact DuckDB types, nullability, row grain and source scope in an editable contract. A written
+specification initially produces a suggested contract and sample. Validate dataset sends the current
+explicit contract directly; there is no separate approval receipt. A ready result must match that
+contract exactly, contain nonempty complete returned rows with all required values, and have executed
+one-row boolean checks that all pass. Missing values, conversion failures or scope limitations must
+be surfaced rather than concealed by relaxing the contract or discarding records. Failed checks may
+accompany a draft preview. Editing the contract removes the current result's validated presentation.
+
+Both workflows share one bounded agent implementation with short role-specific system prompts and
+the public database schema. Their four tools are SQL, SUGGEST_SCHEMA, SUGGEST_DATASET and
+SUGGEST_COVERAGE_REQUEST. Suggestions are independent and do not end the turn. The application
+computes contract validation from executed results; the model cannot declare readiness. Coverage
+suggestions open a prefilled form for review and do not submit a crawl. Conversation history and navigation handoff carry drafts and SQL as untrusted
+context; only successful server executions establish evidence. Follow-ups should rerun the existing
+bounded extraction rather than restart source discovery. Technical activity stays collapsed; the
+last useful result remains visible, explicitly labelled when a later request has no replacement.
+Draft definitions can be exported and reimported before validation, including unfinished fields.
+Conversations remain temporary browser memory. Contextual handoffs open a separate tab and carry
+questions, SQL, and specifications in the URL; they do not carry trusted execution evidence. SQL pauses after service contention or
+120 seconds of a turn, with individual calls bounded to 90 seconds and the remaining SQL budget,
+leaving time for an answer before the route deadline. Final downloads include SQL,
+checks and source snapshot; the snapshot is provenance, not a pinned future rerun. The model sees
+at most 20 rows per query. UI results and exports obey the configured query limits (1,000 rows by default).
 SQL preparation and execution remain in the separate Python
 `periplus-query` process, which exposes only `POST /query/prep`, `POST /query/exec`, and
 `GET /query/helpers`, and its health probe. Query routes do not exist on the control API.

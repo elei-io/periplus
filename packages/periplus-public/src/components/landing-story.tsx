@@ -1,6 +1,7 @@
 import Link from "next/link"
 import { ArrowUpRight, Files, ArrowRight } from "lucide-react"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
+import { buildLink } from "@/lib/workspace-links"
 import { LandingLauncher } from "@/components/landing-launcher"
 import { coverageSql, datasets } from "@/lib/datasets"
 import { sqlDraftLink } from "@/lib/schema-reference"
@@ -26,11 +27,11 @@ export function LandingStory() {
       </div>
     </section>
 
-    <section id="build-dataset" className="story-section" aria-labelledby="build-heading">
+    <section id="explore-data" className="story-section" aria-labelledby="explore-heading">
       <div className="story-heading">
         <span className="eyebrow">Try it</span>
-        <h2 id="build-heading">What would you like to put in a table?</h2>
-        <p>Describe what each row should represent. The agent explores the data already in Periplus, helps write the SQL, and previews the results. You can review the query and export the rows as CSV.</p>
+        <h2 id="explore-heading">Start with a question.</h2>
+        <p>Discover investigates the data already in Periplus, shows supporting evidence, and helps you understand what questions it can answer. If a dataset would help, you can take a suggestion into Build.</p>
       </div>
       <LandingLauncher />
     </section>
@@ -56,6 +57,7 @@ export function LandingStory() {
               <code>{["A Field Guide / 18.00", "Chapter one / example.org", "journal → archive / 12"][index]}</code>
               <small>Illustrative output</small>
             </div>
+            <Link className="story-link" href={buildLink(`Help me adapt this dataset: ${dataset.name}.\nRow meaning: ${dataset.grain}\nScope: ${dataset.scope}\nSQL:\n${dataset.sql}`)}>Adapt this dataset <ArrowUpRight aria-hidden="true" /></Link>
             <Link className="story-link" href={sqlDraftLink(dataset.sql)}>Open editable query <ArrowUpRight aria-hidden="true" /></Link></CardContent>
         </Card>)}
       </div>

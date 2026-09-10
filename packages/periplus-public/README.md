@@ -7,9 +7,10 @@ implementation detail and coverage is inspectable. Keep the whole-web vision dis
 corpus; describe preserved structure accurately rather than claiming byte-for-byte losslessness
 of the parsed projection. Source bytes are retained separately.
 
-- `/`: marketing landing page with an Ask/SQL launcher, live book-price example, and concise product story.
+- `/`: marketing landing page with a Discover launcher and Build/SQL entry points, live book-price example, and concise product story.
 - `/about`: vision, worked extraction, join semantics, collection, and preview access/data-use disclosures.
-- `/discover`: dataset discovery conversation with a persistent editable definition panel, source evidence, and dataset previews.
+- `/discover`: question-led investigation with source evidence in Findings and optional schema or dataset suggestions.
+- `/build`: exact dataset specifications with editable ordered columns, types, nullability, validation, and saved Periplus JSON draft import/export.
 - `/sql`: independent SQL workspace with CodeMirror, schema exploration, CSV export, and query share links.
   Home submissions launch once; the URL retains the input but consumes the run flag before execution. Reloading restores a draft.
 - `/coverage`: live site counts, distinct URLs, observations, and available collection dates.
@@ -26,13 +27,14 @@ browser and are lost on reload. Questions and sampled public results go to the m
 
 Completed analyses distinguish query results from agent analysis. Tables and CSV contain server-resolved SQL output; generated summaries and labels appear separately with links to selected evidence. The server rejects unknown or unselected evidence references. Prompt instructions prohibit embedding generated source text or labels into SQL output; this is not a semantic proof of SQL provenance.
 
-The presentation tool maintains a dataset brief: intended use, grain, fields, population, time scope,
-acceptance criteria and open questions. A turn can remain `designing`, or conclude `ready`,
-`collection_needed`, or `not_fit`. Operational failures use `blocked`, never a coverage or fit verdict.
-Coverage and correctness confidence are separate low/medium/high assessments with reasons.
-Ready requires executed nonempty results, no unresolved brief questions, and no result-budget truncation;
-these structural checks do not prove semantic correctness. Collection recommendations require selected
-query evidence. Users refine the brief through ordinary follow-up messages, not a separate form.
+Both workspaces use SQL, SUGGEST_SCHEMA, SUGGEST_DATASET, and SUGGEST_COVERAGE_REQUEST.
+Discover investigates questions; Build maps available data to an explicit specification.
+Successful SQL evidence appears in Findings independently of dataset suggestions. Only
+SUGGEST_DATASET creates a dataset preview. Build checks results against ordered columns,
+types, nullability, and acceptance checks. Ready results must be nonempty and untruncated,
+with no unresolved specification questions or failed checks. These checks do not prove
+semantic correctness. Unfinished specifications can be saved and imported as Periplus JSON
+drafts. Coverage suggestions prefill requests for review and do not start collection.
 
 The agent chooses methods to fit the task: representative bounded context for extraction, population
 aggregates and cohort checks for temporal analysis. The 20-row model evidence cap is not an input
@@ -45,7 +47,7 @@ actual returned rows; exploratory coverage evidence may accompany the working br
 called the final dataset. SQL-only requests produce an unexecuted draft. Follow-up requests carry the
 brief, assessment and recent SQL as bounded, untrusted text notes, without replaying result payloads.
 Corpus claims and prior SQL must be verified again as needed. No extra persistence, agent or service
-is introduced; the brief disappears with the conversation on reload.
+is introduced; the conversation disappears on reload; exported drafts can be imported again.
 
 Set server-only `OPENAI_API_KEY` and `PERIPLUS_AI_MODEL` to enable the assistant. Existing
 `openai:`-prefixed model configuration is accepted. No default model is selected automatically.
@@ -88,8 +90,7 @@ operational cleanup. Public credentials cannot change crawler controls. All requ
 It reports observation time and unavailable/stale dependencies without claiming a global FIFO order.
 
 Analysis allows up to 24 notes of 2,000 characters with a shared 16,000-character prose budget
-including the brief and confidence. Oversized prose is rejected, never silently clipped. Only CSV
-export of returned query rows is currently available.
+including the brief and confidence. Oversized prose is rejected, never silently clipped. Returned query rows export as CSV; specifications export separately as JSON drafts.
 
 Public feature availability, rate limits and crawl choices come from `/api/access`.
 See [ACCESS.md](../../docs/ACCESS.md) for gates, independent assistant/SQL operation, and cutover.

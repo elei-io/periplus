@@ -39,19 +39,21 @@ export function QueryValue({ value, type = "" }: { value: unknown; type?: string
   return displayValue(value)
 }
 
-export const QueryTable = memo(function QueryTable({ columns, types, rows, label = "Query results", renderCell }: {
+export const QueryTable = memo(function QueryTable({ columns, types, rows, label = "Query results", renderCell, showTypes = true, imageColumns = [] }: {
   columns: string[]
   types: string[]
   rows: unknown[][]
   label?: string
+  showTypes?: boolean
+  imageColumns?: number[]
   renderCell?: (value: unknown, column: number) => ReactNode
 }) {
-  const kinds = columns.map((_, i) => columnKind(types[i] ?? "", rows, i))
+  const kinds = columns.map((_, i) => imageColumns.includes(i) ? "image" : columnKind(types[i] ?? "", rows, i))
   return <div className="query-table-region">
     <div className="analysis-table" role="region" aria-label={`${label}. Scroll to see more rows or columns.`} tabIndex={0}>
       <Table aria-label={label}>
-        <TableHeader><TableRow>{columns.map((column, i) => <TableHead key={i} scope="col" data-kind={kinds[i]}>{column}{types[i] && <span className="column-type" title={types[i]}>{types[i]}</span>}</TableHead>)}</TableRow></TableHeader>
-        <TableBody>{rows.map((row, i) => <TableRow key={i}>{row.map((value, j) => <TableCell key={j} data-kind={kinds[j]}>{renderCell ? renderCell(value, j) : <QueryValue value={value} type={types[j]} />}</TableCell>)}</TableRow>)}</TableBody>
+        <TableHeader><TableRow>{columns.map((column, i) => <TableHead key={i} scope="col" data-kind={kinds[i]}>{column}{showTypes && types[i] && <span className="column-type" title={types[i]}>{types[i]}</span>}</TableHead>)}</TableRow></TableHeader>
+        <TableBody>{rows.map((row, i) => <TableRow key={i}>{row.map((value, j) => <TableCell key={j} data-kind={kinds[j]} className={kinds[j] === "image" ? "w-24 min-w-24!" : undefined}>{renderCell ? renderCell(value, j) : <QueryValue value={value} type={types[j]} />}</TableCell>)}</TableRow>)}</TableBody>
       </Table>
     </div>
     <p className="table-scroll-hint">Scroll the table to explore all columns.</p>

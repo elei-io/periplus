@@ -4,7 +4,7 @@ import { DiscoveryWorkspace } from "@/components/discovery-workspace"
 
 export async function generateMetadata({ searchParams }: PageProps<"/discover">): Promise<Metadata> {
   const params = await searchParams
-  return pageMetadata("/discover", "Discover", "Define your own dataset over collected web structure. Build and validate reusable SQL, inspect real records, and export the result.", !hasWorkspaceInput(params, ["question", "run"]))
+  return pageMetadata("/discover", "Discover", "Explore questions against collected web data. Review sources, evidence, and coverage, and find possible datasets when useful.", !hasWorkspaceInput(params, ["question", "run"]))
 }
 
 export default async function DiscoverPage({ searchParams }: PageProps<"/discover">) {
