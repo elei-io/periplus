@@ -17,11 +17,11 @@ export function PublicNav() {
   const pathname = usePathname()
   return <header className="public-header">
     <div className="public-header-inner">
-      <div className="flex shrink-0 items-start gap-2">
+      <div className="flex shrink-0 items-center gap-2">
         <Link href="/" className="wordmark" aria-label="Periplus home"><Compass aria-hidden="true" />periplus</Link>
-        <Badge variant="outline" className="relative -top-1 border-purple-200 bg-purple-50 text-purple-700 dark:border-purple-400/30 dark:bg-purple-400/10 dark:text-purple-300">Research preview</Badge>
+        <Badge variant="outline" className="border-purple-200 bg-purple-50 text-purple-700 dark:border-purple-400/30 dark:bg-purple-400/10 dark:text-purple-300">Research preview</Badge>
       </div>
-      <nav className="workspace-nav flex-wrap max-sm:grid! max-sm:grid-cols-4 max-[380px]:grid-cols-3" aria-label="Main navigation">{destinations.map(({ href, label, icon: Icon }) => <Link key={href} href={href} aria-current={pathname === href || pathname.startsWith(`${href}/`) ? "page" : undefined}><Icon aria-hidden="true" />{label}</Link>)}</nav>
+      <nav className="workspace-nav min-[1001px]:ml-auto flex-wrap max-sm:grid! max-sm:grid-cols-4 max-[380px]:grid-cols-3" aria-label="Main navigation">{destinations.map(({ href, label, icon: Icon }) => <Link key={href} href={href} aria-current={pathname === href || pathname.startsWith(`${href}/`) ? "page" : undefined}><Icon aria-hidden="true" />{label}</Link>)}</nav>
       <div className="nav-actions"><ThemeToggle /></div>
     </div>
   </header>
