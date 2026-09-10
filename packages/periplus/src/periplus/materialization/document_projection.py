@@ -11,6 +11,7 @@ import pyarrow as pa
 
 from periplus.ingestion.objects.document import ExactDocumentRepository
 from periplus.ingestion.objects.html import RawHtmlRepository
+from periplus.materialization.metrics import step
 from periplus.materialization.dom import (
     ElementRow,
 )
@@ -63,16 +64,18 @@ def build_visit_batch_context(
     nodes: dict[str, tuple[NodeRow, ...]] = {}
     observations: dict[str, tuple[DocumentObservation, ...]] = {}
     for source in sources:
-        if source.storage_encoding == "zstd":
-            html: str | bytes = html_repository.read(source.object_key)
-        elif source.storage_encoding == "identity":
-            html = exact_repository.read_bytes(source.object_key)
-        else:
-            raise ValueError(
-                "unsupported HTML storage encoding "
-                f"{source.storage_encoding!r}"
-            )
-        nodes[source.content_sha256], parsed[source.content_sha256] = parse_document(html)
+        with step("html_read_decode"):
+            if source.storage_encoding == "zstd":
+                html: str | bytes = html_repository.read(source.object_key)
+            elif source.storage_encoding == "identity":
+                html = exact_repository.read_bytes(source.object_key)
+            else:
+                raise ValueError(
+                    "unsupported HTML storage encoding "
+                    f"{source.storage_encoding!r}"
+                )
+        with step("html_parse"):
+            nodes[source.content_sha256], parsed[source.content_sha256] = parse_document(html)
         observations[source.content_sha256] = source.observations
     return VisitBatchContext(
         visits=visits,

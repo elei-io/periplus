@@ -217,3 +217,32 @@ creation only; each generated request receives a fresh duration budget.
 table in control Postgres, bounded best-effort recording, janitor cleanup and the
 `observatory/queries` dashboard. This is explicitly approved product analytics;
 no query results or crawl history are added to control Postgres.
+
+
+## Rebuild timing visibility
+
+The Grafana dashboard's **Materialization time by operation (all attempts)** panel
+uses `periplus_materialization_step_duration_seconds`. Its bounded `step` and
+`outcome` labels distinguish source lookup, HTML read/decode, HTML parsing,
+projection row construction, Parquet encoding/upload, file-size lookup,
+commit-claim acquisition, the lake transaction, and the Postgres receipt write.
+Every completed operation attempt is observed, including exceptions and retries.
+An in-progress operation or a process killed before observation is not included.
+These metrics do not persist in batch receipts; Prometheus retention controls history.
+
+The panel sums worker wall seconds per second across replicas, not CPU seconds
+or total rebuild duration. Steps have different observation counts (per document,
+projection, file, or batch), so compare summed durations rather than averages.
+Do not add these detailed durations to the existing coarse phase durations.
+Claim acquisition includes database access and contention/retry waits; the lake
+transaction includes BEGIN, statements, and COMMIT/rollback but excludes claim
+acquisition. HTML reads include storage decompression and decoding.
+
+DuckDB currently performs Parquet encoding and remote upload in one COPY call.
+`parquet_encode_upload` intentionally reports the combined duration: it cannot
+attribute encoding versus network waits. Separating those requires engine-level
+instrumentation or a separately evaluated staging/upload change; no estimate is
+presented as a measured split. Claim release and small Python bookkeeping gaps
+are not measured by the detailed steps. Deploy the worker and updated dashboard
+to collect and display these metrics; no projection rebuild is required solely
+for this instrumentation.
