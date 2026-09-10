@@ -34,8 +34,12 @@ class SafeFormatter(logging.Formatter):
                                     'status', 'route', 'method', 'actor', 'truncated', 'rows', 'bytes', 'attempt', 'request_id'}
                          and isinstance(value, (str, int, float, bool))})
             data.update({key: value for key, value in fields.items()
-                         if key in {'batches', 'collections_removed', 'acquisitions_removed', 'more'}
+                         if key in {'batches', 'collections_removed', 'acquisitions_removed', 'more',
+                                    'candidates', 'observations_retired', 'requests_retired',
+                                    'blocked_observations', 'blocked_requests', 'deferred', 'removed'}
                          and isinstance(value, (int, bool))})
+            if fields.get('mode') in ('disabled', 'dry_run', 'purge'):
+                data['mode'] = fields['mode']
         if record.exc_info and record.exc_info[0]:
             data['exception_type'] = record.exc_info[0].__name__
             data['frames'] = [{'function': f.name, 'line': f.lineno}

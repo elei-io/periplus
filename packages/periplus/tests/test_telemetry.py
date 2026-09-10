@@ -105,3 +105,16 @@ assert prometheus_metrics(request).status_code == 200
         self.assertNotIn('payload', data)
         record.telemetry = dict(acquisitions_removed='sentinel-secret')
         self.assertNotIn('sentinel-secret', SafeFormatter('janitor').format(record))
+
+    def test_retention_counts_survive_formatting_without_evidence_identities(self):
+        record = logging.LogRecord('periplus.retention.runtime', logging.INFO, __file__, 1,
+                                   'retention_sweep', (), None)
+        counts = dict(candidates=25, observations_retired=24, requests_retired=1,
+                      blocked_observations=1, blocked_requests=0, deferred=2, removed=3)
+        record.telemetry = dict(counts, mode='purge', content_id='sentinel-secret')
+        data = json.loads(SafeFormatter('janitor').format(record))
+        self.assertEqual({key: data[key] for key in counts}, counts)
+        self.assertEqual(data['mode'], 'purge')
+        self.assertNotIn('content_id', data)
+        record.telemetry = dict.fromkeys([*counts, 'mode'], 'sentinel-secret')
+        self.assertNotIn('sentinel-secret', SafeFormatter('janitor').format(record))
