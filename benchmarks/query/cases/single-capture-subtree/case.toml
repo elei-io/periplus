@@ -1,0 +1,7 @@
+id = "single-capture-subtree"
+title = "Latest successful capture with faithful text for every link"
+use_case = "Select one observation, then extract many subtrees from its content."
+classification = "optimizer"
+ordered = true
+memory_limit = "512MB"
+max_warm_ms = 60000
