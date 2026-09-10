@@ -1,0 +1,255 @@
+{
+  "access_path": "cluster_direct_reader",
+  "deployment": "4167701",
+  "warm_protocol": "ordinary_execution",
+  "pairs": [
+    {
+      "order": "forward",
+      "measurements": {
+        "baseline": {
+          "case": "prose-mention-counts",
+          "ducklake_snapshot": 107658,
+          "normal_ms": 11232.368461031001,
+          "warm_ms": [
+            2208.7324149906635,
+            1135.2146730059758,
+            1181.3561390154064
+          ],
+          "median_warm_ms": 1181.3561390154064,
+          "result_rows": 20,
+          "result_digest": "5f6bd58f3f37d0cfaef1951b921f563a6c6a6fd8d787e3e75e9e6b5c02bdb473",
+          "columns": [
+            "domain",
+            "mentions",
+            "matching_pages"
+          ],
+          "types": [
+            "VARCHAR",
+            "HUGEINT",
+            "BIGINT"
+          ],
+          "settings": {
+            "disabled_optimizers": "",
+            "max_temp_directory_size": "244.1 MiB",
+            "memory_limit": "953.6 MiB",
+            "threads": "2"
+          },
+          "catalogue_digest": "9d4234d1be75219fed5d0efa50caec2561b6edfefd935596985b1d4de7d9f95e",
+          "duckdb_version": "1.5.5"
+        },
+        "candidate": {
+          "case": "prose-mention-counts",
+          "ducklake_snapshot": 107658,
+          "normal_ms": 972.2872929996811,
+          "warm_ms": [
+            954.9937659758143,
+            941.7713489965536,
+            917.5068429904059
+          ],
+          "median_warm_ms": 941.7713489965536,
+          "result_rows": 20,
+          "result_digest": "5f6bd58f3f37d0cfaef1951b921f563a6c6a6fd8d787e3e75e9e6b5c02bdb473",
+          "columns": [
+            "domain",
+            "mentions",
+            "matching_pages"
+          ],
+          "types": [
+            "VARCHAR",
+            "HUGEINT",
+            "BIGINT"
+          ],
+          "settings": {
+            "disabled_optimizers": "",
+            "max_temp_directory_size": "244.1 MiB",
+            "memory_limit": "953.6 MiB",
+            "threads": "2"
+          },
+          "catalogue_digest": "9d4234d1be75219fed5d0efa50caec2561b6edfefd935596985b1d4de7d9f95e",
+          "duckdb_version": "1.5.5"
+        }
+      },
+      "comparison": [
+        {
+          "case": "prose-mention-counts",
+          "scale": null,
+          "exact_result": true,
+          "warm_time_ratio": 0.7971951199927456,
+          "normal_time_ratio": 0.08656120001519577,
+          "peak_buffer_ratio": null,
+          "rows_scanned_ratio": null
+        }
+      ],
+      "failures": []
+    },
+    {
+      "order": "reverse",
+      "measurements": {
+        "candidate": {
+          "case": "prose-mention-counts",
+          "ducklake_snapshot": 107671,
+          "normal_ms": 9863.395482010674,
+          "warm_ms": [
+            1113.883493002504,
+            924.6326590073295,
+            909.1057420009747
+          ],
+          "median_warm_ms": 924.6326590073295,
+          "result_rows": 20,
+          "result_digest": "43b9f664e3d31ae55f9f95842674e7e445ee75d9ae8f606311db562477c867c6",
+          "columns": [
+            "domain",
+            "mentions",
+            "matching_pages"
+          ],
+          "types": [
+            "VARCHAR",
+            "HUGEINT",
+            "BIGINT"
+          ],
+          "settings": {
+            "disabled_optimizers": "",
+            "max_temp_directory_size": "244.1 MiB",
+            "memory_limit": "953.6 MiB",
+            "threads": "2"
+          },
+          "catalogue_digest": "9d4234d1be75219fed5d0efa50caec2561b6edfefd935596985b1d4de7d9f95e",
+          "duckdb_version": "1.5.5"
+        },
+        "baseline": {
+          "case": "prose-mention-counts",
+          "ducklake_snapshot": 107671,
+          "normal_ms": 1346.24431602424,
+          "warm_ms": [
+            1150.5099140340462,
+            1127.68589501502,
+            1166.336533962749
+          ],
+          "median_warm_ms": 1150.5099140340462,
+          "result_rows": 20,
+          "result_digest": "43b9f664e3d31ae55f9f95842674e7e445ee75d9ae8f606311db562477c867c6",
+          "columns": [
+            "domain",
+            "mentions",
+            "matching_pages"
+          ],
+          "types": [
+            "VARCHAR",
+            "HUGEINT",
+            "BIGINT"
+          ],
+          "settings": {
+            "disabled_optimizers": "",
+            "max_temp_directory_size": "244.1 MiB",
+            "memory_limit": "953.6 MiB",
+            "threads": "2"
+          },
+          "catalogue_digest": "9d4234d1be75219fed5d0efa50caec2561b6edfefd935596985b1d4de7d9f95e",
+          "duckdb_version": "1.5.5"
+        }
+      },
+      "comparison": [
+        {
+          "case": "prose-mention-counts",
+          "scale": null,
+          "exact_result": true,
+          "warm_time_ratio": 0.8036720481314926,
+          "normal_time_ratio": 7.326601393675318,
+          "peak_buffer_ratio": null,
+          "rows_scanned_ratio": null
+        }
+      ],
+      "failures": []
+    }
+  ],
+  "incomplete_512mb": [
+    {
+      "error": "BenchmarkFailure",
+      "error_type": "OutOfMemoryException",
+      "progress": {
+        "case": "prose-mention-counts",
+        "scale": null,
+        "phase": "normal_execution",
+        "snapshot": 107643,
+        "normal_ms": null,
+        "result_rows": null,
+        "warm_runs_completed": 0
+      },
+      "completed_variants": {},
+      "variant": "baseline"
+    },
+    {
+      "error": "BenchmarkFailure",
+      "error_type": "OutOfMemoryException",
+      "progress": {
+        "case": "prose-mention-counts",
+        "scale": null,
+        "phase": "warm_execution",
+        "snapshot": 107652,
+        "normal_ms": 11426.804835966323,
+        "result_rows": 20,
+        "warm_runs_completed": 1
+      },
+      "completed_variants": {},
+      "variant": "candidate"
+    }
+  ],
+  "service_512mb": [
+    {
+      "mode": "experimental",
+      "iteration": 0,
+      "ms": 18088.454217999242,
+      "rows": 20,
+      "truncated": false,
+      "snapshot": 107679,
+      "optimizations": [
+        "prose_scalar_before_capture_v1"
+      ],
+      "compiler": "public-query-v6:experimental"
+    },
+    {
+      "mode": "experimental",
+      "iteration": 1,
+      "ms": 2649.8696070048027,
+      "rows": 20,
+      "truncated": false,
+      "snapshot": 107681,
+      "optimizations": [
+        "prose_scalar_before_capture_v1"
+      ],
+      "compiler": "public-query-v6:experimental"
+    },
+    {
+      "mode": "experimental",
+      "iteration": 2,
+      "ms": 12616.815696994308,
+      "rows": 20,
+      "truncated": false,
+      "snapshot": 107683,
+      "optimizations": [
+        "prose_scalar_before_capture_v1"
+      ],
+      "compiler": "public-query-v6:experimental"
+    },
+    {
+      "mode": "stable",
+      "iteration": 0,
+      "error": "OutOfMemoryException"
+    },
+    {
+      "mode": "stable",
+      "iteration": 1,
+      "ms": 18238.78858902026,
+      "rows": 20,
+      "truncated": false,
+      "snapshot": 107692,
+      "optimizations": [],
+      "compiler": "public-query-v4:stable"
+    },
+    {
+      "mode": "stable",
+      "iteration": 2,
+      "error": "OutOfMemoryException"
+    }
+  ]
+}

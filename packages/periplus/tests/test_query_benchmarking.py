@@ -46,6 +46,7 @@ class QueryBenchmarkingTests(unittest.TestCase):
             connection.execute("CREATE TABLE public_v1.capture(capture_id UUID, requested_url VARCHAR, effective_url VARCHAR, captured_at TIMESTAMPTZ, http_status_code INTEGER, content_id VARCHAR)")
             connection.execute("CREATE TABLE public_v1.html_element(content_id VARCHAR, node_index INTEGER, tag VARCHAR, attributes MAP(VARCHAR,VARCHAR), parent_index INTEGER, sibling_index INTEGER, subtree_end_index INTEGER, text_direct VARCHAR)")
             connection.execute("CREATE TABLE public_v1.link(capture_id UUID, node_index INTEGER, raw_href VARCHAR, resolved_url VARCHAR)")
+            connection.execute("CREATE TABLE public_v1.prose(content_id VARCHAR, text VARCHAR)")
             connection.execute("CREATE TABLE public_v1.html_heading(content_id VARCHAR, node_index INTEGER, text VARCHAR)")
             connection.execute("CREATE TABLE public_v1.html_section(content_id VARCHAR, heading_node_index INTEGER)")
             connection.execute("CREATE TABLE public_v1.html_jsonld(content_id VARCHAR, node_index INTEGER, value JSON, parse_error VARCHAR)")
