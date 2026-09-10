@@ -66,6 +66,8 @@ jobs:
       - run: npm run build:public
       - run: npm run check:admin
       - run: npm run build:admin
+      - name: Build public production image
+        run: docker build --file docker/public/Dockerfile --tag periplus-public:ci .
 
   helm:
     name: Helm chart
