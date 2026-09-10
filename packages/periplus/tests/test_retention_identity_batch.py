@@ -51,3 +51,17 @@ class IdentityBatchTests(unittest.TestCase):
         from periplus.platform.catalogue.operations import is_retryable_catalogue_unavailability
         self.assertTrue(is_retryable_catalogue_unavailability(WriteClaimUnavailable('busy')))
         self.assertFalse(is_retryable_catalogue_unavailability(EvidenceRetired('retired')))
+
+    def test_conflict_reports_exact_expiry_and_rolls_back_free_claims(self):
+        owner = uuid4()
+        _acquire([('content', 'busy')], owner, False)
+        with self.assertRaises(WriteClaimUnavailable) as caught:
+            with write_claims({'content': ['busy', 'free']}, wait_seconds=0):
+                self.fail('blocked write entered')
+        self.assertEqual(set(caught.exception.blocked_until), {('content', 'busy')})
+        self.assertGreater(caught.exception.blocked_until[('content', 'busy')], datetime.now(UTC))
+        with self.sessions() as session:
+            rows = list(session.scalars(select(LakeWriteClaimRecord)))
+            self.assertEqual([(row.identity, row.owner) for row in rows], [('busy', owner)])
+        with write_claims({'content': ['free']}, wait_seconds=0):
+            pass
