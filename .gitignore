@@ -2,6 +2,7 @@
 __pycache__/
 *.py[oc]
 build/
+!packages/periplus-public/src/app/build/
 dist/
 wheels/
 *.egg-info
