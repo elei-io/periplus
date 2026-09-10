@@ -35,9 +35,6 @@ import {
 const reasons: Record<string, string> = {
   crawler_paused: "New captures are paused.",
   dispatch_capacity: "All dispatch slots are occupied.",
-  dispatch_rate: "Waiting for the configured dispatch interval.",
-  retained_acquisition_capacity:
-    "Retained acquisition capacity is full; new acquisition admission is waiting.",
 }
 const reason = (value: string | null) =>
   value ? (reasons[value] ?? value.replaceAll("_", " ")) : null
@@ -183,46 +180,8 @@ export function CrawlerControls({ children }: { children: ReactNode }) {
                 />
                 <Label htmlFor="crawler-paused">Pause new captures</Label>
               </div>
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div className="grid gap-2">
-                  <Label htmlFor="dispatch-rate">Dispatches per minute</Label>
-                  <Input
-                    id="dispatch-rate"
-                    type="number"
-                    min={1}
-                    max={60000}
-                    disabled={draft.unlimitedRate}
-                    value={draft.rate}
-                    onChange={(event) =>
-                      setDraft({ ...draft, rate: event.target.value })
-                    }
-                  />
-                </div>
-                <div className="flex items-center gap-3">
-                  <Switch
-                    id="unlimited-rate"
-                    checked={draft.unlimitedRate}
-                    onCheckedChange={(unlimitedRate) =>
-                      setDraft({ ...draft, unlimitedRate })
-                    }
-                  />
-                  <Label htmlFor="unlimited-rate">
-                    No global dispatch rate limit
-                  </Label>
-                </div>
-              </div>
-              {(["pace", "capacity"] as const).map((group) => (
-                <fieldset key={group} className="space-y-3">
-                  <legend className="text-sm font-medium">
-                    {group === "pace"
-                      ? "Dispatch pace"
-                      : "Retention and admission capacity"}
-                  </legend>
-
                   <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                    {settingFields
-                      .filter((field) => field.group === group)
-                      .map((field) => (
+                    {settingFields.map((field) => (
                         <div key={field.key} className="grid gap-2">
                           <Label htmlFor={field.key}>{field.label}</Label>
                           <Input
@@ -245,8 +204,6 @@ export function CrawlerControls({ children }: { children: ReactNode }) {
                         </div>
                       ))}
                   </div>
-                </fieldset>
-              ))}
               <fieldset className="space-y-3">
                 <legend className="text-sm font-medium">
                   Global exclusions
@@ -357,28 +314,19 @@ export function CrawlerControls({ children }: { children: ReactNode }) {
           </CardContent>
         </Card>
       )}
-      {(state.dispatch_waiting_reason ||
-        state.acquisition_admission_waiting_reason) && (
+      {state.dispatch_waiting_reason && (
         <div
           role="status"
           className="rounded-md border bg-muted/50 p-3 text-sm"
         >
           {reason(state.dispatch_waiting_reason)}{" "}
-          {reason(state.acquisition_admission_waiting_reason)}
-          {state.next_rate_eligibility_at && (
-            <span className="block text-xs text-muted-foreground">
-              Rate eligibility:{" "}
-              {new Date(state.next_rate_eligibility_at).toLocaleTimeString()}.
-              This is not a promised start time.
-            </span>
-          )}
         </div>
       )}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <Metric
           label="Pending acquisitions"
           value={state.pending_acquisitions.toLocaleString()}
-          detail={`Admission limit ${state.settings.admission_limit.toLocaleString()}`}
+          detail="Queued acquisitions, including retries"
         />
         <Metric
           label="Dispatched acquisitions"
@@ -386,21 +334,15 @@ export function CrawlerControls({ children }: { children: ReactNode }) {
           detail={`Up to ${state.settings.dispatch_limit.toLocaleString()} concurrent dispatches`}
         />
         <Metric
-          label="Configured dispatch pace"
-          value={
-            state.settings.captures_per_minute === null
-              ? "Unlimited"
-              : `${state.settings.captures_per_minute}/min`
-          }
-          detail="Upper bound; actual throughput depends on eligibility and capacity"
+          label="Capture timeout"
+          value={`${state.settings.capture_timeout_ms / 1000} seconds`}
+          detail="Per capture; started captures retain their timeout"
         />
       </div>
       {children}
       <p className="text-xs text-muted-foreground">
-        Retained acquisitions: {state.retained_acquisitions.toLocaleString()} /{" "}
-        {state.settings.acquisition_limit.toLocaleString()} · Collection URL
-        records: {state.retained_interests.toLocaleString()} /{" "}
-        {state.settings.interest_limit.toLocaleString()}.
+        Retained acquisitions: {state.retained_acquisitions.toLocaleString()} · Collection URL
+        records: {state.retained_interests.toLocaleString()}. Completed execution state is reclaimed by the janitor.
       </p>
     </div>
   )

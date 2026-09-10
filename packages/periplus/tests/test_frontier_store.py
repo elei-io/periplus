@@ -18,7 +18,7 @@ from periplus.crawl.runtime.frontier_models import (
     AcquisitionRecord, FrontierControlRecord, FrontierOutboxRecord, InterestRecord,
 )
 from periplus.crawl.runtime.frontier_store import (
-    AdmissionDeferred, CollectionUnavailable, FrontierStore, StaleDispatch,
+    CollectionUnavailable, FrontierStore, StaleDispatch,
 )
 
 from periplus.crawl.control.domain_policies.models import DomainPolicy
@@ -34,7 +34,7 @@ class FrontierStoreTests(unittest.TestCase):
             table.create(self.engine)
         self.sessions = sessionmaker(self.engine, expire_on_commit=False)
         with self.sessions.begin() as session:
-            session.add(FrontierControlRecord(id=1, captures_per_minute=0))
+            session.add(FrontierControlRecord(id=1))
             ensure_default_domain_policy(session)
         self.store = FrontierStore(self.sessions)
         self.policy = EffectivePolicySnapshot.model_validate(policy_snapshot())
@@ -357,15 +357,13 @@ class FrontierStoreTests(unittest.TestCase):
     def test_admission_independent_of_dispatch_capacity(self):
         with self.sessions.begin() as session:
             control = session.get(FrontierControlRecord, 1)
-            control.admission_limit = 3
             control.dispatch_limit = 1
         first = self.admit(self.collection())
         self.store.dispatch(first.acquisition_id, now=self.now)
         for index in range(3):
             item = self.admit(self.collection(), f"https://example.com/{index}")
             self.assertIsNone(self.store.dispatch(item.acquisition_id, now=self.now))
-        with self.assertRaises(AdmissionDeferred):
-            self.admit(self.collection(), "https://example.com/overflow")
+        self.assertTrue(self.admit(self.collection(), "https://example.com/overflow").created)
         self.assertEqual(self.admit(self.collection(), "https://example.com/0").mode, "shared")
 
     def test_terminal_replay_and_stale_dispatch(self):
@@ -584,23 +582,15 @@ class FrontierStoreTests(unittest.TestCase):
         query = Mock(return_value=SelectionCheckpoint(
             urls=tuple(f"https://example.com/{index}" for index in range(3)), source_snapshot="snapshot:17",
             source_query_id="query-17", selected_at=self.now))
-        with self.sessions.begin() as session:
-            session.get(FrontierControlRecord, 1).admission_limit = 1
         policy = lambda url: self.policy
-        self.assertEqual(process_seed_selection(self.store, identity, policy, seed_query=query), "waiting")
-        checkpoint = self.store.get_collection(identity).selection_checkpoint
-        self.assertEqual((checkpoint["cursor"], checkpoint["source_snapshot"]), (1, "snapshot:17"))
-        self.assertEqual(self.store.get_collection(identity).waiting_reason, "frontier_admission_capacity")
-        self.assertIsNotNone(self.store.dispatch_next())
-        self.assertEqual(process_seed_selection(self.store, identity, policy, seed_query=query), "waiting")
-        self.assertIsNotNone(self.store.dispatch_next())
         self.assertEqual(process_seed_selection(self.store, identity, policy, seed_query=query), "settled")
+        checkpoint = self.store.get_collection(identity).seed_provenance
         from periplus.query.service import QueryRequest
         query.assert_called_once_with(QueryRequest(
             sql="SELECT requested_url AS url FROM web.observation WHERE outcome = ?", parameters=["succeeded"]))
         self.assertEqual(checkpoint["source_query_id"], "query-17")
         self.assertEqual(checkpoint["selected_at"], self.now.isoformat().replace("+00:00", "Z"))
-        self.assertEqual(self.store.get_collection(identity).reserved, 1)
+        self.assertEqual(self.store.get_collection(identity).reserved, 3)
         self.assertTrue(self.store.get_collection(identity).seeds_settled)
 
     def test_selection_cursor_cannot_skip_unadmitted_url(self):
@@ -754,19 +744,16 @@ class FrontierStoreTests(unittest.TestCase):
             control = session.get(FrontierControlRecord, 1)
             self.assertEqual((control.pending_count, control.active_count), (0, 0))
 
-    def test_retained_interests_bound_shared_and_reused_admission_without_losing_dedup(self):
+    def test_shared_admission_preserves_request_dedup(self):
         identity = self.collection(page_limit=3)
-        with self.sessions.begin() as session:
-            session.get(FrontierControlRecord, 1).interest_limit = 1
         first = self.admit(identity)
         self.assertFalse(self.admit(identity).created)
-        with self.assertRaises(AdmissionDeferred):
-            self.admit(self.collection())
+        self.assertEqual(self.admit(self.collection()).mode, "shared")
         self.store.stop_collection(identity, now=self.now)
         # Cancelled interests stay deduplicated until acknowledged lineage cleanup.
         self.assertEqual(self.admit(identity).interest_id, first.interest_id)
         with self.sessions() as session:
-            self.assertEqual(session.get(FrontierControlRecord, 1).interest_count, 1)
+            self.assertEqual(session.get(FrontierControlRecord, 1).interest_count, 2)
 
     def test_discovery_checkpoint_rejects_stale_claim_and_revision(self):
         from periplus.crawl.control.collections.discovery import DiscoveryState
@@ -805,7 +792,7 @@ class FrontierStoreTests(unittest.TestCase):
         initial = self.store.control_view()
         paused = self.store.replace_controls(ReplaceFrontierSettings(
             expected_version=initial.policy_version,
-            settings=initial.settings.model_copy(update={"paused": True, "admission_limit": 1}),
+            settings=initial.settings.model_copy(update={"paused": True}),
         ), actor="test", now=self.now)
         self.assertIsNone(self.store.dispatch(first.acquisition_id, now=self.now))
         self.assertEqual(self.store.get_interest(first.interest_id).budget_state, "reserved")
@@ -817,14 +804,8 @@ class FrontierStoreTests(unittest.TestCase):
         self.assertIsNotNone(work)
         self.assertEqual(self.store.get_acquisition(first.acquisition_id).dispatch_policy_version,
                          resumed.policy_version)
-        slow = self.store.replace_controls(ReplaceFrontierSettings(
-            expected_version=resumed.policy_version,
-            settings=resumed.settings.model_copy(update={"captures_per_minute": 1}),
-        ), actor="test", now=self.now + timedelta(seconds=1))
-        self.assertEqual(slow.next_rate_eligibility_at, self.now + timedelta(seconds=60))
         second = self.admit(self.collection(), "https://other.example/")
-        self.assertIsNone(self.store.dispatch(second.acquisition_id, now=self.now + timedelta(seconds=2)))
-        self.assertIsNotNone(self.store.dispatch(second.acquisition_id, now=self.now + timedelta(seconds=60)))
+        self.assertIsNotNone(self.store.dispatch(second.acquisition_id, now=self.now))
 
     def test_shared_dispatch_consumes_each_request_once_and_releases_capacity(self):
         from periplus.crawl.control.collections.frontier_controls import ReplaceFrontierSettings
@@ -863,11 +844,11 @@ class FrontierStoreTests(unittest.TestCase):
         self.assertEqual(evidence["attempts"][0]["resource_usage"]["reserved_ms"], 125000)
         self.assertIsNone(evidence["attempts"][0]["resource_usage"]["measured_ms"])
 
-    def test_controls_reject_removed_lifetime_limits(self):
+    def test_controls_reject_removed_limits(self):
         from pydantic import ValidationError
         from periplus.crawl.control.collections.frontier_controls import FrontierSettings
         settings = self.store.control_view().settings.model_dump()
-        for field in ('attempt_allowance', 'capture_time_allowance_ms'):
+        for field in ('attempt_allowance', 'capture_time_allowance_ms', 'collection_limit', 'interest_limit', 'acquisition_limit', 'admission_limit', 'captures_per_minute'):
             with self.subTest(field=field), self.assertRaises(ValidationError):
                 FrontierSettings.model_validate(settings | {field: 0})
         view = self.store.control_view().model_dump()
@@ -1205,45 +1186,25 @@ class FrontierStoreTests(unittest.TestCase):
         own = self.admit(self.collection())
         self.assertFalse(self.retire(own.acquisition_id, f"runtime/navigation/{own.acquisition_id.hex}/{'a' * 64}.arrow"))
 
-    def test_retained_acquisition_limit_counts_terminal_results_but_allows_sharing_and_reuse(self):
-        with self.sessions.begin() as session:
-            session.get(FrontierControlRecord, 1).acquisition_limit = 1
+    def test_completed_work_does_not_block_fresh_admission(self):
         first = self.admit(self.collection())
         shared = self.admit(self.collection())
         self.assertEqual(first.acquisition_id, shared.acquisition_id)
-        with self.assertRaisesRegex(AdmissionDeferred, "retained acquisition"):
-            self.admit(self.collection(), "https://other.example/")
         work = self.store.dispatch(first.acquisition_id, now=self.now)
         self.complete(first.acquisition_id, work.generation, success=True, outcome={}, now=self.now)
         self.assertEqual(self.admit(self.collection()).mode, "reused")
-        with self.assertRaisesRegex(AdmissionDeferred, "retained acquisition"):
-            self.admit(self.collection(), "https://other.example/")
-        view = self.store.control_view()
-        self.assertEqual(view.retained_acquisitions, 1)
-        self.assertEqual(view.pending_acquisitions, 0)
-        self.assertEqual(view.acquisition_admission_waiting_reason, "retained_acquisition_capacity")
+        self.assertTrue(self.admit(self.collection(), "https://other.example/").created)
+        self.assertEqual(self.store.control_view().retained_acquisitions, 2)
 
-    def test_retained_capacity_bounds_paused_interest_split_without_consuming_request_pages(self):
+    def test_paused_interest_split_does_not_block_other_requests(self):
         first, second = self.collection(), self.collection()
         own = self.admit(first)
         self.admit(second)
         self.store.set_collection_paused(first, True)
-        with self.sessions.begin() as session:
-            session.get(FrontierControlRecord, 1).acquisition_limit = 1
-        self.assertIsNone(self.store.dispatch(own.acquisition_id, now=self.now))
-        self.assertEqual(self.store.get_collection(second).consumed, 0)
-        self.assertEqual(self.store.get_collection(second).reserved, 1)
-        with self.sessions.begin() as session:
-            session.get(FrontierControlRecord, 1).acquisition_limit = 2
         self.assertIsNotNone(self.store.dispatch(own.acquisition_id, now=self.now))
         self.assertEqual(self.store.control_view().retained_acquisitions, 2)
         self.assertEqual(self.store.get_collection(first).reserved, 1)
         self.assertEqual(self.store.get_collection(second).consumed, 1)
-
-
-
-
-
 
     def test_retention_cursor_progresses_beyond_first_uncommitted_batch(self):
         from uuid import UUID
@@ -1279,6 +1240,78 @@ class FrontierStoreTests(unittest.TestCase):
         with self.sessions.begin() as session:
             for row in session.scalars(select(FrontierOutboxRecord).where(FrontierOutboxRecord.collection_id == identity)):
                 row.committed_snapshot = 7
+
+    def test_completed_acquisition_reclaimed_while_parent_remains_active(self):
+        from periplus.crawl.runtime.frontier_views import collection_views
+        identity = self.collection(page_limit=3)
+        own = self.admit(identity)
+        shared = self.admit(self.collection())
+        pending = self.admit(identity, "https://example.com/next")
+        work = self.store.dispatch(own.acquisition_id, now=self.now)
+        self.complete(own.acquisition_id, work.generation, success=True, outcome={}, now=self.now)
+        cutoff = self.now + timedelta(hours=1)
+        # Ingestion and selection must both finish before the payload can go.
+        self.assertEqual(self.store.cleanup_acquisitions(cutoff=cutoff).removed, 0)
+        self.allow_retention_receipts(own.acquisition_id)
+        self.assertEqual(self.store.cleanup_acquisitions(cutoff=cutoff).removed, 0)
+        self.store.finish_link_selection(own.interest_id)
+        self.assertEqual(self.store.cleanup_acquisitions(cutoff=cutoff).removed, 0)
+        self.store.finish_link_selection(shared.interest_id)
+        before, = collection_views(self.sessions, identity=identity)
+        self.assertEqual(self.store.cleanup_acquisitions(cutoff=cutoff).removed, 1)
+        self.assertIsNone(self.store.get_acquisition(own.acquisition_id))
+        self.assertIsNotNone(self.store.get_acquisition(pending.acquisition_id))
+        interest = self.store.get_interest(own.interest_id)
+        self.assertIsNone(interest.acquisition_id)
+        self.assertIsNone(interest.context)
+        after, = collection_views(self.sessions, identity=identity)
+        for field in ('consumed_pages', 'supplied_pages', 'failed_pages', 'shared_pages', 'reused_pages', 'ingested_pages', 'queued_pages'):
+            self.assertEqual(getattr(after, field), getattr(before, field), field)
+        self.assertEqual(after.status, 'active')
+        self.assertFalse(self.admit(identity).created)
+        self.assertEqual(self.store.get_collection(identity).consumed, 1)
+        self.assertEqual(self.store.cleanup_acquisitions(cutoff=cutoff).removed, 0)
+
+        self.store.stop_collection(identity, now=self.now + timedelta(hours=2))
+        with self.sessions() as session:
+            outcome = session.get(FrontierOutboxRecord, f"lineage:collection_outcome:{identity}").payload
+            self.assertEqual(outcome['supplied_pages'], 1)
+            self.assertEqual(outcome['failed_pages'], 0)
+
+    def test_shared_completion_compaction_is_bounded_and_resumable(self):
+        from periplus.crawl.runtime.frontier_store import request_url_key
+        identity = self.collection()
+        aid = uuid4()
+        with self.sessions.begin() as session:
+            session.add(AcquisitionRecord(id=aid, url='https://example.com/', domain='example.com',
+                capture_key=str(aid), requirements={}, status='cancelled', completed_at=self.now))
+            for index in range(600):
+                url = f'https://example.com/{index}'
+                session.add(InterestRecord(collection_id=identity, acquisition_id=aid, url=url,
+                    url_key=request_url_key(url), context={}, mode='shared', budget_state='released', status='cancelled'))
+            session.get(FrontierControlRecord, 1).interest_count = 600
+        first = self.store.cleanup_acquisitions(cutoff=self.now + timedelta(seconds=1))
+        self.assertTrue(first.more)
+        self.assertEqual(first.removed, 0)
+        with self.sessions() as session:
+            self.assertEqual(len(list(session.scalars(select(InterestRecord).where(InterestRecord.acquisition_id.is_(None))))), 512)
+        second = self.store.cleanup_acquisitions(cutoff=self.now + timedelta(seconds=1))
+        self.assertFalse(second.more)
+        self.assertEqual(second.removed, 1)
+        self.assertEqual(self.store.control_view().retained_interests, 600)
+
+    def test_acquisition_outbox_cleanup_is_bounded_and_resumable(self):
+        aid = uuid4()
+        with self.sessions.begin() as session:
+            session.add(AcquisitionRecord(id=aid, url='https://example.com/', domain='example.com',
+                capture_key=str(aid), requirements={}, status='cancelled', completed_at=self.now))
+            for index in range(600):
+                session.add(FrontierOutboxRecord(message_id=f'lineage:test:{index}', acquisition_id=aid,
+                    kind='lineage', payload={}, committed_snapshot=7))
+        first = self.store.cleanup_acquisitions(cutoff=self.now + timedelta(seconds=1))
+        self.assertEqual((first.removed, first.more), (0, True))
+        second = self.store.cleanup_acquisitions(cutoff=self.now + timedelta(seconds=1))
+        self.assertEqual((second.removed, second.more), (1, False))
 
     def test_collection_cleanup_requires_definition_outcome_and_supplied_evidence_receipts(self):
         identity = self.collection()

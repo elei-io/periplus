@@ -11,6 +11,8 @@ from alembic.operations import Operations
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session
 
+from periplus.operations.access.models import PublicAccessRecord
+from periplus.operations.access.schemas import AccessPolicy
 from periplus.platform.postgres import Base, get_database_url
 import periplus.platform.postgres.models
 from periplus.crawl.control.collections.frontier_controls import ensure_frontier_control
@@ -46,7 +48,17 @@ class FrontierBaselineTests(unittest.TestCase):
                         # Populate the old schema at exhausted lifetime limits.
                         for name in migration.COLUMNS:
                             connection.execute(text(f'ALTER TABLE frontier_control ALTER COLUMN {name} SET DEFAULT 0'))
+                        for name in ('collection_limit', 'interest_limit', 'acquisition_limit', 'admission_limit'):
+                            connection.execute(text(f'ALTER TABLE frontier_control ALTER COLUMN {name} SET DEFAULT 1'))
+                        connection.execute(text('ALTER TABLE frontier_control ALTER COLUMN captures_per_minute SET DEFAULT 0'))
                         with Session(connection) as session:
+                            policy = AccessPolicy().model_dump(mode="json")
+                            policy["crawl"].pop("queue_limit")
+                            policy["crawl"]["enabled"] = False
+                            access = session.get(PublicAccessRecord, 1)
+                            access.version = 9
+                            access.configuration = policy
+                            access.windows = {"crawl": {"start": 1, "count": 3}}
                             ensure_frontier_control(session)
                             control = session.get(FrontierControlRecord, 1)
                             control.dispatch_limit = 7
@@ -63,6 +75,11 @@ class FrontierBaselineTests(unittest.TestCase):
                 self.assertFalse(any('graph' in name for name in Base.metadata.tables))
                 with Session(connection) as session:
                     ensure_frontier_control(session)
+                    access = session.get(PublicAccessRecord, 1)
+                    self.assertEqual(access.configuration["crawl"]["queue_limit"], 10000)
+                    self.assertFalse(access.configuration["crawl"]["enabled"])
+                    self.assertEqual(access.version, 9)
+                    self.assertEqual(access.windows["crawl"]["count"], 3)
                     control = session.get(FrontierControlRecord, 1)
                     self.assertEqual(control.dispatch_limit, 7)
                     self.assertEqual((control.pending_count, control.active_count), (12, 2))
@@ -74,7 +91,7 @@ class FrontierBaselineTests(unittest.TestCase):
                     ensure_frontier_control(session)
                     self.assertTrue(session.get(FrontierControlRecord, 1).paused)
                     session.commit()
-                with self.assertRaisesRegex(RuntimeError, 'Lifetime crawl usage was removed'):
+                with self.assertRaisesRegex(RuntimeError, 'Reclaimed acquisition references'):
                     migrations[-1].downgrade()
             connection.execute(text('SET search_path TO public'))
             connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))

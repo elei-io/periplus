@@ -3,7 +3,6 @@ from sqlalchemy import select
 from periplus.crawl.control.collections.models import CollectionRecord
 from periplus.crawl.control.schedules.models import RequestDefinitionRecord, ScheduleRecord
 from periplus.crawl.control.schedules.schemas import ScheduleInput, aware, next_tick
-from periplus.crawl.runtime.frontier_store import AdmissionDeferred
 
 def create_due_requests(store, now=None):
     observations = []
@@ -34,11 +33,7 @@ def create_due_requests(store, now=None):
                 row.last_result = "crawler_paused"
                 continue
             definition = session.get(RequestDefinitionRecord, row.definition_id)
-            try:
-                request = store._launch(session, control, definition, row)
-            except AdmissionDeferred:
-                row.last_result = "admission_capacity"
-                continue
+            request = store._launch(session, control, definition, row)
             row.last_request_id = request.id
             row.execution_count += 1
             row.last_result = "created"

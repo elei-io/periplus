@@ -48,10 +48,6 @@ def request_url_key(url: str) -> str:
     return hashlib.sha256(url.encode("utf-8")).hexdigest()
 
 
-class AdmissionDeferred(RuntimeError):
-    """The caller must preserve its selection checkpoint and resume on capacity."""
-
-
 class CollectionUnavailable(RuntimeError):
     pass
 
@@ -69,7 +65,7 @@ class CleanupBatch:
 @dataclass(frozen=True)
 class Admission:
     interest_id: UUID
-    acquisition_id: UUID
+    acquisition_id: UUID | None
     created: bool
     mode: str
 
@@ -148,11 +144,6 @@ class FrontierStore:
     def _retained_acquisitions(session: Session) -> int:
         return session.scalar(select(func.count()).select_from(AcquisitionRecord))
 
-    @staticmethod
-    def _require_acquisition_capacity(session: Session, control: FrontierControlRecord) -> None:
-        if FrontierStore._retained_acquisitions(session) >= control.acquisition_limit:
-            raise AdmissionDeferred("retained acquisition capacity")
-
     def validate_installed(self) -> None:
         """Startup checks the replacement schema; it never creates control state."""
         from periplus.crawl.control.schedules.models import RequestDefinitionRecord, ScheduleRecord
@@ -165,20 +156,17 @@ class FrontierStore:
     @staticmethod
     def _control_view(control: FrontierControlRecord, now: datetime, retained_acquisitions: int) -> FrontierControlView:
         values = {name: getattr(control, name) for name in FrontierSettings.model_fields}
-        values["captures_per_minute"] = control.captures_per_minute or None
         return FrontierControlView(
             settings=FrontierSettings.model_validate(values), policy_version=control.policy_version,
             updated_at=control.updated_at, updated_by=control.updated_by,
             retained_acquisitions=retained_acquisitions,
-            acquisition_admission_waiting_reason=("retained_acquisition_capacity" if retained_acquisitions >= control.acquisition_limit else None),
             pending_acquisitions=control.pending_count, dispatched_acquisitions=control.active_count,
             retained_interests=control.interest_count,
             dispatch_waiting_reason=(
                 ("crawler_paused" if control.paused else None)
                 or ("dispatch_capacity" if control.active_count >= control.dispatch_limit else None)
-                or ("dispatch_rate" if control.next_dispatch_at and _aware(control.next_dispatch_at) > now else None)
             ),
-            next_rate_eligibility_at=control.next_dispatch_at, as_of=now,
+            as_of=now,
         )
 
     def control_view(self) -> FrontierControlView:
@@ -203,14 +191,8 @@ class FrontierStore:
                 return current
             if current.settings.exclusions != change.settings.exclusions:
                 control.exclusion_cursor = None
-            old_rate = control.captures_per_minute
             for name, value in change.settings.model_dump(mode="json").items():
-                setattr(control, name, value if value is not None else 0)
-            if old_rate != control.captures_per_minute:
-                control.next_dispatch_at = (
-                    _aware(control.last_dispatch_at) + timedelta(seconds=60 / control.captures_per_minute)
-                    if control.last_dispatch_at and control.captures_per_minute else None
-                )
+                setattr(control, name, value)
             control.policy_version += 1
             control.updated_at, control.updated_by = now, actor
             return self._control_view(control, now, self._retained_acquisitions(session))
@@ -244,9 +226,6 @@ class FrontierStore:
             if CollectionExecutionSpec.model_validate(existing.spec).model_dump(mode="json", exclude={"deadline_at"}) != spec.model_dump(mode="json"):
                 raise ValueError("collection identity reused with different intent")
             return existing
-        retained_collections = session.scalar(select(func.count()).select_from(CollectionRecord))
-        if retained_collections >= control.collection_limit:
-            raise AdmissionDeferred("collection admission capacity")
         submitted_at = self._transaction_now(session, None)
         frozen = CollectionExecutionSpec(**spec.model_dump(), deadline_at=(submitted_at + timedelta(seconds=spec.max_duration_seconds) if spec.max_duration_seconds is not None else None))
         record = CollectionRecord(id=identity, spec=frozen.model_dump(mode="json"),
@@ -576,8 +555,10 @@ class FrontierStore:
             raise ValueError("acquisition cleanup cutoff requires a timezone")
         with self._sessions() as session, session.begin():
             control = self._control(session)
-            now = self._transaction_now(session)
-            referenced = select(InterestRecord.id).where(InterestRecord.acquisition_id == AcquisitionRecord.id).exists()
+            referenced = select(InterestRecord.id).where(
+                InterestRecord.acquisition_id == AcquisitionRecord.id,
+                InterestRecord.status.not_in(("settled", "cancelled")),
+            ).exists()
             statement = select(AcquisitionRecord).where(
                 AcquisitionRecord.status.in_(("succeeded", "failed", "cancelled")),
                 AcquisitionRecord.completed_at <= cutoff, ~referenced,
@@ -586,8 +567,10 @@ class FrontierStore:
             if control.retention_cursor is not None:
                 statement = statement.where(AcquisitionRecord.id > control.retention_cursor)
             records = list(session.scalars(statement.order_by(AcquisitionRecord.id).limit(64)))
-            removed = 0
+            removed, remaining, last = 0, 512, None
             for acquisition in records:
+                previous = last if last is not None else control.retention_cursor
+                last = acquisition.id
                 if acquisition.outcome is None:
                     # Only cancelled, never-started work has no terminal observation.
                     if acquisition.attempt_count or acquisition.status != "cancelled":
@@ -602,11 +585,39 @@ class FrontierStore:
                 ).limit(1))
                 if uncommitted is not None:
                     continue
-                session.execute(delete(FrontierOutboxRecord).where(FrontierOutboxRecord.acquisition_id == acquisition.id))
+                # Keep only request-local deduplication and progress until the
+                # parent settles. Completed requests do not pin capture payloads.
+                interests = list(session.scalars(select(InterestRecord).where(
+                    InterestRecord.acquisition_id == acquisition.id,
+                ).order_by(InterestRecord.id).limit(remaining)))
+                for interest in interests:
+                    interest.completed_status = acquisition.status
+                    interest.completed_evidence = acquisition.evidence_snapshot is not None
+                    interest.acquisition_id = None
+                    interest.context = None
+                    interest.selection_checkpoint = None
+                remaining -= len(interests)
+                session.flush()
+                if session.scalar(select(InterestRecord.id).where(
+                        InterestRecord.acquisition_id == acquisition.id).limit(1)) is not None:
+                    last = previous
+                    break
+                messages = list(session.scalars(select(FrontierOutboxRecord.message_id).where(
+                    FrontierOutboxRecord.acquisition_id == acquisition.id,
+                ).order_by(FrontierOutboxRecord.message_id).limit(remaining)))
+                if messages:
+                    session.execute(delete(FrontierOutboxRecord).where(FrontierOutboxRecord.message_id.in_(messages)))
+                    remaining -= len(messages)
+                if session.scalar(select(FrontierOutboxRecord.message_id).where(
+                        FrontierOutboxRecord.acquisition_id == acquisition.id).limit(1)) is not None:
+                    last = previous
+                    break
                 session.delete(acquisition)
                 removed += 1
-            more = len(records) == 64
-            control.retention_cursor = records[-1].id if more else None
+                if remaining == 0:
+                    break
+            more = len(records) == 64 or remaining == 0
+            control.retention_cursor = last if more else None
             return CleanupBatch(removed, more)
 
     def retire_navigation(self, acquisition_id: UUID, key: str, *, modified_at: datetime,
@@ -683,8 +694,6 @@ class FrontierStore:
                     raise ValueError("URL outside collection sections")
             if collection.reserved + collection.consumed >= collection.page_limit:
                 raise CollectionUnavailable("page budget reached")
-            if control.interest_count >= control.interest_limit:
-                raise AdmissionDeferred("retained interest capacity")
             if is_excluded(url, control.exclusions):
                 raise UrlExcluded("URL excluded by current crawler policy")
             key = capture_identity(url, policy)
@@ -713,9 +722,6 @@ class FrontierStore:
                     AcquisitionRecord.pending_key == key))
             mode = "reused" if reused else "shared"
             if acquisition is None:
-                if control.pending_count >= control.admission_limit:
-                    raise AdmissionDeferred("frontier admission capacity")
-                self._require_acquisition_capacity(session, control)
                 acquisition = AcquisitionRecord(
                     url=url, domain=urlsplit(url).hostname or "", capture_key=key,
                     pending_key=key, requirements=policy.model_dump(mode="json"),
@@ -843,8 +849,6 @@ class FrontierStore:
                   acquisition_id: UUID, now: datetime, lease_seconds: int) -> Dispatch | None:
         if control.paused or control.active_count >= control.dispatch_limit:
             return None
-        if control.next_dispatch_at and _aware(control.next_dispatch_at) > now:
-            return None
         acquisition = session.get(AcquisitionRecord, acquisition_id)
         if acquisition is None or acquisition.status not in ("queued", "retry"):
             return None
@@ -872,7 +876,6 @@ class FrontierStore:
             acquisition.claim_expires_at = now + timedelta(seconds=lease_seconds)
             self._freeze_attempt_timeout(control, acquisition)
             acquisition.dispatch_policy_version = control.policy_version
-            control.last_dispatch_at = now
             control.pending_count -= 1
             control.active_count += 1
             control.scheduling_turn += 1
@@ -882,8 +885,6 @@ class FrontierStore:
                     InterestRecord.status == "awaiting_result")):
                 collection.scheduling_turn = control.scheduling_turn
                 collection.last_dispatch_at = now
-            if control.captures_per_minute > 0:
-                control.next_dispatch_at = now + timedelta(seconds=60 / control.captures_per_minute)
             self._outbox(session, acquisition, "capture", {
                 "acquisition_id": str(acquisition.id), "generation": acquisition.generation,
             }, f"capture:{acquisition.id}:{acquisition.generation}")
@@ -906,11 +907,9 @@ class FrontierStore:
         if paused and not participants:
             return None
         if paused:
-            if self._retained_acquisitions(session) >= control.acquisition_limit:
-                return None
             # Moving the paused interests preserves their reservations without
             # holding up another caller. This replaces one pending slot while
-            # the original leaves that pool, so it cannot exceed admission capacity.
+            # the original leaves that pool.
             pending_key = acquisition.pending_key
             acquisition.pending_key = None
             session.flush()
@@ -960,11 +959,8 @@ class FrontierStore:
         acquisition.claim_expires_at = now + timedelta(seconds=lease_seconds)
         self._freeze_attempt_timeout(control, acquisition)
         acquisition.dispatch_policy_version = control.policy_version
-        control.last_dispatch_at = now
         control.pending_count -= 1
         control.active_count += 1
-        if control.captures_per_minute > 0:
-            control.next_dispatch_at = now + timedelta(seconds=60 / control.captures_per_minute)
         self._outbox(session, acquisition, "capture", {
             "acquisition_id": str(acquisition.id), "generation": acquisition.generation,
         }, f"capture:{acquisition.id}:{acquisition.generation}")
@@ -979,8 +975,6 @@ class FrontierStore:
             control = self._control(session)
             now = self._transaction_now(session, now)
             if control.paused or control.active_count >= control.dispatch_limit:
-                return None
-            if control.next_dispatch_at and _aware(control.next_dispatch_at) > now:
                 return None
             # The earliest participant owns scheduling weight. Adding interests to
             # shared work cannot multiply it. New collections enter at the current
@@ -1535,8 +1529,8 @@ class FrontierStore:
     @staticmethod
     def _collection_outcome(session: Session, collection: CollectionRecord, now: datetime) -> None:
         session.flush()
-        statuses = list(session.scalars(select(AcquisitionRecord.status).join(
-            InterestRecord, InterestRecord.acquisition_id == AcquisitionRecord.id
+        statuses = list(session.scalars(select(func.coalesce(AcquisitionRecord.status, InterestRecord.completed_status)).select_from(InterestRecord).outerjoin(
+            AcquisitionRecord, InterestRecord.acquisition_id == AcquisitionRecord.id
         ).where(InterestRecord.collection_id == collection.id,
                 InterestRecord.budget_state == "consumed")))
         provenance = FrontierStore._seed_provenance(collection)

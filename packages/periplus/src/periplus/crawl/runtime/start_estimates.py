@@ -36,7 +36,7 @@ def observed_range(waits, *, admitted_at, eligible_at, now):
 
 
 def estimate_start(session, record, control, *, waiting, eligible_at, constraint, workers, now):
-    if record.status != 'queued' or waiting not in ('awaiting_scheduler_evaluation', 'global_pacing'):
+    if record.status != 'queued' or waiting != 'awaiting_scheduler_evaluation':
         return None, waiting or 'acquisition_not_queued'
     if control.pending_count != 1 or control.active_count != 0:
         return None, 'competing_work_prevents_start_range'

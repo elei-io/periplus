@@ -11,7 +11,7 @@ from periplus.crawl.control.collections.discovery import DiscoveryState
 from periplus.crawl.control.collections.schemas import CollectionExecutionSpec, CollectionSpec, SelectionContext
 from periplus.crawl.control.content_policies.schemas import EffectivePolicySnapshot
 from periplus.crawl.control.collections.scopes import within_allowed_sections
-from periplus.crawl.runtime.frontier_store import AdmissionDeferred, CollectionUnavailable, FrontierStore
+from periplus.crawl.runtime.frontier_store import CollectionUnavailable, FrontierStore
 from periplus.crawl.runtime.navigation import load_navigation_package
 from periplus.crawl.runtime.navigation_contract import NavigationPackage
 from periplus.crawl.runtime.selection_contract import SelectionCheckpoint
@@ -125,9 +125,6 @@ def _resume(store: FrontierStore, identity: UUID, collection_id: UUID,
             if not store.advance_selection(identity, cursor, seeds=seeds, excluded=True):
                 return "waiting"
             continue
-        except AdmissionDeferred:
-            store.set_waiting_reason(collection_id, "frontier_admission_capacity")
-            return "waiting"
         except CollectionUnavailable:
             # Cancellation/pause/budget can race policy resolution and admission.
             # Leave the cursor on this URL so the next pass inspects current state.
