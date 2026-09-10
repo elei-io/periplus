@@ -59,6 +59,22 @@ class TelemetryTests(unittest.TestCase):
         self.assertNotIn('sentinel-secret', str(emit.call_args))
         self.assertNotIn('sensitive-id', str(emit.call_args))
 
+    def test_query_metrics_import_does_not_initialize_control_database(self):
+        import os
+        import subprocess
+        import sys
+        environment = dict(os.environ)
+        environment.pop("PERIPLUS_CONTROL_DATABASE_URL", None)
+        result = subprocess.run([sys.executable, "-c", """
+import sys
+from types import SimpleNamespace
+from periplus.operations.api.metrics import prometheus_metrics
+assert 'periplus.platform.postgres' not in sys.modules
+request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
+assert prometheus_metrics(request).status_code == 200
+"""], env=environment, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_query_metrics_is_available_without_query_permission(self):
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
