@@ -6,7 +6,7 @@ the query API and the public catalogue.
 
 from __future__ import annotations
 
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from decimal import Decimal
@@ -16,7 +16,11 @@ from pathlib import Path
 from statistics import median
 from time import perf_counter
 import tomllib
-from typing import Any, Iterable
+import threading
+import subprocess
+from typing import Any, Iterable, Literal
+
+from pydantic import BaseModel, ConfigDict
 
 import duckdb
 
@@ -54,6 +58,7 @@ class QueryCase:
     max_warm_ms: float
     sql: str
     directory: Path
+    seconds: int = 60
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,13 +73,17 @@ class Measurement:
     result_digest: str
     columns: tuple[str, ...]
     types: tuple[str, ...]
-    cumulative_rows_scanned: tuple[int, ...]
-    total_bytes_read: tuple[int, ...]
-    peak_buffer_bytes: tuple[int, ...]
-    peak_temp_bytes: tuple[int, ...]
+    cumulative_rows_scanned: tuple[int | None, ...]
+    total_bytes_read: tuple[int | None, ...]
+    peak_buffer_bytes: tuple[int | None, ...]
+    peak_temp_bytes: tuple[int | None, ...]
     blocking_operators: tuple[dict[str, Any], ...]
     scans: tuple[dict[str, Any], ...]
     within_time_budget: bool
+    settings: dict[str, str]
+    catalogue_digest: str
+    duckdb_version: str
+    extensions: dict[str, str]
 
 
 def discover_cases(root: Path) -> dict[str, QueryCase]:
@@ -109,6 +118,9 @@ def load_case(directory: Path) -> QueryCase:
         raise ValueError(f"case {identifier} uses $scope but defines no scales")
     if "$scope" not in sql and scales != (None,):
         raise ValueError(f"case {identifier} defines scales but query.sql has no $scope")
+    seconds = metadata.get("seconds", 60)
+    if type(seconds) is not int or not 1 <= seconds <= 120:
+        raise ValueError("seconds must be between 1 and 120")
     return QueryCase(
         identifier=identifier,
         title=_required_string(metadata, "title"),
@@ -120,6 +132,7 @@ def load_case(directory: Path) -> QueryCase:
         max_warm_ms=float(metadata.get("max_warm_ms", 60_000)),
         sql=sql,
         directory=directory,
+        seconds=seconds,
     )
 
 
@@ -136,13 +149,11 @@ def _literal(value: str) -> str:
 
 def _connection(case: QueryCase) -> duckdb.DuckDBPyConnection:
     config = catalogue_config_from_env()
-    connection = DuckLakeConnectionFactory(config).connect(
-        read_only=True, override_data_path=True
-    )
-    connection.execute(f'USE "{config.alias.replace(chr(34), chr(34) * 2)}"')
-    connection.execute("SET threads = 4")
-    connection.execute("SET preserve_insertion_order = false")
-    connection.execute(f"SET memory_limit = {_literal(case.memory_limit)}")
+    connection = DuckLakeConnectionFactory(config, duckdb_config={
+        "threads": "2", "memory_limit": case.memory_limit,
+        "max_temp_directory_size": "256MB",
+    }).connect(read_only=True)
+    connection.execute(f'USE "{config.alias}".public_v1')
     return connection
 
 
@@ -232,44 +243,101 @@ def inspect_profile(
     return tuple(blocking), tuple(scans)
 
 
-def measure_case(case: QueryCase, scale: int | None, *, warm_runs: int) -> Measurement:
-    connection = _connection(case)
-    parameters = _parameters(scale)
+class MeasurementProgress(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    case: str
+    scale: int | None
+    phase: Literal["snapshot", "normal_execution", "result_collection", "warm_profile", "metadata"] = "snapshot"
+    snapshot: int | None = None
+    normal_ms: float | None = None
+    result_rows: int | None = None
+    warm_runs_completed: int = 0
+
+
+class BenchmarkFailure(Exception):
+    """Safe failure evidence; never retain a native error message."""
+    def __init__(self, error_type: str, progress: MeasurementProgress):
+        super().__init__(error_type)
+        self.error_type = error_type
+        self.progress = progress.model_dump()
+        self.variant: str | None = None
+        self.completed_variants: dict[str, Any] = {}
+
+
+@contextmanager
+def measurement_progress(case: QueryCase, scale: int | None):
+    progress = MeasurementProgress(case=case.identifier, scale=scale)
     try:
-        connection.execute("BEGIN TRANSACTION")
-        config = catalogue_config_from_env()
-        snapshot = int(
-            connection.execute(
-                "SELECT max(snapshot_id) FROM ducklake_snapshots(?)", [config.alias]
-            ).fetchone()[0]
-        )
+        yield progress
+    except Exception as exc:
+        raise BenchmarkFailure(type(exc).__name__, progress) from None
+
+
+@contextmanager
+def deadline(connection: duckdb.DuckDBPyConnection, seconds: int):
+    timer = threading.Timer(seconds, connection.interrupt)
+    timer.start()
+    try:
+        yield
+    finally:
+        timer.cancel()
+        timer.join()
+
+
+def bounded_rows(cursor, *, max_rows: int = 100_000, max_bytes: int = 32 * 1024 * 1024):
+    rows = []
+    size = 0
+    while (row := cursor.fetchone()) is not None:
+        size += len(json.dumps(_canonical(row)).encode())
+        if len(rows) >= max_rows or size > max_bytes:
+            raise ValueError("benchmark result bound exceeded; equivalence unavailable")
+        rows.append(row)
+    return rows
+
+
+def _measure(connection, case: QueryCase, scale: int | None, warm_runs: int) -> Measurement:
+    parameters = _parameters(scale)
+    config = catalogue_config_from_env()
+    # One total deadline covers the normal run and all warm profiles.
+    with measurement_progress(case, scale) as progress, deadline(connection, case.seconds):
+        snapshot = int(connection.execute(
+            "SELECT id FROM ducklake_current_snapshot(?)", [config.alias]
+        ).fetchone()[0])
+        progress.snapshot = snapshot
+        progress.phase = "normal_execution"
         started = perf_counter()
         cursor = _execute(connection, case.sql, parameters)
-        rows = cursor.fetchall()
+        progress.phase = "result_collection"
+        rows = bounded_rows(cursor)
         normal_ms = (perf_counter() - started) * 1000
+        progress.normal_ms = normal_ms
+        progress.result_rows = len(rows)
         description = cursor.description or []
         columns = tuple(str(column[0]) for column in description)
         types = tuple(str(column[1]) for column in description)
         warm_ms: list[float] = []
-        rows_scanned: list[int] = []
-        bytes_read: list[int] = []
-        peak_buffer: list[int] = []
-        peak_temp: list[int] = []
+        rows_scanned: list[int | None] = []
+        bytes_read: list[int | None] = []
+        peak_buffer: list[int | None] = []
+        peak_temp: list[int | None] = []
         blocking: tuple[dict[str, Any], ...] = ()
         scans: tuple[dict[str, Any], ...] = ()
         for _ in range(warm_runs):
+            progress.phase = "warm_profile"
             cursor = _execute(
                 connection,
                 "EXPLAIN (ANALYZE, FORMAT JSON) " + case.sql,
                 parameters,
             )
             profile = json.loads(cursor.fetchone()[1])
-            warm_ms.append(float(profile.get("latency", 0)) * 1000)
-            rows_scanned.append(int(profile.get("cumulative_rows_scanned", 0)))
-            bytes_read.append(int(profile.get("total_bytes_read", 0)))
-            peak_buffer.append(int(profile.get("system_peak_buffer_memory", 0)))
-            peak_temp.append(int(profile.get("system_peak_temp_dir_size", 0)))
+            warm_ms.append(float(profile["latency"]) * 1000)
+            rows_scanned.append(int(profile["cumulative_rows_scanned"]) if profile.get("cumulative_rows_scanned") is not None else None)
+            bytes_read.append(int(profile["total_bytes_read"]) if profile.get("total_bytes_read") is not None else None)
+            peak_buffer.append(int(profile["system_peak_buffer_memory"]) if profile.get("system_peak_buffer_memory") is not None else None)
+            peak_temp.append(int(profile["system_peak_temp_dir_size"]) if profile.get("system_peak_temp_dir_size") is not None else None)
             blocking, scans = inspect_profile(profile)
+            progress.warm_runs_completed += 1
+        progress.phase = "metadata"
         warm_median = median(warm_ms)
         return Measurement(
             case=case.identifier,
@@ -289,35 +357,73 @@ def measure_case(case: QueryCase, scale: int | None, *, warm_runs: int) -> Measu
             blocking_operators=blocking,
             scans=scans,
             within_time_budget=warm_median <= case.max_warm_ms,
+            settings=dict(connection.execute("SELECT name, value FROM duckdb_settings() WHERE name IN ('threads','memory_limit','max_temp_directory_size','disabled_optimizers')").fetchall()),
+            catalogue_digest=hashlib.sha256(repr(connection.execute("SELECT view_name, sql FROM duckdb_views() WHERE database_name=? AND schema_name='public_v1' ORDER BY view_name", [config.alias]).fetchall()).encode()).hexdigest(),
+            duckdb_version=duckdb.__version__,
+            extensions=dict(connection.execute("SELECT extension_name, extension_version FROM duckdb_extensions() WHERE loaded ORDER BY extension_name").fetchall()),
         )
+
+
+def measure_case(case: QueryCase, scale: int | None, *, warm_runs: int) -> Measurement:
+    connection = _connection(case)
+    try:
+        connection.execute("BEGIN TRANSACTION")
+        return _measure(connection, case, scale, warm_runs)
     finally:
-        # A DuckDB internal error invalidates the connection. Preserve the
-        # original benchmark failure instead of replacing it with ROLLBACK's
-        # secondary error during cleanup.
+        with suppress(duckdb.Error):
+            connection.execute("ROLLBACK")
+        connection.close()
+
+
+def measure_pair(case: QueryCase, candidate: QueryCase, scale: int | None, *, warm_runs: int, candidate_first: bool = False, verify_scope=None):
+    """Compare complete results inside one read transaction; never compare partial runs."""
+    connection = _connection(case)
+    try:
+        connection.execute("BEGIN TRANSACTION")
+        if verify_scope is not None:
+            config = catalogue_config_from_env()
+            with deadline(connection, case.seconds):
+                installed = dict(connection.execute(
+                    "SELECT view_name, sql FROM duckdb_views() WHERE database_name=? AND schema_name='public_v1'",
+                    [config.alias],
+                ).fetchall())
+                if not verify_scope.matches(connection, installed):
+                    raise ValueError("installed catalogue does not support content scoping")
+        order = [("baseline", case), ("candidate", candidate)]
+        if candidate_first:
+            order.reverse()
+        completed = {}
+        for label, item in order:
+            try:
+                completed[label] = asdict(_measure(connection, item, scale, warm_runs))
+            except BenchmarkFailure as exc:
+                exc.variant = label
+                exc.completed_variants = completed
+                raise
+        return completed
+    finally:
         with suppress(duckdb.Error):
             connection.execute("ROLLBACK")
         connection.close()
 
 
 def environment_metadata() -> dict[str, Any]:
-    config = catalogue_config_from_env()
-    connection = DuckLakeConnectionFactory(config).connect(
-        read_only=True, override_data_path=True
-    )
+    # Snapshot and effective settings belong to each measured transaction, not
+    # a fresh attachment after the corpus may have advanced.
     try:
-        connection.execute(f'USE "{config.alias.replace(chr(34), chr(34) * 2)}"')
-        snapshot = connection.execute(
-            "SELECT max(snapshot_id) FROM ducklake_snapshots(?)", [config.alias]
-        ).fetchone()[0]
-        return {
-            "recorded_at": datetime.now().astimezone().isoformat(),
-            "duckdb_version": connection.execute("SELECT version()").fetchone()[0],
-            "catalogue_version": PUBLIC_CATALOGUE_VERSION,
-            "ducklake_snapshot": snapshot,
-            "catalogue_alias": config.alias,
-        }
-    finally:
-        connection.close()
+        root = Path(__file__).resolve().parents[5]
+        revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True, stderr=subprocess.DEVNULL, timeout=5).strip()
+        dirty = bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=root, text=True, stderr=subprocess.DEVNULL, timeout=5).strip())
+    except (OSError, subprocess.SubprocessError):
+        revision, dirty = None, None
+    return {
+        "source_revision": revision,
+        "source_dirty": dirty,
+        "recorded_at": datetime.now().astimezone().isoformat(),
+        "duckdb_version": duckdb.__version__,
+        "catalogue_version": PUBLIC_CATALOGUE_VERSION,
+        "access_path": "local_direct_reader",
+    }
 
 
 def compare_reports(
@@ -354,6 +460,9 @@ def compare_reports(
         if not exact:
             if same_snapshot:
                 failures.append(f"result mismatch for {key[0]} scale={key[1]}")
+        for field in ("settings", "catalogue_digest", "duckdb_version", "extensions"):
+            if item.get(field) != reference.get(field):
+                failures.append(f"{field} mismatch for {key[0]}; timing comparison is uncontrolled")
         baseline_ms = float(reference["median_warm_ms"])
         candidate_ms = float(item["median_warm_ms"])
         comparisons.append(
@@ -374,9 +483,10 @@ def compare_reports(
     return comparisons, failures
 
 
-def _ratio_of_max(candidate: list[int], baseline: list[int]) -> float | None:
-    baseline_max = max(baseline, default=0)
-    return max(candidate, default=0) / baseline_max if baseline_max else None
+def _ratio_of_max(candidate: list[int | None], baseline: list[int | None]) -> float | None:
+    baseline_max = max((v for v in baseline if v is not None), default=0)
+    candidate_max = max((v for v in candidate if v is not None), default=None)
+    return candidate_max / baseline_max if baseline_max and candidate_max is not None else None
 
 
 def report_payload(
@@ -404,13 +514,13 @@ def report_payload(
                 f"case={case.identifier} scale={scale} "
                 f"normal_ms={measurement.normal_ms:.1f} "
                 f"warm_median_ms={measurement.median_warm_ms:.1f} "
-                f"peak_mib={max(measurement.peak_buffer_bytes) / 1048576:.1f} "
-                f"rows_scanned={max(measurement.cumulative_rows_scanned)} "
+                f"peak_bytes={max((v for v in measurement.peak_buffer_bytes if v is not None), default=None)} "
+                f"rows_scanned={max((v for v in measurement.cumulative_rows_scanned if v is not None), default=None)} "
                 f"result_rows={measurement.result_rows}",
                 flush=True,
             )
     return {
-        "format_version": 1,
+        "format_version": 2,
         "environment": environment_metadata(),
         "warm_runs": warm_runs,
         "cases": case_metadata,

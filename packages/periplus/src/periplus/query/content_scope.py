@@ -1,5 +1,6 @@
 """Restrict reviewed document-local views to keys selected by a simple join.
 
+Research-only benchmark candidate; the public API does not invoke this module.
 This is deliberately not a general SQL optimizer. Eligibility is conservative,
 and the installed view definitions must match the reviewed catalogue sources.
 """

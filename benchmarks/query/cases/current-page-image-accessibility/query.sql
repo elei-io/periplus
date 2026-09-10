@@ -13,7 +13,7 @@ WITH ranked_content AS (
             PARTITION BY hostname
             ORDER BY hash(content_id), content_id
         ) AS host_rank
-    FROM web.observation
+    FROM public_v1.capture
     WHERE content_id IS NOT NULL
 ),
 scope AS MATERIALIZED (
@@ -32,7 +32,7 @@ SELECT
     count_if(NOT map_contains(element.attributes, 'alt')) AS missing_alt,
     count_if(map_extract_value(element.attributes, 'alt') = '') AS empty_alt
 FROM scope
-JOIN content.html_element AS element USING (content_id)
+JOIN public_v1.html_element AS element USING (content_id)
 WHERE element.tag = 'img'
 GROUP BY scope.hostname
 ORDER BY images DESC, scope.hostname;
