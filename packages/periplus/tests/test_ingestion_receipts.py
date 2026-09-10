@@ -5,7 +5,7 @@ import unittest
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
-from nats.js.errors import KeyNotFoundError, KeyWrongLastSequenceError
+from nats.js.errors import KeyNotFoundError, KeyWrongLastSequenceError, NotFoundError
 
 from periplus.ingestion.queue import (
     IngestionQueueClient, lineage_ingestion_job, store_ingestion_response,
@@ -44,7 +44,10 @@ class IngestionReceiptTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.client = IngestionQueueClient()
         self.client.client = object()
-        self.client.jetstream = SimpleNamespace(publish=AsyncMock(), add_consumer=AsyncMock())
+        self.client.jetstream = SimpleNamespace(
+            publish=AsyncMock(return_value=SimpleNamespace(seq=12)),
+            get_msg=AsyncMock(), add_consumer=AsyncMock(),
+        )
         self.client.results = Results()
         identity = uuid4()
         self.job = lineage_ingestion_job(CollectionDefinition(
@@ -85,3 +88,44 @@ class IngestionReceiptTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeError, "different evidence"):
             await self.client.reconcile(changed)
         self.assertEqual(self.client.jetstream.publish.await_count, 1)
+
+    async def test_existing_delivery_is_not_republished_even_after_long_wait(self):
+        await self.client.reconcile(self.job)
+        self.client.jetstream.get_msg.return_value = SimpleNamespace(data=self.job.model_dump_json().encode())
+        for _ in range(20):
+            await self.client.reconcile(self.job)
+        self.assertEqual(self.client.jetstream.publish.await_count, 1)
+
+    async def test_missing_delivery_is_republished_and_sequence_updated(self):
+        await self.client.reconcile(self.job)
+        self.client.jetstream.get_msg.side_effect = NotFoundError()
+        self.client.jetstream.publish.return_value = SimpleNamespace(seq=15)
+        recovered = await self.client.reconcile(self.job)
+        self.assertEqual(recovered.published_sequence, 15)
+        self.assertEqual(self.client.jetstream.publish.await_count, 2)
+
+    async def test_sequence_reused_after_restore_does_not_hide_missing_delivery(self):
+        await self.client.reconcile(self.job)
+        self.client.jetstream.get_msg.return_value = SimpleNamespace(data=b"different job")
+        self.client.jetstream.publish.return_value = SimpleNamespace(seq=20)
+        self.assertEqual((await self.client.reconcile(self.job)).published_sequence, 20)
+
+    async def test_unavailable_stream_does_not_trigger_speculative_publish(self):
+        await self.client.reconcile(self.job)
+        self.client.jetstream.get_msg.side_effect = TimeoutError()
+        with self.assertRaises(TimeoutError):
+            await self.client.reconcile(self.job)
+        self.assertEqual(self.client.jetstream.publish.await_count, 1)
+
+    async def test_publish_success_then_receipt_write_failure_recovers(self):
+        original = self.client.results.update
+        self.client.results.update = AsyncMock(side_effect=TimeoutError())
+        with self.assertRaises(TimeoutError):
+            await self.client.reconcile(self.job)
+        self.client.results.update = original
+        # JetStream's duplicate acknowledgement points to the original delivery.
+        recovered = await self.client.reconcile(self.job)
+        self.assertEqual(recovered.published_sequence, 12)
+        self.client.jetstream.get_msg.return_value = SimpleNamespace(data=self.job.model_dump_json().encode())
+        await self.client.reconcile(self.job)
+        self.assertEqual(self.client.jetstream.publish.await_count, 2)

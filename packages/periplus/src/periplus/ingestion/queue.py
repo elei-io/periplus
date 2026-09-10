@@ -21,7 +21,7 @@ from nats.js.errors import (
     KeyWrongLastSequenceError,
     NotFoundError,
 )
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 import zstandard
 
 from periplus.platform.catalogue import (
@@ -96,6 +96,7 @@ class IngestionState(BaseModel):
     status: Literal["pending", "succeeded", "failed"]
     updated_at: datetime
     published_at: datetime | None = None
+    published_sequence: int | None = Field(default=None, gt=0)
     result: IngestionWriteResult | None = None
     error: str | None = None
     processing_failure_count: int = 0
@@ -354,14 +355,14 @@ async def record_ingestion_processing_failure(results, request_id: str) -> int:
             continue
 
 
-async def mark_ingestion_published(results, request_id: str) -> IngestionState:
+async def mark_ingestion_published(results, request_id: str, sequence: int) -> IngestionState:
     while True:
         entry = await results.get(request_id)
         state = IngestionState.model_validate_json(entry.value)
-        if state.status != "pending" or state.published_at is not None:
+        if state.status != "pending" or state.published_sequence == sequence:
             return state
         now = datetime.now(UTC)
-        published = state.model_copy(update={"published_at": now, "updated_at": now})
+        published = state.model_copy(update={"published_at": now, "published_sequence": sequence, "updated_at": now})
         payload = published.model_dump_json().encode()
         _validate_envelope(payload, label="ingestion published-state envelope")
         try:
@@ -429,6 +430,7 @@ async def requeue_dead_letter(jetstream, results, sequence: int) -> DeadLetterEn
                 "status": "pending",
                 "updated_at": now,
                 "published_at": None,
+                "published_sequence": None,
                 "result": None,
                 "error": None,
                 "processing_failure_count": 0,
@@ -446,7 +448,7 @@ async def requeue_dead_letter(jetstream, results, sequence: int) -> DeadLetterEn
 
     payload = pending.job.model_dump_json().encode()
     _validate_envelope(payload, label="ingestion requeue envelope")
-    await jetstream.publish(
+    acknowledgement = await jetstream.publish(
         SUBJECT,
         payload,
         stream=STREAM,
@@ -456,7 +458,7 @@ async def requeue_dead_letter(jetstream, results, sequence: int) -> DeadLetterEn
             )
         },
     )
-    await mark_ingestion_published(results, pending.job.request_id)
+    await mark_ingestion_published(results, pending.job.request_id, acknowledgement.seq)
     deleted = await jetstream.delete_msg(DEAD_LETTER_STREAM, sequence)
     if not deleted:
         raise RuntimeError(f"dead-letter sequence {sequence} could not be removed")
@@ -500,8 +502,7 @@ class IngestionQueueClient:
         state = await self._pending_state(job)
         if state.status != "pending" or state.published_at is not None:
             return
-        await self._publish(state.job)
-        await mark_ingestion_published(self.results, state.job.request_id)
+        await self._ensure_delivery(state)
 
     async def reconcile(self, job: IngestionJob) -> IngestionState:
         """Return a verified receipt or republish pending work without waiting.
@@ -512,8 +513,7 @@ class IngestionQueueClient:
         """
         state = await self._pending_state(job)
         if state.status == "pending":
-            await self._publish(state.job)
-            state = await mark_ingestion_published(self.results, state.job.request_id)
+            state = await self._ensure_delivery(state)
         return state
 
     async def submit(self, job: IngestionJob) -> IngestionWriteResult:
@@ -539,25 +539,36 @@ class IngestionQueueClient:
             )
             if durable is not None and durable.status != "pending":
                 return result_from_ingestion_state(durable)
-            if durable is None or durable.published_at is None:
-                await self._publish(state.job)
-                durable = await mark_ingestion_published(
-                    self.results,
-                    state.job.request_id,
-                )
-                if durable.status != "pending":
-                    return result_from_ingestion_state(durable)
+            durable = await self.reconcile(state.job)
+            if durable.status != "pending":
+                return result_from_ingestion_state(durable)
             await asyncio.sleep(poll_seconds)
 
-    async def _publish(self, job: IngestionJob) -> None:
+    async def _ensure_delivery(self, state: IngestionState) -> IngestionState:
+        if state.published_sequence is not None:
+            try:
+                message = await self.jetstream.get_msg(STREAM, seq=state.published_sequence)
+            except NotFoundError:
+                pass
+            else:
+                # Restored streams can reuse sequence numbers. Check the immutable job,
+                # not merely the existence of a sequence or its deduplication header.
+                if message.data == state.job.model_dump_json().encode():
+                    return state
+        sequence = await self._publish(state.job)
+        return await mark_ingestion_published(self.results, state.job.request_id, sequence)
+
+    async def _publish(self, job: IngestionJob) -> int:
         payload = job.model_dump_json().encode()
         _validate_envelope(payload, label="ingestion job")
-        await self.jetstream.publish(
+        acknowledgement = await self.jetstream.publish(
             SUBJECT,
             payload,
             stream=STREAM,
             headers={"Nats-Msg-Id": job.request_id},
         )
+
+        return acknowledgement.seq
 
     def _require_connected(self) -> None:
         if self.client is None or self.jetstream is None or self.results is None:
