@@ -77,7 +77,7 @@ class QueryServiceTests(unittest.TestCase):
         self.assertEqual(stable.query_mode, QueryMode.STABLE)
         self.assertEqual(result.query_mode, QueryMode.EXPERIMENTAL)
         self.assertEqual(result.optimizations, [])
-        self.assertEqual(evidence.compiler_version, "public-query-v7:experimental")
+        self.assertEqual(evidence.compiler_version, "public-query-v8:experimental")
         self.assertNotEqual(result.compiler_version, stable.compiler_version)
         with self.assertRaises(ValueError):
             QueryService(self.config, mode="invalid")
@@ -105,7 +105,7 @@ class QueryServiceTests(unittest.TestCase):
         self.assertEqual(after.types, before.types)
         self.assertEqual(after.sql, request.sql)
         self.assertEqual(before.optimizations, ['capture_heading_content_scope_v1'])
-        self.assertEqual(before.compiler_version, 'public-query-v7:stable')
+        self.assertEqual(before.compiler_version, 'public-query-v8:stable')
         self.assertEqual(after.optimizations, ['capture_heading_content_scope_v1'])
         self.assertIn('__periplus_scope_', after.plan)
         self.assertEqual(stable.prepare(request).optimizations, after.optimizations)
@@ -216,7 +216,7 @@ class QueryServiceTests(unittest.TestCase):
             result = self.service.execute(request)
         self.assertEqual(prepared.sql, request.sql)
         self.assertEqual(result.sql, request.sql)
-        self.assertEqual(evidence.compiler_version, 'public-query-v7:stable')
+        self.assertEqual(evidence.compiler_version, 'public-query-v8:stable')
         self.assertEqual(evidence.plan, prepared.plan)
         self.assertFalse(any(d.code.startswith('content_scope') for d in result.diagnostics))
         self.assertEqual(self.service.connection.execute("SELECT current_setting('disabled_optimizers')").fetchone(), before)
@@ -492,3 +492,62 @@ class QueryServiceTests(unittest.TestCase):
                 self.service.execute(QueryRequest(sql="SELECT 1"))
         self.assertFalse(self.service._lock.locked())
         self.assertEqual(self.service.execute(QueryRequest(sql="SELECT 1")).rows, [[1]])
+
+    def test_selected_content_execution_only_and_stable_unchanged(self):
+        from periplus.query.service import QueryMode
+        from periplus.query.selected_content import SelectedContent
+        experimental = QueryService(self.config, mode=QueryMode.EXPERIMENTAL)
+        self.addCleanup(experimental.close)
+        payload = QueryRequest(sql="""WITH scoped AS (
+            SELECT capture_id,content_id FROM capture WHERE requested_url = ?)
+            SELECT s.capture_id,h.value FROM scoped s LEFT JOIN html_metadata h USING(content_id)
+            ORDER BY s.capture_id,h.node_index""", parameters=['https://example.com/inline'])
+        with patch.object(SelectedContent, 'select', side_effect=AssertionError('prep must not select')):
+            prep = experimental.prepare(payload)
+            stable = self.service.execute(payload)
+        self.assertEqual(prep.optimizations, [])
+        self.assertIn('selected_content_available', [d.code for d in prep.diagnostics])
+        self.assertEqual(stable.optimizations, [])
+        actual = experimental.execute(payload)
+        self.assertEqual(actual.rows, stable.rows)
+        self.assertEqual(actual.types, stable.types)
+        self.assertEqual(actual.optimizations, ['selected_content_scan_v1'])
+        self.assertEqual(actual.parameters, payload.parameters)
+        with patch('periplus.query.selected_content.MAX_KEYS', 0):
+            bounded = experimental.execute(payload)
+        self.assertEqual(bounded.rows, stable.rows)
+        self.assertEqual(bounded.optimizations, [])
+        self.assertIn('selected_content_bound', [d.code for d in bounded.diagnostics])
+
+    def test_selection_uses_existing_deadline_and_recovers(self):
+        from periplus.query.service import QueryMode
+        from periplus.query.selected_content import SelectedContent
+        experimental = QueryService(self.config, mode=QueryMode.EXPERIMENTAL, deadline=0.1)
+        self.addCleanup(experimental.close)
+        payload = QueryRequest(sql="""WITH scoped AS (
+            SELECT capture_id,content_id FROM capture WHERE requested_url = 'x')
+            SELECT h.text FROM scoped s LEFT JOIN html_heading h USING(content_id)""")
+        def expensive_selection(_scope, connection):
+            connection.execute('SELECT sum(i*j) FROM range(1000000) a(i),range(1000000) b(j)')
+        with patch.object(SelectedContent, 'select', expensive_selection):
+            with self.assertRaises(TimeoutError):
+                experimental.execute(payload)
+        experimental.deadline = 20
+        self.assertEqual(experimental.execute(QueryRequest(sql='SELECT 1')).rows, [[1]])
+
+    def test_selected_content_benchmark_uses_bound_arrays(self):
+        import json
+        import runpy
+        import sys
+        from contextlib import redirect_stdout
+        import io
+        root = Path(__file__).resolve().parents[3]
+        report = Path(self.directory.name) / 'selected-report.json'
+        script = root / 'packages/periplus/scripts/query_selected_content_benchmark.py'
+        with patch('periplus.query.benchmarking.catalogue_config_from_env', return_value=self.config), patch.object(sys, 'argv', [str(script), '--case', 'selected-content-headings', '--candidate-first', '--report', str(report)]), redirect_stdout(io.StringIO()):
+            runpy.run_path(str(script), run_name='__main__')
+        payload = json.loads(report.read_text())
+        self.assertTrue(payload['complete'])
+        self.assertEqual(payload['failures'], [])
+        self.assertTrue(payload['comparisons'][0]['exact_result'])
+        self.assertIn('selection_ms', payload['measurements']['candidate'])

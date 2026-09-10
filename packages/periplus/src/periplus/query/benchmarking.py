@@ -295,8 +295,8 @@ def bounded_rows(cursor, *, max_rows: int = 100_000, max_bytes: int = 32 * 1024 
     return rows
 
 
-def _measure(connection, case: QueryCase, scale: int | None, warm_runs: int, *, profile_warm_runs: bool = True) -> Measurement:
-    parameters = _parameters(scale)
+def _measure(connection, case: QueryCase, scale: int | None, warm_runs: int, *, profile_warm_runs: bool = True, bound_parameters: dict[str, Any] | None = None) -> Measurement:
+    parameters = _parameters(scale) if bound_parameters is None else bound_parameters
     config = catalogue_config_from_env()
     # One total deadline covers the normal run and all warm profiles.
     with measurement_progress(case, scale) as progress, deadline(connection, case.seconds):
