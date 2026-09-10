@@ -308,6 +308,26 @@
           }
         }
       }
+    },
+    "queryExperimental": {
+      "type": "object",
+      "properties": {
+        "replicas": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "autoscaling": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "const": false
+            }
+          }
+        },
+        "duckdb": {
+          "$ref": "#/definitions/duckdb"
+        }
+      }
     }
   },
   "definitions": {

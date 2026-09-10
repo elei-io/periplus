@@ -151,3 +151,14 @@ After deployment compare matching workload cohorts and timeout rates, including
 unaffected cases. Retain sanitized regressions and decisions; expire private raw
 artifacts. The next weekly review reopens regressions rather than repeating the
 same unrecorded experiments.
+
+## Execution-mode promotion
+
+Develop compiler candidates only in experimental; stable begins with no custom
+rewrites. Replay stable and experimental against the same frozen snapshot using
+`benchmarks/query/`. Require equivalent results (including duplicates, nulls and
+ordering guarantees), repeatable performance gains, and regression checks before
+promoting a candidate to stable. Record mode and compiler version with evidence.
+The public selector is for individual runs, not an automatic benchmark: consecutive
+UI requests can see different snapshots and cache states. Catalogue and physical
+layout changes affect both endpoints and require their own isolated experiments.

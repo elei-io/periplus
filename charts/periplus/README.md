@@ -263,3 +263,12 @@ Every process sharing an account must use matching settings. Replica mismatch
 fails startup; changing values alone does not migrate existing streams. See
 [onboarding](../../docs/HOMELAB.md#nats-storage-and-failure-contract) for account
 sizing and the explicit, data-preserving upgrade procedure.
+
+## Query execution modes
+
+The chart runs stable (`query`) and experimental (`queryExperimental`) query
+services independently with the same core image and read-only credentials.
+`queryExperimental.replicas`, `.resources`, and `.duckdb` control experimental
+capacity; it uses fixed replicas. Pod monitoring includes both modes. The public
+application receives both internal URLs and offers the mode selector in the SQL
+console. See [query semantics](../../docs/QUERY.md#stable-and-experimental-execution).

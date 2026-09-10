@@ -7,7 +7,7 @@ import ts from "typescript"
 function loadProxy(admit: (...args: unknown[]) => Promise<Response | null>) {
   const source = readFileSync(new URL("../src/server/query-proxy.ts", import.meta.url), "utf8")
   const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText
-  const exports: { proxyQuery?: (request: Request, path: string) => Promise<Response> } = {}
+  const exports: { proxyQuery?: (request: Request, path: string, mode?: "stable" | "experimental") => Promise<Response> } = {}
   const require = (name: string) => {
     if (name === "server-only") return {}
     if (name === "./public-access") return { admitPublic: admit }
@@ -59,5 +59,42 @@ test("SDK uses the same admission and only its analytics label crosses the gatew
     else process.env.PERIPLUS_QUERY_API_TOKEN = oldToken
     if (oldUrl === undefined) delete process.env.PERIPLUS_QUERY_URL
     else process.env.PERIPLUS_QUERY_URL = oldUrl
+  }
+})
+
+
+test("execution modes route independently and experimental never falls back", async () => {
+  const oldFetch = globalThis.fetch
+  const names = ["PERIPLUS_QUERY_API_TOKEN", "PERIPLUS_QUERY_URL", "PERIPLUS_QUERY_EXPERIMENTAL_URL"]
+  const previous = names.map(name => process.env[name])
+  process.env.PERIPLUS_QUERY_API_TOKEN = "internal-secret"
+  process.env.PERIPLUS_QUERY_URL = "http://stable.internal"
+  process.env.PERIPLUS_QUERY_EXPERIMENTAL_URL = "http://experimental.internal"
+  try {
+    const admissions: unknown[][] = []
+    const proxy = loadProxy(async (...args) => { admissions.push(args); return null })
+    const calls: string[] = []
+    globalThis.fetch = async (url) => { calls.push(String(url)); return Response.json({ ok: true }) }
+    for (const mode of ["stable", "experimental"] as const) {
+      for (const operation of ["exec", "prep", "helpers"]) {
+        const method = operation === "helpers" ? "GET" : "POST"
+        const response = await proxy(new Request("https://public.example", { method }), `/query/${operation}`, mode)
+        assert.equal(response.status, 200)
+        await response.json()
+        assert.equal(calls.at(-1), `http://${mode}.internal/query/${operation}`)
+      }
+    }
+    assert.deepEqual(admissions.map(args => args[2]), [true, false, true, false])
+    calls.length = 0
+    delete process.env.PERIPLUS_QUERY_EXPERIMENTAL_URL
+    assert.equal((await proxy(new Request("https://public.example", { method: "POST" }), "/query/exec", "experimental")).status, 503)
+    assert.equal(calls.length, 0)
+    process.env.PERIPLUS_QUERY_EXPERIMENTAL_URL = "http://experimental.internal"
+    globalThis.fetch = async url => { calls.push(String(url)); throw new Error("unavailable") }
+    assert.equal((await proxy(new Request("https://public.example", { method: "POST" }), "/query/exec", "experimental")).status, 503)
+    assert.deepEqual(calls, ["http://experimental.internal/query/exec"])
+  } finally {
+    globalThis.fetch = oldFetch
+    names.forEach((name, index) => { if (previous[index] === undefined) delete process.env[name]; else process.env[name] = previous[index] })
   }
 })

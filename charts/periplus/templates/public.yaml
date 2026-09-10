@@ -54,6 +54,8 @@ spec:
                   key: {{ .Values.secrets.apiAccess.publicTokenKey }}
             - name: PERIPLUS_QUERY_URL
               value: {{ printf "http://%s-query:%v" (include "periplus.fullname" .) .Values.query.service.port | quote }}
+            - name: PERIPLUS_QUERY_EXPERIMENTAL_URL
+              value: {{ printf "http://%s-query-experimental:%v" (include "periplus.fullname" .) .Values.queryExperimental.service.port | quote }}
             - name: PERIPLUS_QUERY_API_TOKEN
               valueFrom:
                 secretKeyRef:

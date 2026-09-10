@@ -8,6 +8,7 @@ export const sqlDraftSchema = z.object({
 })
 
 export const sqlAssistantInputSchema = z.object({
+  queryMode: z.enum(["stable", "experimental"]).default("stable"),
   intent: z.string().trim().min(1).max(4_000),
   draft: sqlDraftSchema,
   proposal: sqlDraftSchema.nullable(),

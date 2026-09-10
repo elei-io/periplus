@@ -10,7 +10,8 @@ import { recordTokens } from "./telemetry"
 
 export async function suggestSql(input: SqlAssistantInput, signal: AbortSignal): Promise<SqlAssistantReply> {
   const headers = { authorization: `Bearer ${process.env.PERIPLUS_QUERY_API_TOKEN}`, "content-type": "application/json", "x-periplus-query-source": "assistant" }
-  const queryUrl = process.env.PERIPLUS_QUERY_URL ?? "http://127.0.0.1:8010"
+  const queryUrl = input.queryMode === "experimental" ? process.env.PERIPLUS_QUERY_EXPERIMENTAL_URL : process.env.PERIPLUS_QUERY_URL ?? "http://127.0.0.1:8010"
+  if (!queryUrl) throw new Error("Experimental SQL is not configured.")
   const helperResponse = await fetch(new URL("/query/helpers", queryUrl), {
     headers, cache: "no-store", signal: AbortSignal.any([signal, AbortSignal.timeout(5_000)]),
   })

@@ -59,7 +59,7 @@ async def _run(request, payload, operation):
     from periplus.query.history import track, result_fields
     async with track(request, payload, operation) as record:
         from periplus.operations.query_history.schemas import PreparationEvidence
-        evidence = PreparationEvidence()
+        evidence = PreparationEvidence(compiler_version=request.app.state.query_service.compiler_version)
         try:
             result = await _run_operation(request, payload, operation, evidence)
         finally:

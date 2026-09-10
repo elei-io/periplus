@@ -77,14 +77,16 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
             evidence.duckdb_version = 'test-engine'
             raise TimeoutError()
         request = SimpleNamespace(state=SimpleNamespace(), headers={}, app=SimpleNamespace(state=SimpleNamespace(
-            query_history=recorder, query_slot=slot, query_limits=SimpleNamespace(read=AsyncMock(return_value=QueryLimits())), query_service=SimpleNamespace(execute=timeout))))
+            query_history=recorder, query_slot=slot, query_limits=SimpleNamespace(read=AsyncMock(return_value=QueryLimits())), query_service=SimpleNamespace(execute=timeout, compiler_version="public-query-v4:experimental"))))
         await slot.acquire()
         self.assertEqual((await _run(request, QueryRequest(sql='select 1'), 'execute')).status_code, 429)
         self.assertEqual(recorder.record.call_args.args[0].outcome, 'rejected')
+        self.assertEqual(recorder.record.call_args.args[0].compiler_version, 'public-query-v4:experimental')
         self.assertIsNone(recorder.record.call_args.args[0].plan)
         slot.release()
         self.assertEqual((await _run(request, QueryRequest(sql='select 1'), 'execute')).status_code, 408)
         self.assertEqual(recorder.record.call_args.args[0].outcome, 'timeout')
+        self.assertEqual(recorder.record.call_args.args[0].compiler_version, 'public-query-v4:experimental')
         self.assertEqual(recorder.record.call_args.args[0].plan, 'estimated scan')
 
 class AccessTests(unittest.TestCase):

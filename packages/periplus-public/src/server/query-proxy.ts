@@ -1,16 +1,18 @@
 import "server-only"
+import type { QueryMode } from "@/types/sql"
 import { admitPublic } from "./public-access";
 import { beginOperation } from "./telemetry";
 
 // Transport only. Python owns query policy, preparation and execution.
-export async function proxyQuery(request: Request, path: string) {
+export async function proxyQuery(request: Request, path: string, mode: QueryMode = "stable") {
   const finish = beginOperation("query_proxy", request.headers.get("x-periplus-operation-id"));
   if (path === "/query/exec" || path === "/query/prep") {
     const denial = await admitPublic("sql", request.signal, path === "/query/exec")
     if (denial) { finish(denial.status >= 500 ? "failed" : "rejected"); return denial }
   }
+  const baseUrl = mode === "experimental" ? process.env.PERIPLUS_QUERY_EXPERIMENTAL_URL : process.env.PERIPLUS_QUERY_URL ?? "http://127.0.0.1:8010";
   const token = process.env.PERIPLUS_QUERY_API_TOKEN;
-  if (!token) {
+  if (!token || !baseUrl) {
     finish("unconfigured");
     return Response.json(
       { detail: "Periplus connection is not configured." },
@@ -28,7 +30,7 @@ export async function proxyQuery(request: Request, path: string) {
   }
   try {
     const upstream = await fetch(
-      new URL(path, process.env.PERIPLUS_QUERY_URL ?? "http://127.0.0.1:8010"),
+      new URL(path, baseUrl),
       {
         method: request.method,
         headers,

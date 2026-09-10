@@ -1,6 +1,6 @@
 {{- if .Values.podMonitor.enabled }}
 {{- $root := . }}
-{{- range $role := list "api" "query" "crawler" "ingestor" "materializer" "janitor" }}
+{{- range $role := list "api" "query" "query-experimental" "crawler" "ingestor" "materializer" "janitor" }}
 ---
 apiVersion: monitoring.coreos.com/v1
 kind: PodMonitor
@@ -16,7 +16,7 @@ spec:
     matchLabels:
       {{- include "periplus.componentSelectorLabels" (dict "root" $root "component" $role) | nindent 6 }}
   podMetricsEndpoints:
-    - port: {{ ternary "http" "metrics" (has $role (list "api" "query")) }}
+    - port: {{ ternary "http" "metrics" (has $role (list "api" "query" "query-experimental")) }}
       path: /metrics
       interval: {{ $root.Values.podMonitor.interval }}
       scrapeTimeout: {{ $root.Values.podMonitor.scrapeTimeout }}

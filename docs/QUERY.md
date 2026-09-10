@@ -862,3 +862,23 @@ Per-query toggling would require changing that security/lifecycle boundary;
 globally disabling common-subplan extraction is not justified by selective-only
 speedups. The production-data comparisons and remaining broad-query timeouts are
 recorded in [the investigation](query-investigations/key-domain/README.md).
+
+## Stable and experimental execution
+
+The console defaults to **Stable** and offers **Experimental** beside Run. Shared
+console links preserve the selected mode with `mode=experimental`. Stable uses
+`/api/query/exec`, `/api/query/prep` and `/api/query/helpers`; experimental uses
+`/api/query/experimental/exec`, `/api/query/experimental/prep` and
+`/api/query/experimental/helpers`. The SQL assistant validates against the selected mode.
+
+Both initially use the clean compiler baseline: normal DuckDB optimization is
+enabled and no Periplus SQL rewrites run. They share public catalogue semantics
+and lake layout. This split does not undo catalogue improvements or isolate
+physical storage changes. QueryService owns the execution mode; future candidate
+rewrites must be explicitly restricted to experimental until promoted.
+
+Prepared and executed responses identify `query_mode`, `compiler_version` and
+`optimizations` (initially empty). History records the mode in the compiler version,
+including failed admission. Separate processes provide independent connection,
+admission, memory and spill limits; they still share storage and cluster capacity.
+Experimental unavailability is an error, never a retry through stable.

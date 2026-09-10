@@ -358,3 +358,28 @@ podMonitor:
   labels: {}
   interval: 15s
   scrapeTimeout: 10s
+
+# Experimental SQL has its own fixed-capacity process and reader connection.
+queryExperimental:
+  autoscaling:
+    enabled: false
+  # Per connection, including coordinator connections; allow process overhead.
+  duckdb:
+    threads: 2
+    memoryLimit: 512MB
+    maxTempDirectorySize: 256MB
+  replicas: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 2
+      memory: 1Gi
+  service:
+    type: ClusterIP
+    port: 8000
+    annotations:
+      prometheus.io/scrape: "true"
+      prometheus.io/path: /metrics
+      prometheus.io/port: "8000"

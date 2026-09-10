@@ -411,3 +411,18 @@ release acquisitions referenced solely by completed interests after evidence and
 navigation gates pass. It leaves compact deduplication/progress records until request
 retirement. Old code cannot read those reclaimed references, so rollback requires a
 coordinated pre-upgrade recovery set. No lake schema change is required.
+
+## Experimental query deployment
+
+`periplus-query` runs with `PERIPLUS_QUERY_MODE=stable`;
+`periplus-query-experimental` runs the same core image with
+`PERIPLUS_QUERY_MODE=experimental`. Both use the existing read-only lake
+credentials and query API token. Helm `queryExperimental` configures independent
+fixed replicas, DuckDB limits and pod resources; stable retains its existing
+autoscaling configuration. The public server routes experimental requests through
+`PERIPLUS_QUERY_EXPERIMENTAL_URL`. Internal consumers continue using stable.
+
+Compose exposes experimental at localhost:8011, configurable through
+`PERIPLUS_QUERY_EXPERIMENTAL_PORT`. For a host-run public application, set
+`PERIPLUS_QUERY_EXPERIMENTAL_URL=http://127.0.0.1:8011`. Deploy core, public and
+the chart together so the endpoint and response contracts agree.
