@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
+from itertools import islice
 
 import pyarrow as pa
 
@@ -89,20 +91,22 @@ def build_visit_batch_context(
 
 def table_from_rows(
     schema: pa.Schema,
-    rows: list[tuple[object, ...]],
+    rows: Iterable[tuple[object, ...]],
 ) -> pa.Table:
-    """Build a correctly typed Arrow table, including the empty case."""
-
-    return pa.Table.from_arrays(
-        [
-            pa.array(
-                [row[index] for row in rows],
-                type=field.type,
+    """Convert bounded row chunks without retaining a second full Python table."""
+    iterator = iter(rows)
+    batches: list[pa.RecordBatch] = []
+    while chunk := list(islice(iterator, 8192)):
+        batches.append(
+            pa.RecordBatch.from_arrays(
+                [
+                    pa.array([row[index] for row in chunk], type=field.type)
+                    for index, field in enumerate(schema)
+                ],
+                schema=schema,
             )
-            for index, field in enumerate(schema)
-        ],
-        schema=schema,
-    )
+        )
+    return pa.Table.from_batches(batches, schema=schema)
 
 
 def ducklake_varchar_bucket(value: str, buckets: int) -> int:

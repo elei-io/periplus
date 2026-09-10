@@ -7,8 +7,9 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { extractApiError } from "@/lib/api"
 import { serializeQueryResults } from "@/lib/query-export"
 import type { QueryResult } from "@/types/sql"
+import { captureAnalytics } from "@/lib/analytics"
 
-export function QueryExport({ result, disabled }: { result?: QueryResult; disabled: boolean }) {
+export function QueryExport({ result, disabled, operationId }: { result?: QueryResult; disabled: boolean; operationId?: string }) {
   async function exportResults(format: "csv" | "json", clipboard: boolean) {
     if (!result) return
     try {
@@ -26,6 +27,13 @@ export function QueryExport({ result, disabled }: { result?: QueryResult; disabl
         link.remove()
         setTimeout(() => URL.revokeObjectURL(address), 1000)
       }
+      captureAnalytics("sql_results_exported", {
+        flow: "sql", operation_id: operationId, query_id: result.query_id,
+        format,
+        method: clipboard ? "clipboard" : "download",
+        row_count: result.rows.length,
+        truncated: result.truncated ?? false,
+      })
     } catch (error) { toast.error(extractApiError(error)) }
   }
   return <DropdownMenu>

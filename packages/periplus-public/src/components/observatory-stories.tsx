@@ -1,7 +1,8 @@
 "use client"
 
+import { observeCoverage } from "@/lib/coverage-analytics"
 import Link from "next/link"
-import { memo, useLayoutEffect, useRef } from "react"
+import { memo, useEffect, useLayoutEffect, useRef } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { ArrowUpRight, Check } from "lucide-react"
 import { Button, buttonVariants } from "@/components/ui/button"
@@ -66,6 +67,7 @@ function RequestObservationTail({id, playing}: {id:string;playing:boolean}) {
 export function RequestStory({id, playing}: {id:string;playing:boolean}) {
   const query = useQuery({queryKey:["collection",id],queryFn:({signal})=>read<Collection>(`/api/collections/${encodeURIComponent(id)}`,signal),refetchInterval:playing ? 5000 : false,retry:false})
   const item=query.data
+  useEffect(() => { if (item) observeCoverage(item) }, [item])
   if (!item) return <section className="observatory-request-story">{query.error ? <ReadError error={query.error}/> : <p role="status">Loading request progress…</p>}</section>
   const finished=item.source === "history" ? item.outcome !== null : item.status === "settled"
   const paused=item.source === "current" && item.status === "paused"
@@ -93,9 +95,9 @@ export function RequestStory({id, playing}: {id:string;playing:boolean}) {
 }
 
 export const PublicRequests = memo(function PublicRequests({playing, onOpenRequest}: {playing:boolean;onOpenRequest:(id:string)=>void}) {
-  const query=useQuery({queryKey:["observatory-requests"],queryFn:({signal})=>read<CollectionPage>("/api/collections?limit=6&offset=0",signal),refetchInterval:playing ? 10000 : false,retry:false})
+  const query=useQuery({queryKey:["observatory-requests"],queryFn:({signal})=>read<CollectionPage>("/api/collections?request_class=public&limit=5&offset=0",signal),refetchInterval:playing ? 10000 : false,retry:false})
   const requests=query.data?.items.map(item=>({id:item.id,title:title(item),count:item.supplied_pages,status:item.status === "settled" ? "Finished" : item.status === "paused" ? "Paused" : "In progress",summary:item.status === "settled" ? item.failed_pages ? `${item.failed_pages} pages could not be observed. Recorded results remain available.` : "Recorded observations remain available." : item.status === "paused" ? "Waiting for this request to resume." : item.queued_pages ? `${item.queued_pages.toLocaleString()} pages waiting to be observed.` : !item.seeds_settled ? "Finding starting pages." : item.acquiring_pages ? "Observing pages now." : "Following links and recording progress."}))
-  return <section className="observatory-public-requests" aria-labelledby="public-requests-heading"><header className="observatory-section-heading"><div><span className="eyebrow">A shared view</span><h2 id="public-requests-heading">Recent coverage requests</h2><p>The latest six coverage requests. Open a request to review its progress and available observations.</p></div></header>
+  return <section className="observatory-public-requests" aria-labelledby="public-requests-heading"><header className="observatory-section-heading"><div><span className="eyebrow">A shared view</span><h2 id="public-requests-heading">Recent coverage requests</h2><p>The latest five public coverage requests. Open a request to review its progress and available observations.</p></div></header>
     {query.isPending && <p role="status">Loading recent requests…</p>}{query.error && <ReadError error={query.error}/>}{requests?.length===0 && <p>No recent requests. Request coverage above.</p>}
     <div className="observatory-request-list">{requests?.map(item=><article key={item.id}><div className="observatory-request-intent"><span className="observatory-request-state">{item.status === "Finished" ? <Check size={13}/> : <span className="crawler-dot"/>}{item.status}</span><h3>{item.title}</h3><p>{item.summary}</p></div><div className="observatory-request-result"><strong>{item.count?.toLocaleString() ?? "—"}</strong><span>{item.count === 1 ? "page observed" : "pages observed"}</span><Button variant="link" onClick={()=>onOpenRequest(item.id)}>View progress <ArrowUpRight/></Button></div></article>)}</div>
   </section>

@@ -11,7 +11,9 @@ export const maxDuration = 190;
 let active = 0;
 
 export async function POST(request: Request) {
-  const finish = beginOperation("assistant");
+  const operationId = request.headers.get("x-periplus-operation-id");
+  const analyticsId = operationId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(operationId) ? operationId : crypto.randomUUID();
+  const finish = beginOperation("assistant", analyticsId);
   if (
     !process.env.OPENAI_API_KEY ||
     !process.env.PERIPLUS_AI_MODEL ||
@@ -109,6 +111,11 @@ export async function POST(request: Request) {
       abortSignal: signal,
       timeout: 180_000,
       sendReasoning: false,
+      messageMetadata: ({ part }) => {
+        const base = { operation_id: analyticsId, model: process.env.PERIPLUS_AI_MODEL!.replace(/^openai:/, "") };
+        if (part.type === "start") return base;
+        if (part.type === "finish") return { ...base, input_tokens: part.totalUsage.inputTokens, output_tokens: part.totalUsage.outputTokens };
+      },
       onEnd: () => {
         signal.removeEventListener("abort", aborted);
         finish("success");

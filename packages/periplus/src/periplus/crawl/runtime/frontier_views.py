@@ -62,7 +62,7 @@ class CollectionView(BaseModel):
         return expiry is not None and expiry <= self.as_of
 
 
-def collection_views(sessions, *, identity: UUID | None = None, status: str | None = None, limit: int = 20, offset: int = 0, workers=None) -> list[CollectionView]:
+def collection_views(sessions, *, identity: UUID | None = None, status: str | None = None, request_class: Literal["public", "system", "admin"] | None = None, limit: int = 20, offset: int = 0, workers=None) -> list[CollectionView]:
     if not 1 <= limit <= 100 or not 0 <= offset <= 10000:
         raise ValueError("collection page outside bounds")
     if status is not None and status not in {"active", "paused", "settled"}:
@@ -74,6 +74,8 @@ def collection_views(sessions, *, identity: UUID | None = None, status: str | No
             statement = statement.where(CollectionRecord.id == identity)
         if status is not None:
             statement = statement.where(CollectionRecord.status == status)
+        if request_class is not None:
+            statement = statement.where(CollectionRecord.spec["request_class"].as_string() == request_class)
         records = list(session.scalars(statement.order_by(CollectionRecord.created_at.desc(),
                                                          CollectionRecord.id.desc()).limit(limit).offset(offset)))
         as_of = datetime.now(UTC)

@@ -72,3 +72,20 @@ class TelemetryTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertIn('periplus_http_requests', response.text)
             self.assertEqual(client.post('/query/exec', json={'sql': 'SELECT 1'}).status_code, 401)
+
+
+    def test_frontier_cleanup_counts_survive_safe_formatting_without_payloads(self):
+        import json
+        import logging
+        record = logging.LogRecord('periplus.operations.janitor', logging.INFO, __file__, 1,
+                                   'frontier_cleanup', (), None)
+        record.telemetry = dict(batches=70, collections_removed=1, acquisitions_removed=4300,
+                                more=False, payload='sentinel-secret')
+        data = json.loads(SafeFormatter('janitor').format(record))
+        self.assertEqual(data['batches'], 70)
+        self.assertEqual(data['acquisitions_removed'], 4300)
+        self.assertEqual(data['collections_removed'], 1)
+        self.assertFalse(data['more'])
+        self.assertNotIn('payload', data)
+        record.telemetry = dict(acquisitions_removed='sentinel-secret')
+        self.assertNotIn('sentinel-secret', SafeFormatter('janitor').format(record))

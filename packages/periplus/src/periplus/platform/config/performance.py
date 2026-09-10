@@ -24,6 +24,9 @@ INGESTION_MAX_LOCAL_CONCURRENCY = 4
 # Navigation retention is recovery cleanup, not a bulk-delete job. One bounded
 # batch per janitor sweep keeps object-store pressure predictable.
 NAVIGATION_CLEANUP_BATCH_SIZE = 500
+# Yield between bounded frontier cleanup windows, rather than sleeping on backlog.
+FRONTIER_CLEANUP_WINDOW_SECONDS = 30.0
+FRONTIER_CLEANUP_RETRY_SECONDS = 1.0
 
 # Adaptive microbatch bounds. A batch flushes on whichever bound is reached
 # first, keeping latency bounded for small deployments and amortising commits
@@ -45,14 +48,12 @@ INGESTION_ACK_WAIT_SECONDS = 60.0
 # infrastructure admission. Each hostname has an independent expiring state key.
 DOMAIN_PERMIT_LEASE_SECONDS = 120.0
 DOMAIN_PERMIT_HEARTBEAT_SECONDS = 30.0
-OPERATIONAL_STATE_REPLICAS = 1
 CATALOGUE_OPERATION_MAX_ATTEMPTS = 5
 CATALOGUE_OPERATION_RETRY_INITIAL_SECONDS = 0.1
 CATALOGUE_OPERATION_RETRY_MAX_SECONDS = 2.0
 CATALOGUE_OPERATION_LEASE_SECONDS = 30.0
 CATALOGUE_OPERATION_HEARTBEAT_SECONDS = 5.0
 CATALOGUE_OPERATION_ACQUIRE_TIMEOUT_SECONDS = 1.0
-CATALOGUE_OPERATION_LEASE_REPLICAS = 1
 def process_cpu_count() -> int:
     """Return CPU capacity visible to this container/process."""
 

@@ -86,6 +86,13 @@ prevents later visits from re-emitting content-grain HTML rows, while a determin
 minimum document identity selects one owner when genuinely new content first appears in parallel
 batches.
 
+### `material.prose`
+
+One row per `content_sha256` with materialized searchable body `text`. It shares
+content ownership and the complete generation lifecycle with the DOM projections.
+Files are unpartitioned and sorted by content identity, avoiding bucket fan-out
+for this one-row-per-content corpus scan surface.
+
 ### `material.link_occurrences`
 
 One visit-owned anchor observation per deterministic `occurrence_id`:
@@ -122,6 +129,40 @@ and execution report `schema_version`; execution additionally reports
 `source_snapshot`. A schema version specifies semantics, not a data snapshot or a
 promise that an expired snapshot can be replayed. Physical layout is private.
 There are no `web` or `content` compatibility namespaces.
+
+### `public_v1.prose`
+
+One row per materialized unique HTML content: `content_id VARCHAR`, `text VARCHAR`,
+both non-null. Repeated captures share the same row. Empty or missing bodies yield
+an empty string. Join captures or HTML structures using `content_id`.
+
+Text follows parsed body document order, excluding comments and script, style,
+template and noscript subtrees. Navigation, footers, code, and declared hidden
+content remain included. Attributes (including image alt and input values) are
+not substituted. This is deterministic source text, not main-article extraction,
+CSS visibility, accessible names, or browser innerText.
+
+Inline text is concatenated without inserted separators. HTML block tags
+(address, article, aside, blockquote, caption, dd, details, dialog, div, dl, dt,
+fieldset, figcaption, figure, footer, form, h1–h6, header, hgroup, li, main, menu,
+nav, ol, p, pre, section, summary, table, tbody, td, tfoot, th, thead, tr, ul)
+insert separators before and after their contents; br and hr also separate text.
+Unicode whitespace runs collapse to one ASCII space and outer whitespace is
+trimmed. Case, punctuation and decoded characters otherwise remain unchanged.
+No truncation is applied.
+
+```sql
+SELECT e.content_id, e.node_index
+FROM html_element e
+JOIN prose p USING (content_id)
+WHERE p.text ILIKE '%visa sponsorship%'
+  AND e.tag = 'h1';
+```
+
+This returns headings in matching documents, not necessarily headings containing
+the phrase. Prose is a discovery surface; verify structural claims using the DOM.
+Substring searches still scan prose text, and selective DOM reads depend on the
+physical plan. Prose normalization is not equivalent to exact subtree text.
 
 ### `public_v1.capture`
 
