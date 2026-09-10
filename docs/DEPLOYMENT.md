@@ -447,7 +447,9 @@ setup hook without a drain. An independently operator-paused scaler blocks an
 upgrade before any mutation; resolve that pause explicitly instead of letting a
 release undo it.
 
-Use Flux `upgrade.strategy.name: RetryOnFailure` (and the same install strategy),
+Use client-side Helm apply (`install.serverSideApply: false` and
+`upgrade.serverSideApply: disabled` in Flux) so temporary scaling does not conflict
+with SSA field ownership. Use Flux `upgrade.strategy.name: RetryOnFailure` (and the same install strategy),
 not automatic rollback/uninstall remediation. A failed drain blocks setup; a failed
 setup leaves old runtime stopped. Retrying reuses the pause markers safely.
 An image rollback cannot undo Alembic or catalogue changes. Destructive migrations
