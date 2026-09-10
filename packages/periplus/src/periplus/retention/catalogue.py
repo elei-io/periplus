@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict
 
 from periplus.materialization.registry import PROJECTIONS
 from periplus.platform.catalogue.client import Catalogue
+from periplus.platform.catalogue.operations import run_with_catalogue_retry
 from periplus.ingestion.objects.store import ObjectStore
 from periplus.retention.identities import write_claims, retire
 from periplus.retention import store as retirement_store
@@ -71,6 +72,12 @@ class RetentionCatalogue:
 
     def purge_observation(self, candidate: Candidate, *, now: datetime) -> bool:
         """Caller must first exclude the bounded current frontier ownership roots."""
+        return run_with_catalogue_retry(
+            lambda: self._purge_observation(candidate, now=now),
+            description="observation retirement", retry_unavailability=False,
+        )
+
+    def _purge_observation(self, candidate: Candidate, *, now: datetime) -> bool:
         identity = str(candidate.observation_id)
         with write_claims({"observation": [identity],
                            "content": [candidate.content_sha256] if candidate.content_sha256 else []},
@@ -127,6 +134,12 @@ class RetentionCatalogue:
         return [UUID(str(row[0])) for row in rows]
 
     def purge_request(self, identity: UUID, *, now: datetime, limit: int = 100) -> bool:
+        return run_with_catalogue_retry(
+            lambda: self._purge_request(identity, now=now, limit=limit),
+            description="request retirement", retry_unavailability=False,
+        )
+
+    def _purge_request(self, identity: UUID, *, now: datetime, limit: int) -> bool:
         if not 1 <= limit <= 100:
             raise ValueError("invalid request retirement bound")
         with write_claims({"collection": [str(identity)]}, allow_retired=True), self.catalogue.transaction():

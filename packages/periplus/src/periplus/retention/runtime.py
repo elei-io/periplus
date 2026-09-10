@@ -1,4 +1,5 @@
 """Janitor-owned bounded retention sweeps; no control transaction spans lake I/O."""
+from collections import Counter
 from datetime import UTC, datetime
 import logging
 from typing import Literal
@@ -11,6 +12,7 @@ from periplus.crawl.control.collections.models import CollectionRecord
 from periplus.crawl.runtime.frontier_models import AcquisitionRecord
 from periplus.platform.catalogue import catalogue_from_env
 from periplus.platform.config import get_int, get_str
+from periplus.platform.telemetry import event
 from periplus.retention.catalogue import RetentionCatalogue
 
 
@@ -77,13 +79,15 @@ class RetentionSweep:
             self.after_requests = requests[-1] if len(requests) == self.settings.batch_size else None
             self.after = ((plan.candidates[-1].finished_at, plan.candidates[-1].observation_id)
                           if len(plan.candidates) == self.settings.batch_size else None)
-            logging.info("Lake retention sweep: %s", report)
+            event("retention_sweep", mode=self.settings.mode, candidates=len(eligible),
+                  observations_retired=report["observations_retired"], requests_retired=report["requests_retired"],
+                  blocked_observations=len(blocked_observations), blocked_requests=len(blocked_requests))
             return report
 
 
 async def reclaim_pass(settings, objects, leases, after=None):
     """Existing NATS operation leases suppress duplicate exact-content reclamation."""
-    from periplus.platform.messaging.leases import operation_leases, OperationLeaseLost
+    from periplus.platform.messaging.leases import operation_leases, OperationLeaseLost, OperationLeaseUnavailable
     if settings.mode != "purge":
         return 0, after
 
@@ -91,21 +95,29 @@ async def reclaim_pass(settings, objects, leases, after=None):
         from periplus.retention.store import candidates as pending_objects
         return pending_objects(settings.batch_size, after)
     rows = await bounded_call(candidates)
-    hashes = tuple(row[0] for row in rows)
+    counts = Counter(row[0] for row in rows)
     cursor = (rows[-1][1], rows[-1][2]) if len(rows) == settings.batch_size else None
-    if not hashes:
-        return 0, cursor
-    async with operation_leases(leases, [f"content:{value}" for value in hashes], phase="ingestion", acquire_timeout=0) as guard:
-        def check():
-            if guard.lost:
-                raise OperationLeaseLost("raw object reclamation lost ownership")
+    removed = deferred = 0
+    for content_hash, limit in counts.items():
+        try:
+            async with operation_leases(leases, [f"content:{content_hash}"], phase="ingestion", acquire_timeout=0) as guard:
+                def check():
+                    if guard.lost:
+                        raise OperationLeaseLost("raw object reclamation lost ownership")
 
-        def reclaim():
-            with catalogue_from_env(threads=1, memory_limit="512MB") as catalogue:
-                return RetentionCatalogue(catalogue).reclaim_objects(objects, now=datetime.now(UTC),
-                    grace_seconds=settings.object_grace_seconds, limit=settings.batch_size,
-                    content_hashes=hashes, check_ownership=check)
-        return await bounded_call(reclaim), cursor
+                def reclaim():
+                    with catalogue_from_env(threads=1, memory_limit="512MB") as catalogue:
+                        return RetentionCatalogue(catalogue).reclaim_objects(objects, now=datetime.now(UTC),
+                            grace_seconds=settings.object_grace_seconds, limit=limit,
+                            content_hashes=(content_hash,), check_ownership=check)
+                removed += await bounded_call(reclaim)
+        except OperationLeaseUnavailable:
+            # The keyset wraps on later sweeps; a publisher must not block other content.
+            deferred += limit
+            continue
+    if rows:
+        event("retention_reclamation", candidates=len(rows), deferred=deferred, removed=removed)
+    return removed, cursor
 
 
 async def bounded_call(operation):

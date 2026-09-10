@@ -254,14 +254,9 @@ async def operation_leases(
                     continue
                 if lost.is_set():
                     break
-                try:
-                    granted = await _try_acquire(
-                        bucket, phase=phase, operation_id=operation_id, owner=owner
-                    )
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    granted = False
+                granted = await _try_acquire(
+                    bucket, phase=phase, operation_id=operation_id, owner=owner
+                )
                 if granted:
                     acquired.append(operation_id)
                     continue

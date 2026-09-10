@@ -82,8 +82,13 @@ def run_with_catalogue_retry(
     *,
     description: str,
     on_conflict: Callable[[], None] | None = None,
+    retry_unavailability: bool = True,
 ) -> _T:
-    """Bound local retries so durable delivery can resume after failure."""
+    """Bound local retries so durable delivery can resume after failure.
+
+    Destructive callers can disable unavailability retries when an uncertain
+    commit must retain its claim instead of starting another attempt.
+    """
 
     maximum_attempts = CATALOGUE_OPERATION_MAX_ATTEMPTS
     delay = CATALOGUE_OPERATION_RETRY_INITIAL_SECONDS
@@ -108,7 +113,7 @@ def run_with_catalogue_retry(
                 )
             return result
         except Exception as exc:
-            if is_retryable_catalogue_unavailability(exc):
+            if retry_unavailability and is_retryable_catalogue_unavailability(exc):
                 unavailability_failures += 1
                 if unavailability_failures >= maximum_attempts:
                     raise

@@ -179,3 +179,18 @@ current progress and final immutable outcome counts without retaining capture pa
 They disappear when the request is handed off to immutable history. The one-hour grace
 also preserves the supported recent-result reuse window; no database-size target drives
 cleanup. Stored research evidence and its retention policy are unchanged.
+
+## Contention and failure recovery
+
+Observation and request retirement retry definite transaction rollbacks under fresh
+exact claims and a fresh transaction, rechecking protection on each attempt. The
+shared five-attempt backoff applies; exhaustion remains a failed sweep. Ambiguous
+storage/commit failures are not retried in that call and retain their claims.
+
+Raw reclamation acquires one content lease at a time within the bounded candidate
+batch. An active publisher defers only its content; publication-claim cleanup also
+skips busy identities. Keyset scans wrap so deferred work is revisited. Duplicate
+content shares one lease, and per-content deletion limits sum to the original batch
+size. Lease loss and infrastructure errors remain failures, not busy skips.
+Structured `retention_sweep` and `retention_reclamation` events record counts
+without publishing object keys or observation identities.
