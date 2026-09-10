@@ -84,8 +84,9 @@ bodies/headers and console recording remain off. Review selectors when adding
 surfaces. Replay is for surrounding navigation, not reading user work.
 
 For an internal production browser, visit `/?analytics_test=1` once. The SDK sets
-`$internal_or_test_user=true` on that anonymous person, making their events fall
-into the existing exclusion cohort. This also excludes their later visits until
+`$internal_or_test_user=true` on events and that anonymous person. Project filters
+exclude the event flag directly (including the first personless pageview) and the
+person flag, alongside the existing exclusion cohort. This also excludes their later visits until
 browser identity is reset. Use it in each test browser/device; the query parameter
 is not sent as a URL property. The cohort also matches identified `@elei.io` users.
 
