@@ -24,6 +24,19 @@ class HelmScalingTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return [document for document in yaml.safe_load_all(result.stdout) if document]
 
+    def test_routine_upgrades_do_not_run_setup_or_stop_runtime(self):
+        docs = self.render()
+        jobs = [d for d in docs if d['kind'] == 'Job']
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]['metadata']['annotations']['helm.sh/hook'], 'pre-install')
+        for deployment in (d for d in docs if d['kind'] == 'Deployment'):
+            if deployment['metadata']['name'].endswith('-janitor'):
+                continue
+            self.assertEqual(deployment['spec']['strategy'], {
+                'type': 'RollingUpdate',
+                'rollingUpdate': {'maxUnavailable': 0, 'maxSurge': 1},
+            })
+
     def test_upgrade_hooks_drain_before_setup_and_use_only_release_scoped_permissions(self):
         docs = self.render({'upgradeCoordination': {'enabled': True}})
         jobs = {d['metadata']['name'].rsplit('-', 1)[-1]: d for d in docs if d['kind'] == 'Job'}
