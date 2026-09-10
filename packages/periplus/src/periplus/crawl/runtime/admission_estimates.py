@@ -7,7 +7,6 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
 
 from periplus.crawl.control.collections.models import CollectionRecord
-from periplus.crawl.runtime.frontier_models import AcquisitionRecord
 from periplus.crawl.runtime.start_estimates import StartEstimate, observed_range
 
 
@@ -37,10 +36,6 @@ def estimate_admission(session, record, control, *, workers, now):
         return None, 'first_admission_complete'
     if timing.policy_version != control.policy_version:
         return None, 'admission_controls_changed'
-    if control.pending_count >= control.admission_limit or control.interest_count >= control.interest_limit:
-        return None, 'frontier_capacity_limits_estimation'
-    if session.scalar(select(func.count()).select_from(AcquisitionRecord)) >= control.acquisition_limit:
-        return None, 'retained_capacity_limits_estimation'
     # Selection/admission continues while browser dependencies are unavailable.
     # Recent process presence is relevant here; dispatch readiness is not.
     if (workers is None or workers.state != 'observed' or not workers.reported_workers

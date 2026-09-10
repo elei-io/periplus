@@ -165,3 +165,17 @@ scan retries after one second; a completed scan uses `PERIPLUS_JANITOR_INTERVAL_
 hot-looping. The `frontier_cleanup` event reports batch count, removed collections and
 acquisitions, and whether scanning remains. This cadence does not alter research-data
 retention, crawler budgets, or LakeDucktor's physical cleanup policy.
+
+Acquisition cleanup checks unfinished interests rather than the parent request's status.
+Once all interests have finished selection/cancellation, navigation is released, and
+observation/lineage receipts are committed, janitor clears those interests' execution
+references/context and deletes the acquisition/outbox payload. Work shared by multiple
+requests remains pinned until every unfinished dependency completes. Compaction touches
+at most 512 interests per transaction and resumes partial work before moving on.
+
+Completed interests retain URL deduplication, mode, page-budget state, terminal status
+and ingestion confirmation while the request is active. These small records preserve
+current progress and final immutable outcome counts without retaining capture payloads.
+They disappear when the request is handed off to immutable history. The one-hour grace
+also preserves the supported recent-result reuse window; no database-size target drives
+cleanup. Stored research evidence and its retention policy are unchanged.

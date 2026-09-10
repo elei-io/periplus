@@ -30,7 +30,7 @@ and capacity; this example must be reviewed when those change.
    wait on HelmRelease readiness, which would create a dependency cycle. The hook
    is deleted after success; retain its logs through normal logging.
 5. Keep ingress private. With crawler replicas still zero, use the admin UI's
-   frontier controls to set `dispatch_limit=2`, `captures_per_minute=10` and
+   frontier controls to set `dispatch_limit=2`, a suitable `capture_timeout_ms`, and
    `paused=true`. The underlying API is `GET /frontier/controls`, followed by
    `PUT /frontier/controls` with `{expected_version: policy_version, settings: ...}`.
    Preserve the other returned settings. Version conflicts require a fresh GET.

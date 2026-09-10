@@ -7,6 +7,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from periplus.crawl.control.collections.schemas import CollectionSpec
+from periplus.crawl.runtime.frontier_models import FrontierControlRecord
 from periplus.operations.access.models import PublicAccessRecord
 from periplus.operations.access.schemas import AccessPolicy
 from periplus.operations.access.service import AccessDenied, AccessStore
@@ -17,11 +18,13 @@ class PublicAccessTests(unittest.TestCase):
         self.engine = create_engine('sqlite://')
         self.addCleanup(self.engine.dispose)
         PublicAccessRecord.__table__.create(self.engine)
+        FrontierControlRecord.__table__.create(self.engine)
         self.sessions = sessionmaker(self.engine, expire_on_commit=False)
         self.policy = AccessPolicy()
         self.policy.sql.requests = 1
         with self.sessions.begin() as session:
             session.add(PublicAccessRecord(id=1, configuration=self.policy.model_dump(mode='json')))
+            session.add(FrontierControlRecord(id=1))
         self.store = AccessStore(self.sessions)
         self.now = datetime(2026, 9, 8, tzinfo=UTC)
 
@@ -72,6 +75,36 @@ class PublicAccessTests(unittest.TestCase):
         with self.sessions() as session:
             self.assertEqual(session.get(PublicAccessRecord, 1).windows, {})
         self.store.admit('crawl', specification=CollectionSpec(), now=self.now)
+
+    def test_queue_threshold_closes_at_equality_and_reopens_below(self):
+        self.policy.crawl.queue_limit = 2
+        self.store.save(self.policy, 1)
+        with self.sessions.begin() as session:
+            session.get(FrontierControlRecord, 1).pending_count = 2
+        self.assertFalse(self.store.read().crawl_admission.accepting)
+        with self.assertRaises(AccessDenied) as caught:
+            self.store.admit('crawl', specification=CollectionSpec(), now=self.now)
+        self.assertEqual(caught.exception.detail['code'], 'crawl_queue_full')
+        with self.sessions() as session:
+            self.assertEqual(session.get(PublicAccessRecord, 1).windows, {})
+        self.store.admit('sql', now=self.now)
+        with self.sessions.begin() as session:
+            session.get(FrontierControlRecord, 1).pending_count = 1
+        self.assertTrue(self.store.read().crawl_admission.accepting)
+        self.store.admit('crawl', specification=CollectionSpec(), now=self.now)
+
+    def test_queue_threshold_can_be_disabled_without_disabling_manual_pause(self):
+        self.policy.crawl.queue_limit = None
+        self.store.save(self.policy, 1)
+        with self.sessions.begin() as session:
+            session.get(FrontierControlRecord, 1).pending_count = 100000
+        self.assertTrue(self.store.read().crawl_admission.accepting)
+        self.store.admit('crawl', specification=CollectionSpec(), now=self.now)
+        self.policy.crawl.enabled = False
+        self.store.save(self.policy, 2)
+        self.assertFalse(self.store.read().crawl_admission.accepting)
+        with self.assertRaises(AccessDenied):
+            self.store.admit('crawl', specification=CollectionSpec(), now=self.now)
 
     def test_defaults_must_be_allowed_and_options_unique(self):
         for change in ({'page_budgets': [5]}, {'max_depths': [0, 0, 1]}, {'retention_seconds': [0, None]}):

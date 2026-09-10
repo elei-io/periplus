@@ -42,6 +42,7 @@ export function AccessPage() {
       if (!response.ok) throw await apiErrorFromResponse(response)
       return response.json() as Promise<AccessPolicy>
     },
+    refetchInterval: 5000,
   })
   return (
     <div className="w-full space-y-5">
@@ -124,6 +125,7 @@ function AccessForm({
             expected_version: policy.version,
           } as Record<string, unknown>
           delete body.version
+          delete body.crawl_admission
           for (const [key] of features)
             body[key] = {
               ...policy[key],
@@ -148,6 +150,8 @@ function AccessForm({
               String(form.get("default_retention_seconds"))
             ),
           }
+          const queueLimit = String(form.get("crawl.queue_limit") ?? "").trim()
+          ;(body.crawl as AccessPolicy["crawl"]).queue_limit = queueLimit ? integer("crawl.queue_limit") : null
           mutation.mutate(body)
         } catch (error) {
           toast.error(extractApiError(error))
@@ -225,6 +229,17 @@ function AccessForm({
             )}
             {key === "crawl" && (
               <div className="grid gap-4 sm:grid-cols-2">
+                <label>
+                  Pause new public coverage requests at queue size
+                  <Input name="crawl.queue_limit" type="number" min={1} max={1000000000} step={1}
+                    defaultValue={policy.crawl.queue_limit ?? ""} placeholder="Unlimited" />
+                </label>
+                <p className="text-sm text-muted-foreground">
+                  Queued and retrying acquisitions: {policy.crawl_admission.pending_acquisitions.toLocaleString()}.
+                  New submissions {policy.crawl_admission.accepting ? "are open" : "are paused"}.
+                  Leave blank for unlimited. Existing requests and admin submissions continue;
+                  public submissions reopen automatically below the threshold.
+                </p>
                 {(
                   [
                     ["page_budgets", "default_page_budget", "Page budget"],

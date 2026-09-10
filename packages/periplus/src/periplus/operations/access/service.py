@@ -3,6 +3,7 @@ import math
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 from periplus.crawl.control.collections.schemas import CollectionSpec
+from periplus.crawl.runtime.frontier_models import FrontierControlRecord
 from fastapi import HTTPException
 from periplus.operations.access.models import PublicAccessRecord
 from periplus.operations.access.schemas import AccessPolicy, AccessView, Capability
@@ -15,12 +16,28 @@ class AccessStore:
     def __init__(self, sessions: sessionmaker[Session]):
         self.sessions = sessions
 
+    @staticmethod
+    def _pending(session):
+        pending = session.scalar(select(FrontierControlRecord.pending_count).where(FrontierControlRecord.id == 1))
+        if pending is None:
+            raise AccessDenied("access_unavailable", "Crawler queue status is unavailable.", 503)
+        return pending
+
+    @classmethod
+    def _view(cls, session, row):
+        policy = AccessPolicy.model_validate(row.configuration)
+        pending = cls._pending(session)
+        return AccessView(**policy.model_dump(), version=row.version, crawl_admission={
+            "pending_acquisitions": pending,
+            "accepting": policy.crawl.enabled and (policy.crawl.queue_limit is None or pending < policy.crawl.queue_limit),
+        })
+
     def read(self) -> AccessView:
         with self.sessions() as session:
             row = session.get(PublicAccessRecord, 1)
             if row is None:
                 raise AccessDenied("access_unavailable", "Public access settings are unavailable.", 503)
-            return AccessView(**row.configuration, version=row.version)
+            return self._view(session, row)
 
     def save(self, policy: AccessPolicy, expected_version: int) -> AccessView:
         with self.sessions.begin() as session:
@@ -32,7 +49,7 @@ class AccessStore:
             row.configuration = policy.model_dump(mode="json")
             row.version += 1
             # Do not reset consumed capacity when an operator edits the policy.
-            return AccessView(**row.configuration, version=row.version)
+            return self._view(session, row)
 
     def admit(self, capability: Capability, *, specification: CollectionSpec | None = None, consume: bool = True, now: datetime | None = None) -> None:
         with self.sessions.begin() as session:
@@ -43,6 +60,8 @@ class AccessStore:
             rule = getattr(policy, capability)
             if not rule.enabled:
                 raise AccessDenied("feature_disabled", f"Public {capability} is currently disabled.")
+            if capability == "crawl" and rule.queue_limit is not None and self._pending(session) >= rule.queue_limit:
+                raise AccessDenied("crawl_queue_full", "New coverage requests are temporarily paused while the crawler catches up. Accepted requests continue.", 429, 5)
             if specification is not None:
                 if (specification.page_limit not in policy.crawl.page_budgets
                         or specification.max_depth not in policy.crawl.max_depths

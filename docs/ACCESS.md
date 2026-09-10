@@ -18,7 +18,7 @@ Crawl policy also specifies allowed page budgets, depths and retention periods, 
 an allowed default. The API validates submitted choices. An existing request identity can
 be replayed with identical intent without a new allowance, even while submissions are
 disabled. Admin creation and scheduled executions bypass public admission controls but
-retain ordinary frontier budgets, pacing and worker limits. Disabling public access does
+retain per-request budgets, domain policies and worker limits. Disabling public access does
 not cancel admitted work or ongoing streams.
 
 The public UI fetches `/api/access`, refreshes every five seconds and on focus, disables
@@ -58,3 +58,19 @@ reported healthy. A one-page admin request passed capture, ingestion, complete m
 public request visibility and public SQL checks. The fresh lake retains that one smoke-test
 observation. Catalogue validation and the admin dev route on port 5173 passed; crawl,
 assistant and SQL public capabilities were restored to enabled.
+
+## Public coverage queue threshold
+
+The admin public-access page exposes `crawl.queue_limit`: pause new public coverage
+requests when queued plus retrying acquisitions reach this number. The default is
+10,000; null means unlimited. Dispatched acquisitions do not count. This is a public
+submission threshold, not a hard queue bound: already accepted requests keep discovering
+links and may grow the queue beyond it. Admin requests and schedules bypass this gate.
+
+`GET /access` includes live `crawl_admission.pending_acquisitions` and `accepting`.
+This status is calculated from current queue state; it is not stored in the policy.
+At or above the threshold, new public creation returns HTTP 429, code `crawl_queue_full`,
+and Retry-After 5 without consuming a public rate-window unit. It reopens automatically
+below the threshold. Existing request IDs can still be retried idempotently. The public
+UI polls availability and explains the temporary pause; the API enforces it independently
+of the UI. Public requests-per-window limits remain separate.

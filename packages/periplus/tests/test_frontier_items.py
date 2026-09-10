@@ -132,11 +132,6 @@ class FrontierItemTests(unittest.TestCase):
         acquisition = self.admit(identity)
         later = datetime.now(UTC) + timedelta(minutes=2)
         with self.sessions.begin() as session:
-            session.get(FrontierControlRecord, 1).next_dispatch_at = later
-        view = acquisition_view(self.sessions, acquisition)
-        self.assertEqual(view.waiting_reason, "global_pacing")
-        self.assertEqual(view.eligibility_not_before, later)
-        with self.sessions.begin() as session:
             session.get(FrontierControlRecord, 1).paused = True
         view = acquisition_view(self.sessions, acquisition)
         self.assertEqual(view.waiting_reason, "crawler_paused")

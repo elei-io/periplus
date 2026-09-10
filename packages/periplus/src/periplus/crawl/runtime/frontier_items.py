@@ -119,8 +119,6 @@ def _view(record: AcquisitionRecord, callers: list[Caller], control: FrontierCon
             and record.domain_policy_id == policy_id and record.domain_policy_version == version else None)
         if domain_floor is not None:
             eligible = max(eligible, domain_floor)
-        if control.next_dispatch_at is not None:
-            eligible = max(eligible, _aware(control.next_dispatch_at))
         waiting = ("crawler_paused" if control.paused else None)
         if waiting is None:
             if policy_id is None:
@@ -135,8 +133,6 @@ def _view(record: AcquisitionRecord, callers: list[Caller], control: FrontierCon
                 waiting = "domain_capacity"
             elif control.active_count >= control.dispatch_limit:
                 waiting = "dispatch_capacity"
-            elif control.next_dispatch_at is not None and _aware(control.next_dispatch_at) > now:
-                waiting = "global_pacing"
             else:
                 waiting = "awaiting_scheduler_evaluation"
     elif record.status == "dispatched":

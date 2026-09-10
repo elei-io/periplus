@@ -89,7 +89,7 @@ class PolicyTests(unittest.TestCase):
         app.add_middleware(ApiAccessMiddleware)
         app.include_router(access_router)
         app.state.frontier_sessions = Mock()
-        policy = AccessPolicy().model_dump() | {'version': 1}
+        policy = AccessPolicy().model_dump() | {'version': 1, 'crawl_admission': {'pending_acquisitions': 0, 'accepting': True}}
         with patch.dict(os.environ, PERIPLUS_ADMIN_API_TOKEN='admin', PERIPLUS_PUBLIC_API_TOKEN='public', PERIPLUS_QUERY_API_TOKEN='query'):
             with patch('periplus.operations.api.access.AccessStore.read', return_value=policy), TestClient(app) as client:
                 headers = {'Authorization': 'Bearer query'}

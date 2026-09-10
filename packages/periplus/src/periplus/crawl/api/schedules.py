@@ -4,7 +4,6 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from periplus.crawl.control.schedules.schemas import DefinitionInput, DefinitionView, ScheduleInput, ScheduleView
 from periplus.crawl.control.schedules.service import ScheduleStore, VersionConflict
-from periplus.crawl.runtime.frontier_store import AdmissionDeferred
 
 router = APIRouter(prefix="/request-definitions", tags=["Request schedules"])
 
@@ -18,8 +17,6 @@ async def call(request, method, *args, **kwargs):
         raise HTTPException(404, "Definition or schedule not found") from exc
     except VersionConflict as exc:
         raise HTTPException(409, str(exc)) from exc
-    except AdmissionDeferred as exc:
-        raise HTTPException(429, "Request admission is at capacity") from exc
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
 

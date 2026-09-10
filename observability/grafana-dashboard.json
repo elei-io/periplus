@@ -327,6 +327,62 @@
           "legendFormat": "{{service}} {{operation}} {{outcome}} {{instance}}"
         }
       ]
+    },
+    {
+      "id": 15,
+      "title": "Crawler queue (queued + retries)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${prometheus}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 56,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "max(periplus_frontier_pending_acquisitions)",
+          "refId": "A",
+          "legendFormat": "Crawler queue (queued + retries)"
+        }
+      ],
+      "description": "Shared frontier state; max avoids counting API replicas twice.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        }
+      }
+    },
+    {
+      "id": 16,
+      "title": "Oldest queued acquisition",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${prometheus}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 56,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "max(periplus_frontier_oldest_pending_seconds)",
+          "refId": "A",
+          "legendFormat": "Oldest queued acquisition"
+        }
+      ],
+      "description": "Shared frontier state; max avoids counting API replicas twice.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      }
     }
   ]
 }

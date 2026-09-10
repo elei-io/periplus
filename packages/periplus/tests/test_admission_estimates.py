@@ -47,11 +47,6 @@ class AdmissionEstimateTests(unittest.TestCase):
         view, = collection_views(self.sessions, identity=identity, workers=blocked)
         self.assertIsNotNone(view.admission.estimate)
         with self.sessions.begin() as session:
-            session.get(FrontierControlRecord, 1).admission_limit = 1
-        view, = collection_views(self.sessions, identity=identity, workers=workers)
-        self.assertIsNone(view.admission.estimate)
-        self.assertEqual(view.admission.estimate_unavailable_reason, 'frontier_capacity_limits_estimation')
-        with self.sessions.begin() as session:
             session.get(FrontierControlRecord, 1).policy_version += 1
         view, = collection_views(self.sessions, identity=identity, workers=workers)
         self.assertEqual(view.admission.estimate_unavailable_reason, 'admission_controls_changed')

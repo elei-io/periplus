@@ -99,11 +99,12 @@ def collection_views(sessions, *, identity: UUID | None = None, status: str | No
                                         else "selecting" if state.selected is None else "validating")
         if not views:
             return []
+        outcome_status = func.coalesce(AcquisitionRecord.status, InterestRecord.completed_status)
         rows = session.execute(select(InterestRecord.collection_id, InterestRecord.status,
-                                      InterestRecord.mode, AcquisitionRecord.status, func.count()).join(
+                                      InterestRecord.mode, outcome_status, func.count()).outerjoin(
             AcquisitionRecord, AcquisitionRecord.id == InterestRecord.acquisition_id,
         ).where(InterestRecord.collection_id.in_(views)).group_by(
-            InterestRecord.collection_id, InterestRecord.status, InterestRecord.mode, AcquisitionRecord.status))
+            InterestRecord.collection_id, InterestRecord.status, InterestRecord.mode, outcome_status))
         for collection_id, interest_status, mode, acquisition_status, count in rows:
             view = views[collection_id]
             if interest_status == "queued":
@@ -122,9 +123,9 @@ def collection_views(sessions, *, identity: UUID | None = None, status: str | No
             view.reused_pages += count if mode == "reused" else 0
         for collection_id, count in session.execute(select(
             InterestRecord.collection_id, func.count(),
-        ).join(AcquisitionRecord, AcquisitionRecord.id == InterestRecord.acquisition_id).where(
+        ).outerjoin(AcquisitionRecord, AcquisitionRecord.id == InterestRecord.acquisition_id).where(
             InterestRecord.collection_id.in_(views),
-            AcquisitionRecord.evidence_snapshot.is_not(None),
+            (AcquisitionRecord.evidence_snapshot.is_not(None) | InterestRecord.completed_evidence.is_(True)),
             InterestRecord.status.in_(("selecting", "settled")),
         ).group_by(InterestRecord.collection_id)):
             views[collection_id].ingested_pages = count

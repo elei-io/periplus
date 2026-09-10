@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from periplus.crawl.control.collections.arrivals import CollectionArrivalsPage
 from periplus.crawl.control.collections.history import CollectionHistoryPage, HistoricalCollection, HistoryUnavailable
 from periplus.crawl.control.collections.schemas import CollectionExecutionSpec, CollectionSpec
-from periplus.crawl.runtime.frontier_store import AdmissionDeferred, CollectionUnavailable
+from periplus.crawl.runtime.frontier_store import CollectionUnavailable
 from periplus.crawl.runtime.frontier_items import CollectionItemsPage, collection_items, enrich_readiness
 from periplus.crawl.runtime.frontier_views import CollectionView, collection_views, enrich_collection_readiness
 from periplus.crawl.runtime.selection_sql import validate_follow_sql
@@ -78,8 +78,6 @@ async def create(payload: CreateCollection, request: Request):
             await asyncio.to_thread(request.app.state.frontier.create_collection, payload.id, spec, priority=payload.priority)
         elif CollectionExecutionSpec.model_validate(existing.spec).model_dump(mode="json", exclude={"deadline_at"}) != spec.model_dump(mode="json"):
             raise ValueError("collection identity reused with different intent")
-    except AdmissionDeferred as exc:
-        raise HTTPException(429, "Collection admission is at capacity; retry later.", headers={"Retry-After": "15"}) from exc
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     views = await _views(request, identity=payload.id)
