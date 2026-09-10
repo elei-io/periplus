@@ -1,5 +1,5 @@
 /** Consume the launch intent before starting work, including under Strict Mode. */
-export function consumeDiscoveryLaunch() {
+export function consumeQueryLaunch() {
   const url = new URL(window.location.href)
   if (url.searchParams.get("run") !== "1") return false
   url.searchParams.delete("run")

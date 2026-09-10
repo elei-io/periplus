@@ -18,11 +18,11 @@ export const metadata: Metadata = {
   metadataBase: publicOrigin ? new URL(publicOrigin) : undefined,
   robots: { index: Boolean(publicOrigin), follow: true },
   title: {
-    default: "Periplus — a shared web databank",
+    default: "Periplus — research websites in one place",
     template: "%s · Periplus",
   },
   description:
-    "A shared web databank. Explore available sources, query text, links, and HTML with SQL, and define your own datasets.",
+    "Find what websites say, where they link, and how their pages compare. Research sources shared by the community and add websites for others to explore.",
 }
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

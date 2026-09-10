@@ -13,7 +13,7 @@ export default async function SqlPage({ searchParams }: PageProps<"/sql">) {
   const mode = params.mode === "experimental" ? "experimental" : "stable"
   const parameters = typeof params.parameters === "string" ? params.parameters : undefined
   return <main className="discovery-workspace">
-    <header className="flex flex-wrap items-baseline justify-between gap-2 py-6"><h1 className="text-xl font-medium">SQL console</h1><p className="text-sm text-muted-foreground">Explore the catalogue, write SQL, and inspect results.</p></header>
+    <header className="flex flex-wrap items-baseline justify-between gap-2 py-6"><h1 className="text-xl font-medium">SQL console</h1><p className="text-sm text-muted-foreground">Query stored page text, links and HTML structure. Inspect results and export rows as CSV.</p></header>
     <QueryWorkbench key={JSON.stringify([sql, parameters, mode])} initialMode={mode} initialSql={sql} initialParameters={parameters} autoRun={params.run === "1"} />
   </main>
 }

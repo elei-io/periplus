@@ -12,7 +12,6 @@
   },
   "dependencies": {
     "@ai-sdk/openai": "^4.0.60",
-    "@ai-sdk/react": "^4.0.96",
     "@base-ui/react": "^1.7.0",
     "@codemirror/lang-sql": "^6.10.0",
     "@codemirror/language": "^6.12.4",

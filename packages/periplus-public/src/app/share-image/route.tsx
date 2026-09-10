@@ -10,10 +10,10 @@ export function GET() {
         <span>periplus</span>
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-        <div style={{ fontSize: 76, lineHeight: 1.05, maxWidth: 1000 }}>Query the web as a dataset.</div>
-        <div style={{ fontSize: 28, color: "#4d665b" }}>Shared web data. Your own questions. Inspectable SQL.</div>
+        <div style={{ fontSize: 76, lineHeight: 1.05, maxWidth: 1000 }}>Research websites in one place.</div>
+        <div style={{ fontSize: 28, color: "#4d665b" }}>Find mentions. Follow links. Compare sources.</div>
       </div>
-      <div style={{ fontSize: 23 }}>A shared web databank</div>
+      <div style={{ fontSize: 23 }}>Web research, built together</div>
     </div>,
     { width: 1200, height: 630 },
   )

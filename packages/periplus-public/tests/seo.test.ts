@@ -22,7 +22,7 @@ test("workspace inputs, including empty or repeated parameters, are not indexabl
 })
 
 test("sitemap includes clean public routes only and unconfigured builds are noindex", () => {
-  assert.deepEqual(indexablePaths, ["/", "/about", "/docs", "/discover", "/build", "/sql", "/coverage"])
+  assert.deepEqual(indexablePaths, ["/", "/about", "/docs", "/sql", "/coverage"])
   const metadata = pageMetadata("/docs", "Documentation", "Read the documentation")
   assert.deepEqual(metadata.robots, { index: Boolean(publicOrigin), follow: true })
   assert.equal(metadata.alternates?.canonical, publicOrigin ? `${publicOrigin}/docs` : undefined)

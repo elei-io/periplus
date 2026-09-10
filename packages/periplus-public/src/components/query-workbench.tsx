@@ -23,11 +23,10 @@ import { QueryExport } from "@/components/query-export"
 import { QueryTable } from "@/components/query-table"
 import { useQueryExecution } from "@/hooks/use-query-execution"
 import Link from "next/link"
-import { consumeDiscoveryLaunch } from "@/lib/discovery-launch"
+import { consumeQueryLaunch } from "@/lib/query-launch"
 import { extractApiError } from "@/lib/api"
 import { useSqlAssistant } from "@/hooks/use-sql-assistant"
 import { SqlAssistant } from "@/components/sql-assistant"
-import { sqlBuildLink } from "@/lib/workspace-links"
 import { captureAnalytics } from "@/lib/analytics"
 
 const SqlEditor = dynamic(() => import("@/components/sql-editor").then(module => module.SqlEditor), { ssr: false, loading: () => <div className="sql-loading">Loading SQL editor…</div> })
@@ -46,7 +45,7 @@ export function QueryWorkbench({ initialSql, initialParameters, autoRun = false,
   } : null, draft => { setSql(draft.sql); setParameters(draft.parameters) }, mode)
   const { mutate } = query
   useEffect(() => {
-    if (!query.access.enabled || !autoRun || !initialSql?.trim() || !consumeDiscoveryLaunch()) return
+    if (!query.access.enabled || !autoRun || !initialSql?.trim() || !consumeQueryLaunch()) return
     try {
       const values: unknown = JSON.parse(initialParameters ?? "[]")
       if (!Array.isArray(values)) throw new Error("Parameters must be a JSON array.")
@@ -84,7 +83,7 @@ export function QueryWorkbench({ initialSql, initialParameters, autoRun = false,
     } catch (error) { toast.error(extractApiError(error)) }
   }
   return <section aria-label="SQL workspace" className="sql-workbench flex flex-col gap-4">
-    <div className="grid items-start gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
+    <div className={assistant.open ? "grid items-start gap-4 lg:grid-cols-[220px_minmax(0,1fr)] xl:grid-cols-[220px_minmax(0,1fr)_380px]" : "grid items-start gap-4 lg:grid-cols-[280px_minmax(0,1fr)]"}>
       <SchemaExplorer onLoadSql={loadSql} />
       <div id="explore" className="flex min-w-0 scroll-mt-6 flex-col gap-4">
         <Card size="sm" className="sql-input-surface gap-0 py-0">
@@ -101,12 +100,11 @@ export function QueryWorkbench({ initialSql, initialParameters, autoRun = false,
             </DropdownMenuContent>
           </DropdownMenu></div><CardDescription>{query.access.data ? `${query.access.data.sql.max_rows.toLocaleString()} rows / ${query.access.data.sql.max_result_bytes / (1024 * 1024)} MiB · ${query.access.data.sql.max_duration_seconds}s limit` : query.access.message === "Checking availability…" ? "Loading query limits…" : "Query limits unavailable"}</CardDescription></div>
           {mode === "experimental" && <CardDescription className="px-3 pb-3">Experimental execution. Same SQL semantics; performance may vary.</CardDescription>}
-          <SqlAssistant assistant={assistant} />
         </Card>
         <Card size="sm" aria-label="Query output" className="sql-output-surface min-h-72" aria-busy={query.isPending}>
           {query.data && <CardDescription className="px-3 py-2">{query.data.query_mode === "experimental" ? "Experimental" : "Stable"} result · {query.data.compiler_version}</CardDescription>}
           <Tabs defaultValue="results">
-            <div className="flex flex-wrap items-center justify-between gap-3 px-3"><TabsList variant="line" aria-label="Query output"><TabsTrigger value="results"><Table2 />Results</TabsTrigger><TabsTrigger value="plan">Execution plan</TabsTrigger></TabsList><div className="flex flex-wrap gap-2">{query.data && query.data.rows.length > 0 && <Button variant="outline" disabled={query.isPending} nativeButton={false} render={<Link href={sqlBuildLink(query.data)} target="_blank" rel="noopener noreferrer" />}>Use as dataset ↗</Button>}<QueryExport operationId={query.operationId} result={query.data} disabled={query.isPending} /></div></div>
+            <div className="flex flex-wrap items-center justify-between gap-3 px-3"><TabsList variant="line" aria-label="Query output"><TabsTrigger value="results"><Table2 />Results</TabsTrigger><TabsTrigger value="plan">Execution plan</TabsTrigger></TabsList><div className="flex flex-wrap gap-2"><QueryExport operationId={query.operationId} result={query.data} disabled={query.isPending} /></div></div>
             <div className="relative">
               <Separator />
               {query.isPending && <Progress value={null} aria-label="Executing query" className="query-progress absolute inset-x-0 top-0" />}
@@ -124,6 +122,7 @@ export function QueryWorkbench({ initialSql, initialParameters, autoRun = false,
           </Tabs>
         </Card>
       </div>
+      {assistant.open && <SqlAssistant assistant={assistant} />}
     </div>
   </section>
 }
