@@ -1,4 +1,4 @@
-CREATE OR REPLACE VIEW public_v1.html_metadata AS
+SELECT * FROM (
 WITH elements AS NOT MATERIALIZED (
     SELECT * FROM public_v1.html_element
     WHERE namespace = 'http://www.w3.org/1999/xhtml'
@@ -27,4 +27,5 @@ SELECT content_id, node_index, 'link_rel',
 FROM elements WHERE tag = 'link' AND map_contains(attributes, 'rel')
 UNION ALL
 SELECT content_id, node_index, 'html_attribute', 'lang', attributes['lang']
-FROM elements WHERE tag = 'html' AND map_contains(attributes, 'lang');
+FROM elements WHERE tag = 'html' AND map_contains(attributes, 'lang')
+) m WHERE content_id >= '0' AND content_id < '1';

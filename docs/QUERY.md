@@ -389,14 +389,18 @@ it is not a guarantee for unfiltered corpus queries or billion-row deployments.
 ### Metadata view validation (2026-09-08)
 
 Initial filtered validation found no schema or optimizer performance defect.
-html_metadata uses inlined primitive scans and UNION ALL, with an ordered text
-join only for titles. No compiler rewrite or materialization was added.
+The original html_metadata used inlined primitive scans and UNION ALL, with an
+ordered text join only for titles. No compiler rewrite or materialization was added.
 Selecting the book content hash used in the heading example returned 12 metadata
 rows in 0.21 seconds locally, including its title, description, language and raw
 relative stylesheet/icon URLs. EXPLAIN ANALYZE showed the exact content predicate
 on each primitive scan. This validates filtered on-demand access, not unfiltered
 corpus performance. Declaration, null/empty, repetition, multi-token rel and
 foreign-namespace behavior are covered by real HTML parser fixtures.
+
+The [title direct-text investigation](query-investigations/title-direct-text/README.md)
+uses the stored HTML title text to remove that reconstruction without changing
+metadata declarations or adding a compiler rewrite.
 
 ### Image view validation (2026-09-08)
 

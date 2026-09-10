@@ -1,4 +1,3 @@
-CREATE OR REPLACE VIEW public_v1.html_metadata AS
 WITH elements AS NOT MATERIALIZED (
     SELECT * FROM public_v1.html_element
     WHERE namespace = 'http://www.w3.org/1999/xhtml'
