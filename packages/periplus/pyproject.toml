@@ -13,7 +13,7 @@ dependencies = [
     "nats-py[nkeys]>=2.15.0",
     "playwright==1.55.0",
     "magika>=1.0,<2",
-    "psycopg[binary]>=3.2",
+    "psycopg[binary]>=3.3.5",
     "prometheus-client>=0.22",
     "pydantic>=2.13.5",
     "pytz>=2025.2",
