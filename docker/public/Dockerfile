@@ -25,6 +25,8 @@ ENV POSTHOG_PROJECT_ID=$POSTHOG_PROJECT_ID
 RUN --mount=type=secret,id=posthog_api_key \
     if [ -f /run/secrets/posthog_api_key ]; then export POSTHOG_API_KEY="$(cat /run/secrets/posthog_api_key)"; fi; \
     npm run build:public
+# Fail publishing if workspace pages were omitted from the Docker context.
+RUN node -e 'const routes = require("./packages/periplus-public/.next/server/app-paths-manifest.json"); for (const page of ["/discover/page", "/build/page", "/sql/page"]) { if (!routes[page]) throw new Error(`Missing public workspace: ${page}`); }'
 
 FROM node:24-alpine
 WORKDIR /app

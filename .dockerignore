@@ -10,7 +10,9 @@
 **/.pytest_cache
 **/.coverage
 **/.tmp
-**/build
+# Build artifacts live at the root or package root; src/app/build is a route.
+/build
+/packages/*/build
 **/dist
 **/node_modules
 
