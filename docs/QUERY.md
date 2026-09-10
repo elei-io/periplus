@@ -76,7 +76,7 @@ SQL preparation and execution remain in the separate Python
 
 Both operations accept SQL and positional parameters and use the same public SQL validation.
 Preparation binds and explains without executing the analytical query, returning SQL, parameters,
-a query ID, diagnostics, and a plan. Compiler `public-query-v7` applies the promoted
+a query ID, diagnostics, and a plan. Compiler `public-query-v8` applies the promoted
 optimizations documented below in both stable and experimental. Responses preserve
 the submitted SQL and parameters and identify applied rewrites.
 The execution-only row-limit wrapper remains a resource control. DuckDB performs native
@@ -833,11 +833,11 @@ console links preserve the selected mode with `mode=experimental`. Stable uses
 `/api/query/experimental/exec`, `/api/query/experimental/prep` and
 `/api/query/experimental/helpers`. The SQL assistant validates against the selected mode.
 
-Stable and experimental share compiler `public-query-v7`, with mode suffixes
+Stable and experimental share compiler `public-query-v8`, with mode suffixes
 `:stable` and `:experimental`. Both include the promoted
 `capture_heading_content_scope_v1` and `prose_scalar_before_capture_v1` optimizations.
-There are currently no experimental-only rules. New candidates must be added only
-on the experimental side of this shared baseline until explicitly promoted.
+Experimental additionally supports the execution-only selected-content rule below.
+New candidates remain experimental until explicitly promoted.
 
 `capture_heading_content_scope_v1` activates only for a conservative inner join of
 `capture` and `html_heading` with a single exact `capture.effective_url` equality,
@@ -895,3 +895,39 @@ The [promotion record](query-investigations/shared-query-baseline/README.md) lin
 the original frozen-snapshot evidence and records common-path activation tests.
 Existing research-only candidates remain research-only. Stable is now the normal
 optimized endpoint, while experimental remains available for future candidates.
+
+
+### Experimental selected-content execution
+
+`selected_content_scan_v1` resolves distinct non-null content IDs from a leading
+filtered capture CTE during execution, then passes one bound array to exact
+membership filters on HTML primitives and prose. Selection and extraction share
+the existing read transaction, admission slot and operation deadline. Prep binds
+and explains the original statement and reports `selected_content_available`;
+it never executes discovery. Execution reports the applied optimization and its
+actual extraction plan while preserving the submitted SQL and parameters.
+
+Initial grammar: one to four nonrecursive SELECT CTEs; the first directly projects
+capture columns including content_id, has a WHERE and no joins, aggregates or
+limit. Each subsequent SELECT block starts from that CTE. Heading, section,
+metadata and prose joins must preserve its content domain through ordinary inner
+or left joins, using content_id or a required equality to the driver content_id.
+Auxiliary CTE joins use capture_id. Reviewed deterministic expressions and literal
+or parameter UUID casts are supported; windows, correlated subqueries, arbitrary
+functions, computed driver keys and unsupported joins remain native. This does
+not cover an independent corpus-wide metadata aggregation CTE.
+
+Installed view definitions must match within the transaction. Complete document
+partitions are retained for section boundaries. Selection reads at most 100,001 capture-key rows to detect a 100,000-row
+collection bound, then deduplicates in bounded application memory (at most 100,000
+IDs and 8 MiB of UTF-8 key data). It does not add an unbounded DISTINCT aggregation
+before the selection limit. Duplicate captures count toward the input-row bound. If the collection bound is exceeded, execution reports
+`selected_content_bound` and uses the original SQL within the remaining deadline.
+These are collection safety bounds, not a latency-based eligibility heuristic.
+
+The acceptance priority is completion at bounded resources: modest slowdowns for
+broad selections are accepted, but correctness and resource limits are unchanged.
+[Investigation and evidence](query-investigations/request-scope/README.md) record
+both gains and the broad synthetic regression. Stable execution is unchanged;
+compiler v8 identifies this revision in both modes. No persistent tables, global
+DuckDB optimizer settings, service limits or deployment topology are changed.

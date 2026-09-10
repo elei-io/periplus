@@ -27,7 +27,7 @@ from periplus.query.validation import _bounded_query, _one_statement
 from periplus.operations.access.schemas import QueryLimits
 from periplus.operations.query_history.schemas import PreparationEvidence
 
-COMPILER_VERSION = "public-query-v7"
+COMPILER_VERSION = "public-query-v8"
 
 class QueryMode(StrEnum):
     STABLE = "stable"
@@ -178,6 +178,7 @@ class QueryService:
             else:
                 plan_sql = "EXPLAIN " + payload.sql
             plan = "\n".join(str(row[-1]) for row in d.execute(plan_sql, payload.parameters).fetchall())
+            execution_parameters = payload.parameters
             optimizations = []
             # Promoted baseline shared by both modes. Future candidates are
             # explicitly gated on EXPERIMENTAL after this common selection.
@@ -197,6 +198,32 @@ class QueryService:
                     executable = _bounded_query(scope.sql, max_rows=limits.max_rows)
                     plan = "\n".join(str(row[-1]) for row in d.execute("EXPLAIN " + scope.sql, payload.parameters).fetchall())
                     optimizations = [optimization]
+            if self.mode == QueryMode.EXPERIMENTAL and scope is None:
+                from periplus.query.selected_content import selected_content
+                selected = selected_content(payload.sql, payload.parameters)
+                if selected is not None:
+                    installed = dict(d.execute(
+                        "SELECT view_name, sql FROM duckdb_views() WHERE database_name=? AND schema_name='public_v1'",
+                        [self.alias],
+                    ).fetchall())
+                    if selected.matches(d, installed):
+                        if not execute:
+                            diagnostics.append(Diagnostic(severity="info", code="selected_content_available",
+                                message="Execution can select content IDs before extraction within the same snapshot and deadline."))
+                        else:
+                            if expired.is_set():
+                                raise TimeoutError("Query time limit exceeded.")
+                            keys = selected.select(d)
+                            if expired.is_set():
+                                raise TimeoutError("Query time limit exceeded.")
+                            if keys is None:
+                                diagnostics.append(Diagnostic(severity="info", code="selected_content_bound",
+                                    message="The selected key set exceeds the optimization collection bound; executing the original query."))
+                            else:
+                                execution_parameters = {**selected.parameters, selected.key_parameter: keys}
+                                executable = _bounded_query(selected.sql, max_rows=limits.max_rows)
+                                plan = "\n".join(str(row[-1]) for row in d.execute("EXPLAIN " + selected.sql, execution_parameters).fetchall())
+                                optimizations = ["selected_content_scan_v1"]
             if len(plan.encode()) > 64_000:
                 plan = plan.encode()[:64_000].decode(errors="ignore")
                 diagnostics.append(Diagnostic(severity="warning", code="plan_truncated", message="The execution plan preview was truncated."))
@@ -213,7 +240,7 @@ class QueryService:
             if not execute:
                 status = "prepared"
                 return prepared
-            cursor = d.execute(executable, payload.parameters)
+            cursor = d.execute(executable, execution_parameters)
             columns = [str(col[0]) for col in cursor.description]
             types = [str(col[1]) for col in cursor.description]
             rows = []

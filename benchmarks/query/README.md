@@ -176,3 +176,24 @@ bench explicitly. Keep the same snapshot, limits and execution protocol on both 
 null and acceptance uses `normal_time_ratio`; repeat the pair in reverse order.
 This mode is useful when one baseline finishes within the measurement deadline
 but a baseline plus a repeat cannot. It does not establish a warm-cache speedup.
+
+### Experimental selected-content execution
+
+With the normal lake-reader environment, use the shared measurement/result checks
+and include execution-time key selection in each candidate measurement:
+
+```sh
+uv run python scripts/query_selected_content_benchmark.py \
+  --case selected-content-headings --report ../../.artifacts/selected-forward.json
+uv run python scripts/query_selected_content_benchmark.py \
+  --case selected-content-headings --candidate-first \
+  --report ../../.artifacts/selected-reverse.json
+```
+
+Each pair pins one transaction and checks installed definitions. These are ordinary
+executions, not profiles; no files/bytes metrics are claimed. Reports contain
+bounded result digests and metadata, not SQL or keys. An incomplete original query
+is recorded as failure, never equality. For private incident SQL, create the case
+under ignored `.artifacts/` with a matching case.toml and pass `--case-root`; remove
+it after the investigation. Public-service activation and limits still require
+separate QueryService validation.

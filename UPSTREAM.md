@@ -165,3 +165,35 @@ contract across schema-only boundaries, including manual commit and filtered DML
   establish file pruning or justify unconditional rewrites.
 - **Periplus status:** read-only experiments only. No extra materialization,
   deployment change, optimizer extension, or production prep rewrite was added.
+
+## Exact multi-key membership at the Parquet scan
+
+- **Classification:** compiler/scan execution opportunity, not a correctness bug.
+- **Reproduction:** [synthetic standalone probe](docs/query-investigations/request-scope/multikey_repro.py)
+  on DuckDB 1.5.5 uses sorted Parquet and 136 string keys. Join scan emits
+  1,971,700 rows, literal IN emits 268,288, IN plus redundant list_contains
+  emits the exact 13,600 matching rows; outputs agree. No Periplus dependency.
+- **Source evidence:** v1.5.5 PhysicalHashJoin PushInFilter wraps generated IN
+  in OptionalFilter specifically for zonemap pruning, not exact row filtering.
+- **Production evidence:** same-snapshot read-only DuckLake probe 110089:
+  literal IN versus IN plus list_contains, both orders. Scan output falls from
+  53,423,931 to 48,680 rows, reported warm-profile bytes ~2.08 GB to 3.75 MB,
+  while both still report 222 files. Profile times 11.57/22.60 s versus
+  0.82/1.79 s. Aggregate count/length results/types match. See investigation
+  for ordinary timings and full-result validation status.
+- **Needed engine capability:** cost-aware exact membership filtering for key
+  sets at the scan, preserving statistics pruning and avoiding irrelevant
+  payload decoding. Runtime relation keys need coverage, not only literal lists.
+  Investigate a hash-set membership implementation rather than globally forcing
+  expensive linear IN evaluation or unbounded generated disjunctions.
+- **Disposition:** no upstream issue submitted and no global optimizer/config
+  change. Increasing dynamic_or_filter_threshold to 1000 alone failed to produce
+  a repeatable gain on the same 136-key workload.
+
+  Follow-up: deriving the list through a scalar subquery does not preserve the
+  constant-list scan behavior in the synthetic reproduction (1,971,700 emitted
+  rows). Two-stage same-snapshot execution with a bound array works for a small
+  production selection when HTML and prose are both restricted. It is not yet a
+  QueryService implementation. Broad synthetic selections regress with redundant
+  membership: 100,000 selected contents (entire corpus) 6.23 s → 9.86 s. The engine
+  opportunity is cost-aware runtime membership, not unconditional list filtering.

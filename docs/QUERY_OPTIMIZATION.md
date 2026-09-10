@@ -155,7 +155,7 @@ same unrecorded experiments.
 ## Execution-mode promotion
 
 Stable contains the promoted compiler baseline. Experimental includes that same
-baseline plus explicitly gated new candidates; it is currently identical to stable.
+baseline plus explicitly gated new candidates.
 Develop new candidates only in experimental, then replay stable and experimental
 against the same frozen snapshot using
 `benchmarks/query/`. Require equivalent results (including duplicates, nulls and
@@ -164,3 +164,10 @@ promoting a candidate to stable. Record mode and compiler version with evidence.
 The public selector is for individual runs, not an automatic benchmark: consecutive
 UI requests can see different snapshots and cache states. Catalogue and physical
 layout changes affect both endpoints and require their own isolated experiments.
+
+
+For the selected-content experiment, the user-approved acceptance objective is
+reliable completion within existing limits, allowing modest latency regressions
+for broader selections. Do not reject it solely for the recorded 6.2 → 9.9 second
+synthetic broad-case regression. New timeouts/OOMs, incorrect results, or bypassed
+resource bounds remain blockers. Record these tradeoffs with the performance gains.
