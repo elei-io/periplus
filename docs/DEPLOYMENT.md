@@ -134,7 +134,8 @@ storage, the standard CDP endpoint, secret projection, ingress, and metrics stor
 platform authorities. The chart supports scalable API, query, crawler, ingestor, materializer, admin and
 public deployments, plus one janitor and a one-shot setup Job.
 
-`periplus-setup` is a blocking Helm pre-install and pre-upgrade hook. A failed migration or catalogue
+`periplus-setup` is a blocking Helm pre-install hook. It runs on upgrades only
+when explicit maintenance is enabled with `upgradeCoordination.enabled`. A failed migration or catalogue
 bootstrap prevents the new runtime image from rolling out. All backend workloads in one release
 must use the same immutable image tag, keeping Python code, the DuckDB runtime, catalogue schema,
 and the CDC extension on one release identity.
@@ -427,7 +428,7 @@ Compose exposes experimental at localhost:8011, configurable through
 `PERIPLUS_QUERY_EXPERIMENTAL_URL=http://127.0.0.1:8011`. Deploy core, public and
 the chart together so the endpoint and response contracts agree.
 
-## Automatic coordinated upgrades
+## Explicit maintenance upgrades
 
 `upgradeCoordination.enabled` adds blocking Helm pre/post-upgrade Jobs around the
 existing setup hook. The pre-upgrade job pauses release-owned KEDA ScaledObjects,
@@ -461,3 +462,32 @@ Successful hook Jobs are deleted; failed Jobs remain for logs. Hook ServiceAccou
 Role and RoleBinding `<release-fullname>-upgrade` are replaced at the next upgrade
 and remain for recovery. Helm does not track hook assets for uninstall; remove those
 three identities when permanently uninstalling the release.
+
+
+## Routine rolling releases
+
+Keep `upgradeCoordination.enabled: false` for ordinary image, configuration and
+scaling changes. No setup or coordination hook runs on an upgrade in this mode.
+API, query, public, admin and parallel workers use zero-unavailable, one-surge
+rolling updates. Janitor remains Recreate to preserve its singleton ownership.
+Reserve capacity for the temporary surge pods and database connections. Existing
+readiness probes gate availability; workers retain their 330-second termination
+grace period and must keep uncertain-write claims until safe expiry.
+
+Do not automatically roll a release that changes the control schema, catalogue,
+queue contracts, or DuckDB/CDC runtime compatibility. Review those changes against
+the currently deployed revision, including skipped releases. For maintenance,
+pause automatic promotion, prepare the documented recovery set, enable coordination
+for the target revision, and wait for setup and startup to complete. Return the
+flag to false before resuming automatic promotion. Turning it off does not run setup.
+Never disable coordination to bypass a failed maintenance operation.
+
+Compatible control migrations can be applied once using the setup module's
+`migrate_control_database()` function before rolling new code, after review verifies
+old-code compatibility. Full `periplus-setup` also installs the catalogue and CDC;
+it is not a general-purpose online migration command. Incompatible changes keep
+the explicit maintenance procedure. Do not claim an image rollback reverses them.
+
+After a routine rollout, verify Deployment availability, public health responses,
+worker readiness and ingestion progress. Helm/Flux readiness alone does not prove
+that backlog is shrinking or that user queries work.

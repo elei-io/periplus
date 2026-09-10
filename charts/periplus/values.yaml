@@ -384,7 +384,8 @@ queryExperimental:
       prometheus.io/path: /metrics
       prometheus.io/port: "8000"
 
-# Drain runtime pods before setup, then restore the target release and KEDA.
+# Explicit maintenance only: drain runtime pods, run setup, then restore KEDA.
+# Leave disabled for ordinary image/configuration/scaling upgrades.
 # Requires Kubernetes API egress and a retry-without-rollback release strategy.
 upgradeCoordination:
   enabled: false

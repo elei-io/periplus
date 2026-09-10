@@ -7,8 +7,8 @@ Ingress, or secret-management controllers; those remain platform-owned dependenc
 Every backend role uses one image tag. That image contains Periplus and DuckDB storage extensions plus the signed CDC community
 package, with its version and source revision verified by
 `packages/periplus/src/periplus/platform/catalogue/cdc_extension.py`.
-`periplus-setup` runs as a blocking `pre-install,pre-upgrade` hook, so catalogue and control schema
-setup succeeds before Kubernetes rolls any runtime to the new image.
+`periplus-setup` runs as a blocking `pre-install` hook. Explicit maintenance also
+runs it before upgrading; routine releases roll without running setup.
 
 ## Required platform contract
 
@@ -281,3 +281,5 @@ window on every upgrade. Hook pods need Kubernetes API/DNS egress; their RBAC is
 scoped to this release's deployment/scaler names and read-only pod listing.
 Use retry-without-rollback failure handling in Flux. See
 [deployment and recovery behavior](../../docs/DEPLOYMENT.md#automatic-coordinated-upgrades).
+
+Routine upgrades leave `upgradeCoordination.enabled: false`: setup is install-only and runtime deployments roll. Enable coordination only for reviewed maintenance; see [deployment procedures](../../docs/DEPLOYMENT.md#explicit-maintenance-upgrades).

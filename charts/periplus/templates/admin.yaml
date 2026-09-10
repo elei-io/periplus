@@ -9,6 +9,11 @@ spec:
 {{- if not .Values.admin.autoscaling.enabled }}
   replicas: {{ .Values.admin.replicas }}
 {{- end }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       {{- include "periplus.componentSelectorLabels" (dict "root" . "component" "admin") | nindent 6 }}
