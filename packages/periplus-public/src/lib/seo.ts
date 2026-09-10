@@ -11,7 +11,7 @@ export function parsePublicOrigin(value: string | undefined): string | undefined
 
 // Build-time configuration: never derive search URLs from untrusted Host headers.
 export const publicOrigin = parsePublicOrigin(process.env.PERIPLUS_PUBLIC_ORIGIN)
-export const indexablePaths = ["/", "/about", "/docs", "/discover", "/build", "/sql", "/coverage"] as const
+export const indexablePaths = ["/", "/about", "/docs", "/sql", "/coverage"] as const
 
 export function pageMetadata(path: string, title: string, description: string, index = true): Metadata {
   const url = publicOrigin ? new URL(path, publicOrigin).href : undefined

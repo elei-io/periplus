@@ -32,7 +32,7 @@ export function QuerySettings({ value, onChange }: { value: string; onChange: (v
   return <Dialog open={open} onOpenChange={next => { if (next) { setRows(current.rows); setImportError("") } setOpen(next) }}>
     <DialogTrigger render={<Button variant="ghost" />}><Settings2 />Query settings{current.rows.length > 0 && <Badge variant="secondary">{current.rows.length}</Badge>}{current.error && <Badge variant="destructive">Invalid parameters</Badge>}</DialogTrigger>
     <DialogContent className="max-h-[85svh] overflow-y-auto sm:max-w-2xl">
-      <DialogHeader><DialogTitle>Query parameters</DialogTitle><DialogDescription>Values bind to positional SQL placeholders in order.</DialogDescription></DialogHeader>
+      <DialogHeader><DialogTitle>Query parameters</DialogTitle><DialogDescription>Enter a value for each ? placeholder in your SQL, in the same order.</DialogDescription></DialogHeader>
       <Separator />
       {current.error && <p role="alert" className="text-destructive">{current.error}</p>}
       <div className="flex flex-col gap-3">

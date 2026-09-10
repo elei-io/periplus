@@ -42,11 +42,11 @@ export function CollectionItems({ id }: { id: string }) {
   const cursor = cursors[cursors.length - 1]
   const query = useQuery({ queryKey: ["collection-items", id, cursor], queryFn: ({ signal }) => read<CollectionItemsPage>(`/collections/${encodeURIComponent(id)}/items?limit=10${cursor ? `&after=${encodeURIComponent(cursor)}` : ""}`, signal), refetchInterval: 10000, retry: false })
   return <section className="flex min-w-0 flex-col gap-4"><h2>Pages in this request</h2><p className="text-sm text-muted-foreground">Pages connected to this request, not their order of observation. Refresh the first page to include newly discovered pages.</p>
-    <Button variant="outline" className="self-start" disabled={query.isFetching} onClick={() => {setCursors([null]);if(cursors.length === 1) void query.refetch()}}>Refresh first items</Button>
+    <Button variant="outline" className="self-start" disabled={query.isFetching} onClick={() => {setCursors([null]);if(cursors.length === 1) void query.refetch()}}>Refresh page list</Button>
     {query.isPending && <p role="status">Loading pages…</p>}
     {query.error && <p role="alert">{query.data ? "Page details may be out of date. " : "Current pages unavailable. "}{extractApiError(query.error)}</p>}
     {query.data && <p className="text-sm text-muted-foreground">As of {new Date(query.data.as_of).toLocaleString()}</p>}
-    {query.data?.items.length === 0 && <p>No admitted items on this page. Starting URL selection and admission may still be in progress.</p>}
+    {query.data?.items.length === 0 && <p>No pages are listed here yet. Periplus may still be choosing starting URLs or adding pages to this request.</p>}
     {query.data?.items.map(item => <Card key={item.interest_id}><CardHeader><CardTitle><a className="break-all underline" href={itemLink(item.acquisition.id)}>{item.acquisition.url}</a></CardTitle></CardHeader><CardContent className="flex flex-col gap-2"><p>Request work: {item.status.replaceAll("_", " ")} · {modeLabel(item.mode)} · Page unit {item.budget_state}</p><p>Depth {item.context.depth} · Rule {item.context.rule_id} · Observation status {item.acquisition.status}</p>{item.acquisition.waiting_reason && <p>{item.acquisition.waiting_reason.replaceAll("_", " ")}</p>}{item.context.parent_observation_id && <Observation id={item.context.parent_observation_id} label="Parent observation" />}{item.acquisition.observation_id && <><Observation id={item.acquisition.observation_id} label="Observation" /><Readiness item={item.acquisition} /></>}<p className="text-sm text-muted-foreground">Admitted {new Date(item.admitted_at).toLocaleString()}</p></CardContent></Card>)}
     <div className="flex gap-2"><Button variant="outline" disabled={cursors.length === 1 || query.isFetching} onClick={() => setCursors(cursors.slice(0,-1))}>Previous items</Button><Button variant="outline" disabled={query.isError || query.isFetching || !query.data?.next_after} onClick={() => {if(query.data?.next_after) setCursors([...cursors,query.data.next_after])}}>Next items</Button></div>
   </section>
@@ -77,14 +77,14 @@ export function CollectionArrivals({ id }: { id: string }) {
   const cursor = cursors[cursors.length - 1]
   const query = useQuery({ queryKey: ["collection-arrivals", id, cursor], queryFn: ({ signal }) => read<CollectionArrivalsPage>(`/collections/${encodeURIComponent(id)}/arrivals?limit=10${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`, signal), refetchInterval: 10000, retry: false })
   return <section className="flex min-w-0 flex-col gap-4"><h2>Recorded results</h2><p className="text-sm text-muted-foreground">Results connected to this request, newest first. They remain available after the request finishes. Refresh the first page to see newly recorded results.</p>
-    <Button variant="outline" className="self-start" disabled={query.isFetching} onClick={() => {setCursors([null]); if(cursors.length === 1) void query.refetch()}}>Refresh newest arrivals</Button>
-    {query.isPending && <p role="status">Loading arrivals…</p>}
+    <Button variant="outline" className="self-start" disabled={query.isFetching} onClick={() => {setCursors([null]); if(cursors.length === 1) void query.refetch()}}>Refresh latest results</Button>
+    {query.isPending && <p role="status">Loading results…</p>}
     {query.error && <p role="alert">{query.data ? "Arrivals may be stale. " : "Arrivals unavailable. "}{extractApiError(query.error)}</p>}
     {query.data && <p className="text-sm text-muted-foreground">As of {new Date(query.data.as_of).toLocaleString()}</p>}
-    {query.data && !query.data.definition_committed && <p>Collection definition is awaiting its catalogue commit.</p>}
-    {query.data?.definition_committed && query.data.items.length === 0 && <p>No durable arrivals on this page. Ingestion may still be in progress.</p>}
+    {query.data && !query.data.definition_committed && <p>The request details are still being saved for later queries.</p>}
+    {query.data?.definition_committed && query.data.items.length === 0 && <p>No saved results are listed here yet. Page results may still be processing.</p>}
     {query.data?.items.map(item => <Card key={item.fulfillment_id}><CardHeader><CardTitle><span className="break-all">{item.requested_url}</span></CardTitle></CardHeader><CardContent className="flex flex-col gap-2"><p>{item.mode === "acquired" ? "New observation" : item.mode === "shared" ? "Shared result" : "Reused result"} · Depth {item.depth} · Rule {item.rule_id}</p><p>Result connected {new Date(item.decided_at).toLocaleString()}</p><p>{item.observation_committed ? `Observation recorded: ${item.outcome ?? "outcome unavailable"}${item.http_status_code === null ? "" : ` · HTTP ${item.http_status_code}`}` : "Observation not yet confirmed in the catalogue."}</p>{item.effective_url && <p className="break-all">Effective URL: {item.effective_url}</p>}<p>{item.query_ready === true ? "Ready to query." : item.query_ready === false ? "Being prepared for queries." : "Query readiness has not been verified."}</p><Observation id={item.observation_id} label="Query observation" />{item.parent_observation_id && <Observation id={item.parent_observation_id} label="Found through observation" />}</CardContent></Card>)}
-    <div className="flex gap-2"><Button variant="outline" disabled={cursors.length === 1 || query.isFetching} onClick={() => setCursors(cursors.slice(0,-1))}>Previous arrivals</Button><Button variant="outline" disabled={query.isError || query.isFetching || !query.data?.next_cursor} onClick={() => {if(query.data?.next_cursor) setCursors([...cursors,query.data.next_cursor])}}>Next arrivals</Button></div>
+    <div className="flex gap-2"><Button variant="outline" disabled={cursors.length === 1 || query.isFetching} onClick={() => setCursors(cursors.slice(0,-1))}>Previous results</Button><Button variant="outline" disabled={query.isError || query.isFetching || !query.data?.next_cursor} onClick={() => {if(query.data?.next_cursor) setCursors([...cursors,query.data.next_cursor])}}>Next results</Button></div>
   </section>
 }
 
@@ -102,10 +102,10 @@ function ObservationLineage({ id }: { id: string }) {
     <p>See why this page was observed and which requests used the result. A request may have prompted the visit, shared it, or reused an earlier observation. More connections may appear as results are recorded.</p>
     <Button variant="outline" className="self-start" disabled={query.isFetching} onClick={() => { setCursors([null]); if (cursors.length === 1) void query.refetch() }}>Refresh connections</Button>
     {query.isPending && <p role="status">Loading connections…</p>}
-    {missing && <p>No visible committed observation is available yet.</p>}
+    {missing && <p>No saved page result is available yet.</p>}
     {query.error && !missing && <p role="alert">{query.data ? "Connections may be out of date. " : "Connections unavailable. "}{extractApiError(query.error)}</p>}
     {query.data && <><p className="break-all">{query.data.requested_url}</p><p className="text-sm text-muted-foreground">As of {new Date(query.data.as_of).toLocaleString()}</p><Observation id={query.data.observation_id} label="Query observation" /></>}
-    {query.data?.items.length === 0 && <p>No visible request connections on this page. Collection evidence may still be awaiting ingestion.</p>}
+    {query.data?.items.length === 0 && <p>No request connections are listed here yet. Results may still be processing.</p>}
     {query.data?.items.map(item => <Card key={`${item.kind}:${item.record_id}`}><CardHeader><CardTitle>{item.kind === "reason" ? "Reason for observation" : "Result use"}</CardTitle></CardHeader><CardContent className="flex flex-col gap-2">
       <p>{item.kind === "reason" ? "Request" : item.mode === "reused" ? "Reused result" : item.mode === "shared" ? "Shared result" : "New observation"}</p>
       {item.collection_id && <a className="break-all underline" href={collectionLink(item.collection_id)}>Request: {item.collection_id}</a>}

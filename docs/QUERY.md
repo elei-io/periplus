@@ -68,43 +68,8 @@ The public contract has one versioned namespace, with no old-schema aliases.
 
 ### Query server boundary
 
-The public app separates the marketing landing page (`/`), question-led data discovery
-(`/discover`), an explicit dataset builder (`/build`), SQL (`/sql`), and live coverage (`/coverage`).
-Next.js owns web-specific agent orchestration using Vercel AI SDK and a read-only SQL tool calling
-the Python query API. The assistant cannot crawl or access lake credentials. Coverage requests use
-the control API; crawl completion is not proof of indexing readiness.
+The public app provides a landing page, SQL console and shared website coverage. The SQL console supports read-only queries and CSV/JSON export. Its optional Ask SQL assistant can execute exploratory SQL and prepares editor proposals for explicit user review. Coverage requests use the control API; crawl completion is not proof of indexing readiness.
 
-Discover starts from a question, retrieves real examples, and explains their sources and limitations.
-Partial coverage and missing optional values do not block a useful preview. It has no schema-approval
-step. Its Findings panel keeps successful SQL evidence available independently of dataset suggestions,
-including after interruption. Evidence is explicitly labelled as inspection results, with at most five
-rows shown per query on expansion; exploratory answers need not create datasets. Users can
-export displayed rows, inspect SQL, or carry the result and proposed fields into the builder.
-
-The builder accepts written specifications or imported JSON definitions and exposes ordered column
-names, exact DuckDB types, nullability, row grain and source scope in an editable contract. A written
-specification initially produces a suggested contract and sample. Validate dataset sends the current
-explicit contract directly; there is no separate approval receipt. A ready result must match that
-contract exactly, contain nonempty complete returned rows with all required values, and have executed
-one-row boolean checks that all pass. Missing values, conversion failures or scope limitations must
-be surfaced rather than concealed by relaxing the contract or discarding records. Failed checks may
-accompany a draft preview. Editing the contract removes the current result's validated presentation.
-
-Both workflows share one bounded agent implementation with short role-specific system prompts and
-the public database schema. Their four tools are SQL, SUGGEST_SCHEMA, SUGGEST_DATASET and
-SUGGEST_COVERAGE_REQUEST. Suggestions are independent and do not end the turn. The application
-computes contract validation from executed results; the model cannot declare readiness. Coverage
-suggestions open a prefilled form for review and do not submit a crawl. Conversation history and navigation handoff carry drafts and SQL as untrusted
-context; only successful server executions establish evidence. Follow-ups should rerun the existing
-bounded extraction rather than restart source discovery. Technical activity stays collapsed; the
-last useful result remains visible, explicitly labelled when a later request has no replacement.
-Draft definitions can be exported and reimported before validation, including unfinished fields.
-Conversations remain temporary browser memory. Contextual handoffs open a separate tab and carry
-questions, SQL, and specifications in the URL; they do not carry trusted execution evidence. SQL pauses after service contention or
-120 seconds of a turn, with individual calls bounded to 90 seconds and the remaining SQL budget,
-leaving time for an answer before the route deadline. Final downloads include SQL,
-checks and source snapshot; the snapshot is provenance, not a pinned future rerun. The model sees
-at most 20 rows per query. UI results and exports obey the configured query limits (1,000 rows by default).
 SQL preparation and execution remain in the separate Python
 `periplus-query` process, which exposes only `POST /query/prep`, `POST /query/exec`, and
 `GET /query/helpers`, and its health probe. Query routes do not exist on the control API.
@@ -210,20 +175,16 @@ at the same snapshot. The existing benchmark runner and query cases remain usefu
 
 ### SQL workspace assistant
 
-The `/sql` workbench offers a collapsed Ask SQL panel, an empty-editor prompt and a
-Help fix action on query errors. `/api/sql-assistant` uses the existing public assistant
-admission policy and model configuration to propose standalone SQL from intent, the current
-editor and selection, positional parameters, the last failed execution and bounded conversational
-context. It loads the public schema and current SQL helper registry. It can ask a focused
-clarifying question or revise an unapplied proposal; context is never trusted execution evidence.
-
-Proposals are prepared through the isolated query service, never executed by this assistant.
-One additional drafting attempt may repair a preparation SQL/helper error; operational failures
-are surfaced without a rewrite retry. The UI distinguishes successful preparation from execution,
-shows SQL and parameter changes, and applies only on user action. Apply and Undo both reject
-stale editor state. Run remains explicit. Conversation and undo state stay in the browser.
-Requests and generation are bounded, with at most two active SQL-assistant calls per public
-process and a 90-second generation/preparation deadline; production ingress owns aggregate limits.
+Ask SQL explores the public corpus with a read-only SQL tool calling `/query/exec`.
+A separate `SUGGEST_SQL` tool proposes complete editor contents without applying them.
+It receives editor context, up to 20 history messages, the public schema and installed helpers.
+Each generation allows up to 32 steps and 16,000 output tokens per model call, within a
+300-second request deadline. Tool output includes up to 100 rows and 60,000 serialized
+characters, with explicit sampling, truncation, query identity and source snapshot.
+Service failures stop further tool execution for that turn. Query-service limits still apply.
+SUGGEST_SQL prepares proposals before returning tool feedback, allowing the model to correct invalid SQL before answering. Direct final-output proposals receive preparation with one repair attempt. Activity streams to a collapsed, expandable group; answers render Markdown.
+Applying remains explicit and does not execute the proposal. Up to two assistant requests
+run concurrently per public process. Conversation and undo state remain in the browser.
 
 ### Catalogue helper declarations
 

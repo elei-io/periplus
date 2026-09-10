@@ -4,7 +4,7 @@ import { CrawlerCockpit } from "@/components/crawler-cockpit"
 
 export async function generateMetadata({ searchParams }: PageProps<"/coverage">): Promise<Metadata> {
   const params = await searchParams
-  return pageMetadata("/coverage", "Coverage", "Explore the sources in Periplus’s shared web databank, follow coverage requests, and request the data you need.", !hasWorkspaceInput(params, ["request", "description"]))
+  return pageMetadata("/coverage", "Coverage", "See which websites people are adding to Periplus. Contribute sources for everyone to research and follow collection progress.", !hasWorkspaceInput(params, ["request", "description"]))
 }
 
 export default async function Page({ searchParams }: PageProps<"/coverage">) {

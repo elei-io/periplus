@@ -1,14 +1,16 @@
 "use client"
 
+import { readAssistantStream } from "@/lib/sql-assistant-stream"
 import { useState } from "react"
 import { useMutation } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { extractApiError, responseJson } from "@/lib/api"
 import { usePublicAccess } from "@/hooks/use-public-access"
-import { sameSqlDraft, sqlAssistantInputSchema, type SqlAssistantInput, type SqlAssistantReply, type SqlDraft } from "@/types/sql-assistant"
+import { sameSqlDraft, sqlAssistantInputSchema, type SqlAssistantInput, type SqlAssistantActivity, type SqlDraft } from "@/types/sql-assistant"
 
 export function useSqlAssistant(draft: SqlDraft, selection: string, failure: SqlAssistantInput["failure"], onChange: (draft: SqlDraft) => void, queryMode: "stable" | "experimental" = "stable") {
   const access = usePublicAccess("assistant")
+  const [activities, setActivities] = useState<SqlAssistantActivity[]>([])
   const [open, setOpen] = useState(false)
   const [intent, setIntent] = useState("")
   const [history, setHistory] = useState<SqlAssistantInput["history"]>([])
@@ -17,15 +19,21 @@ export function useSqlAssistant(draft: SqlDraft, selection: string, failure: Sql
     mutationFn: async (input: SqlAssistantInput) => {
       if (!access.enabled) throw new Error(access.message ?? "The SQL assistant is unavailable.")
       const body = sqlAssistantInputSchema.parse(input)
-      return responseJson<SqlAssistantReply>(await fetch("/api/sql-assistant", {
+      const response = await fetch("/api/sql-assistant", {
         method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
-      }))
+      })
+      if (!response.ok) await responseJson(response)
+      return readAssistantStream(response, event => {
+        if (event.type !== "activity") return
+        setActivities(current => [...current.filter(item => item.id !== event.activity.id), event.activity])
+      })
     },
+    onMutate: () => { setActivities([]); setIntent("") },
     onSuccess: (reply, input) => {
-      setHistory([...input.history, { role: "user" as const, content: input.intent }, { role: "assistant" as const, content: reply.message }].slice(-6))
+      setHistory([...input.history, { role: "user" as const, content: input.intent }, { role: "assistant" as const, content: reply.message }].slice(-20))
       setIntent(current => current === input.intent ? "" : current)
     },
-    onError: error => { access.onDenied(error); toast.error(extractApiError(error)) },
+    onError: (error, input) => { setIntent(current => current || input.intent); access.onDenied(error); toast.error(extractApiError(error)) },
   })
   const stale = !!mutation.variables && (mutation.variables.queryMode !== queryMode || !sameSqlDraft(draft, mutation.variables.draft))
   function show(prompt?: string) {
@@ -49,7 +57,7 @@ export function useSqlAssistant(draft: SqlDraft, selection: string, failure: Sql
     setUndo(null)
   }
   return {
-    ...mutation, open, setOpen, show, intent, setIntent, submit, apply, stale, access,
+    ...mutation, activities, history, open, setOpen, show, intent, setIntent, submit, apply, stale, access,
     dismiss: () => mutation.reset(),
     canUndo: !!undo && sameSqlDraft(draft, undo.after), undoApply,
   }
