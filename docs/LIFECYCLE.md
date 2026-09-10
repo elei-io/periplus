@@ -246,3 +246,21 @@ presented as a measured split. Claim release and small Python bookkeeping gaps
 are not measured by the detailed steps. Deploy the worker and updated dashboard
 to collect and display these metrics; no projection rebuild is required solely
 for this instrumentation.
+
+### Ingestion delivery recovery
+
+Ingestion receipts retain the JetStream publication sequence beside the immutable
+job. Receipt recovery checks that exact stored delivery and its payload before
+republishing. A queued or in-flight message remains the consumer's responsibility;
+a missing delivery or expired receipt replays the original job, never a new crawl.
+An unavailable stream lookup defers recovery rather than creating another copy.
+Receipts without a publication sequence establish one on their next pending replay.
+The existing queue is drained normally; no duplicate purge is required.
+
+An ingestion batch reserves each job's operation identities without waiting. Jobs
+whose identities are held by another worker are deferred individually; unrelated
+jobs commit together, sharing identities already owned within that batch. Duplicate
+request IDs in a batch are deferred until their first delivery has a durable receipt.
+Receipt writes precede ACKs. Cancellation, lease expiry, missing receipts and failed
+acknowledgements leave replayable work, with immutable lake identity checks and
+Postgres write claims retaining their existing authority.

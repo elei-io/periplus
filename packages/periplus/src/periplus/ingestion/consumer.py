@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from contextlib import AsyncExitStack
 from datetime import UTC, datetime
 import logging
 import os
@@ -164,12 +165,10 @@ async def _process_messages(
         metrics.operation_started("commit")
         started = time.perf_counter()
         try:
-            async with operation_leases(
-                leases,
-                batch.operation_ids,
-                phase="ingestion",
-                acquire_timeout=0,
-            ):
+            async with AsyncExitStack() as claims:
+                batch = await _claim_batch(batch, leases, claims, metrics)
+                if not batch.evidence:
+                    return
                 results = await _catalogue_call(
                     _commit_prepared_batch,
                     ingestor,
@@ -238,6 +237,32 @@ async def _process_messages(
         await asyncio.gather(heartbeat, return_exceptions=True)
 
 
+async def _claim_batch(batch, leases, claims, metrics) -> PreparedBatch:
+    """Reserve each job independently, sharing identities already owned by this batch."""
+    selected = PreparedBatch()
+    owned: set[str] = set()
+    seen: set[str] = set()
+    for message, job, evidence in zip(batch.messages, batch.jobs, batch.evidence, strict=True):
+        if job.request_id in seen:
+            await message.nak(delay=5)
+            metrics.recovery("duplicate_delivery")
+            continue
+        seen.add(job.request_id)
+        candidate = PreparedBatch([message], [job], [evidence])
+        needed = set(candidate.operation_ids) - owned
+        try:
+            await claims.enter_async_context(operation_leases(
+                leases, needed, phase="ingestion", acquire_timeout=0,
+            ))
+        except OperationLeaseUnavailable:
+            await message.nak(delay=5)
+            metrics.recovery("operation_busy")
+            continue
+        owned.update(needed)
+        selected.append(message, job, evidence)
+    return selected
+
+
 async def _prepare_batch(
     *,
     jetstream,
@@ -252,10 +277,15 @@ async def _prepare_batch(
     for message in messages:
         try:
             job = IngestionJob.model_validate_json(message.data)
-            state = await ensure_pending_ingestion(results_store, job=job)
         except Exception:
             logging.exception("invalid ingestion envelope")
             await message.term()
+            continue
+        try:
+            state = await ensure_pending_ingestion(results_store, job=job)
+        except Exception:
+            logging.exception("ingestion state unavailable")
+            await message.nak(delay=5)
             continue
         if state.status == "succeeded":
             await message.ack()
