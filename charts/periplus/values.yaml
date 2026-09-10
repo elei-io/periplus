@@ -383,3 +383,9 @@ queryExperimental:
       prometheus.io/scrape: "true"
       prometheus.io/path: /metrics
       prometheus.io/port: "8000"
+
+# Drain runtime pods before setup, then restore the target release and KEDA.
+# Requires Kubernetes API egress and a retry-without-rollback release strategy.
+upgradeCoordination:
+  enabled: false
+  timeoutSeconds: 600

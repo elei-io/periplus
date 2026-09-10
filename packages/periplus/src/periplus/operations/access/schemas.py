@@ -16,6 +16,8 @@ class CrawlPolicy(RatePolicy):
     default_page_budget: int = 25
     max_depths: list[int] = Field(default_factory=lambda: [0, 1, 2], min_length=1, max_length=20)
     default_max_depth: int = 1
+    follow_link_limits: list[int] = Field(default_factory=lambda: [100, 1000, 5000, 10000], min_length=1, max_length=20)
+    default_follow_link_limit: int = 1000
     retention_seconds: list[int | None] = Field(default_factory=lambda: [None, 604800, 2592000, 7776000, 31536000], min_length=1, max_length=20)
     default_retention_seconds: int | None = None
 
@@ -23,6 +25,7 @@ class CrawlPolicy(RatePolicy):
     def choices(self):
         for options, default, low, high in ((self.page_budgets, self.default_page_budget, 1, 100000),
                 (self.max_depths, self.default_max_depth, 0, 100),
+                (self.follow_link_limits, self.default_follow_link_limit, 1, 10000),
                 (self.retention_seconds, self.default_retention_seconds, 1, 315360000)):
             if len(set(options)) != len(options) or default not in options:
                 raise ValueError("Options must be unique and contain their default")

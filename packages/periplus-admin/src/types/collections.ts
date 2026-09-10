@@ -11,6 +11,7 @@ export interface CollectionSpec {
   seed_sql: string | null
   seed_parameters: unknown[]
   follow_sql: string
+  follow_link_limit: number
   max_depth: number
   page_limit: number
   result_max_age_seconds: number

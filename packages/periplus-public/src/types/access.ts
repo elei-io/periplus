@@ -9,6 +9,7 @@ const accessPolicySchema = z.object({
   crawl: ratePolicySchema.extend({
     queue_limit: z.number().int().positive().nullable(),
     page_budgets: z.array(z.number().int().positive()), default_page_budget: z.number().int().positive(),
+    follow_link_limits: z.array(z.number().int().positive()), default_follow_link_limit: z.number().int().positive(),
     max_depths: z.array(z.number().int().nonnegative()), default_max_depth: z.number().int().nonnegative(),
     retention_seconds: z.array(z.number().int().positive().nullable()), default_retention_seconds: z.number().int().positive().nullable(),
   }),

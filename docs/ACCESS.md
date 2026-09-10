@@ -14,7 +14,7 @@ attempts consume capacity even if later execution fails. SQL preparation checks 
 but does not consume an execution allowance. The initial limits are 6 crawl submissions,
 10 assistant turns, and 60 direct SQL executions per 60 seconds.
 
-Crawl policy also specifies allowed page budgets, depths and retention periods, each with
+Crawl policy also specifies allowed page budgets, depths, per-page link limits and retention periods, each with
 an allowed default. The API validates submitted choices. An existing request identity can
 be replayed with identical intent without a new allowance, even while submissions are
 disabled. Admin creation and scheduled executions bypass public admission controls but
@@ -74,3 +74,21 @@ and Retry-After 5 without consuming a public rate-window unit. It reopens automa
 below the threshold. Existing request IDs can still be retried idempotently. The public
 UI polls availability and explains the temporary pause; the API enforces it independently
 of the UI. Public requests-per-window limits remain separate.
+
+## Per-page follow links
+
+Coverage intent freezes `follow_link_limit` (1–10,000, default 1,000).
+Public access controls `follow_link_limits` and `default_follow_link_limit`; initial
+choices are 100, 1,000, 5,000 and 10,000. Public admission validates the chosen value;
+admin one-off and reusable requests accept any value within the supported bounds.
+Each page selects at most that many distinct normalized URLs in follow SQL result
+order. Extra links are not followed; reaching this cap does not fail the request.
+Use ORDER BY in custom follow SQL when selection priority matters. Scope filtering
+and collection-wide deduplication/admission still apply afterward, so the cap is
+not a guarantee of newly acquired pages. Navigation input, output bytes, SQL time,
+depth and total page budget remain independently bounded.
+
+Migration `20260910_0015` adds the policy choices and increments its version without
+changing existing choices or rate windows. Deploy API, crawler, ingestor, public
+and admin together after setup; old workers do not understand the new intent key.
+The setting lives in the existing specification JSON and needs no lake rebuild.

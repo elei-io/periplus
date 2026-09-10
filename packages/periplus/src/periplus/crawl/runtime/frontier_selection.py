@@ -84,7 +84,8 @@ def process_link_selection(store: FrontierStore, interest_id: UUID, policy: Poli
         urls, source = (), None
         if context.depth < spec.max_depth and acquisition.navigation is not None:
             package = NavigationPackage.model_validate(acquisition.navigation)
-            urls = select_links(spec.follow_sql, load_navigation_package(objects, package))
+            urls = select_links(spec.follow_sql, load_navigation_package(objects, package),
+                                max_links=spec.follow_link_limit)
             source = f"navigation:{package.sha256}"
         checkpoint = store.freeze_selection(interest_id, SelectionCheckpoint(
             urls=tuple(url for url in urls if within_allowed_sections(url, list(spec.allowed_sections))),

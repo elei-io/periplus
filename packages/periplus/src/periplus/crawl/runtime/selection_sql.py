@@ -1,5 +1,6 @@
 """Bounded page-local SQL selection, independent of graph and catalogue execution."""
 from threading import Timer
+from time import monotonic
 
 import duckdb
 import pyarrow as pa
@@ -10,15 +11,16 @@ from periplus.urls import normalize_url
 from periplus.platform.config.duckdb import connection_limits
 
 MAX_SELECTION_ROWS = 1000
+MAX_FOLLOW_LINKS = 10000
 MAX_SELECTION_BYTES = 2 * 1024 * 1024
 
 
-def selected_urls(values) -> tuple[str, ...]:
+def selected_urls(values, *, max_rows: int = MAX_SELECTION_ROWS) -> tuple[str, ...]:
     urls = []
     size = 0
     for index, value in enumerate(values):
-        if index >= MAX_SELECTION_ROWS:
-            raise ValueError("selection exceeded its 1,000-row limit")
+        if index >= max_rows:
+            raise ValueError(f"selection exceeded its {max_rows:,}-row limit")
         if not isinstance(value, str) or len(value) > 8192:
             raise ValueError("selection requires HTTP(S) URL strings up to 8,192 characters")
         size += len(value.encode())
@@ -58,7 +60,9 @@ def validate_follow_sql(sql: str) -> str:
     return statement.sql(dialect="duckdb")
 
 
-def select_links(sql: str, navigation: bytes, *, timeout_seconds: float = 5) -> tuple[str, ...]:
+def select_links(sql: str, navigation: bytes, *, max_links: int = 1000, timeout_seconds: float = 5) -> tuple[str, ...]:
+    if not 1 <= max_links <= MAX_FOLLOW_LINKS:
+        raise ValueError("follow link limit must be from 1 to 10,000")
     statement = validate_follow_sql(sql)
     if not 0 < timeout_seconds <= 20:
         raise ValueError("selection deadline outside bounds")
@@ -75,6 +79,7 @@ def select_links(sql: str, navigation: bytes, *, timeout_seconds: float = 5) -> 
         connection.execute("SET lock_configuration = true")
         timer = Timer(timeout_seconds, connection.interrupt)
         timer.daemon = True
+        deadline = monotonic() + timeout_seconds
         timer.start()
         try:
             cursor = connection.execute(statement)
@@ -82,8 +87,25 @@ def select_links(sql: str, navigation: bytes, *, timeout_seconds: float = 5) -> 
             if names.count("url") != 1:
                 raise ValueError("follow SQL must return exactly one url column")
             index = names.index("url")
-            rows = cursor.fetchmany(MAX_SELECTION_ROWS + 1)
-            return selected_urls(row[index] for row in rows)
+            urls: dict[str, None] = {}
+            size = 0
+            while rows := cursor.fetchmany(256):
+                for row in rows:
+                    if monotonic() >= deadline:
+                        raise ValueError("follow SQL exceeded its execution deadline")
+                    value = row[index]
+                    if not isinstance(value, str) or len(value) > 8192:
+                        raise ValueError("selection requires HTTP(S) URL strings up to 8,192 characters")
+                    url = normalize_url(value)
+                    if url in urls:
+                        continue
+                    size += len(url.encode())
+                    if size > MAX_SELECTION_BYTES:
+                        raise ValueError("selection exceeded its output-byte limit")
+                    urls[url] = None
+                    if len(urls) == max_links:
+                        return tuple(urls)
+            return tuple(urls)
         except duckdb.Error as exc:
             raise ValueError("follow SQL failed validation or exceeded its execution limits") from exc
         finally:

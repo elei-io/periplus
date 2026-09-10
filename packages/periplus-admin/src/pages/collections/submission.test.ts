@@ -8,6 +8,7 @@ function form() {
     seed_urls: "https://example.com/a?x=1\nhttps://example.com/a?x=2",
     follow_sql: "SELECT target_url AS url FROM nav.links",
     max_depth: "0",
+    follow_link_limit: "5000",
     page_limit: "25",
     result_max_age_seconds: "0",
     request_class: "admin",
@@ -22,6 +23,7 @@ test("submission preserves conservative URLs, zero depth and fresh-result intent
     "https://example.com/a?x=2",
   ])
   assert.equal(spec.max_depth, 0)
+  assert.equal(spec.follow_link_limit, 5000)
   assert.equal(spec.result_max_age_seconds, 0)
   assert.equal(spec.request_class, "admin")
 })

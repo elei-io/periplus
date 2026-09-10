@@ -426,3 +426,38 @@ Compose exposes experimental at localhost:8011, configurable through
 `PERIPLUS_QUERY_EXPERIMENTAL_PORT`. For a host-run public application, set
 `PERIPLUS_QUERY_EXPERIMENTAL_URL=http://127.0.0.1:8011`. Deploy core, public and
 the chart together so the endpoint and response contracts agree.
+
+## Automatic coordinated upgrades
+
+`upgradeCoordination.enabled` adds blocking Helm pre/post-upgrade Jobs around the
+existing setup hook. The pre-upgrade job pauses release-owned KEDA ScaledObjects,
+scales this release's runtime Deployments to zero, and waits for every old runtime
+pod to exit, including terminating pods. Setup then runs Alembic and catalogue
+installation. The post-upgrade job verifies the target image on every Deployment,
+restores configured replicas (autoscaled roles start at their minimum), unpauses
+only its own KEDA pauses, and waits for new replicas to become available.
+
+This intentionally creates a maintenance window on each upgrade. It adds no
+runtime service or database lock. The hook's namespaced Role can patch only this
+release's named Deployments and ScaledObjects and list pod metadata; application
+pods still receive no Kubernetes API token. Allow Kubernetes API and DNS egress
+for pods with component `upgrade`. The hook timeout defaults to 600 seconds and
+must accommodate the 330-second worker drain. First installs use the existing
+setup hook without a drain. An independently operator-paused scaler blocks an
+upgrade before any mutation; resolve that pause explicitly instead of letting a
+release undo it.
+
+Use client-side Helm apply (`install.serverSideApply: false` and
+`upgrade.serverSideApply: disabled` in Flux) so temporary scaling does not conflict
+with SSA field ownership. Use Flux `upgrade.strategy.name: RetryOnFailure` (and the same install strategy),
+not automatic rollback/uninstall remediation. A failed drain blocks setup; a failed
+setup leaves old runtime stopped. Retrying reuses the pause markers safely.
+An image rollback cannot undo Alembic or catalogue changes. Destructive migrations
+still require the documented backup/recovery preparation. Never use `helm --atomic`
+with this coordinated migration flow. Disabling coordination while a failed upgrade
+owns pause annotations requires explicit operational recovery.
+
+Successful hook Jobs are deleted; failed Jobs remain for logs. Hook ServiceAccount,
+Role and RoleBinding `<release-fullname>-upgrade` are replaced at the next upgrade
+and remain for recovery. Helm does not track hook assets for uninstall; remove those
+three identities when permanently uninstalling the release.

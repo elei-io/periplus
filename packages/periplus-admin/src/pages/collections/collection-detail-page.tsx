@@ -181,7 +181,7 @@ export function CollectionDetailPage({ id }: { id: string }) {
                 </p>
               )}
               <p>
-                Maximum depth {item.specification.max_depth} · Recent-result
+                Maximum depth {item.specification.max_depth} · Links per page {item.specification.follow_link_limit} · Recent-result
                 reuse up to {item.specification.result_max_age_seconds} seconds
                 · Class: {item.specification.request_class}
               </p>

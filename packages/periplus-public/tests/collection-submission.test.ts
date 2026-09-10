@@ -1,11 +1,13 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import { publicCollectionSpec } from "../src/lib/collection-submission.ts"
-const base = { kind: "url" as const, input: "https://example.com/a?x=1", depth: 1, scope: "internal" as const, maxPages: 25, sections: "" }
+const base = { kind: "url" as const, input: "https://example.com/a?x=1", depth: 1, scope: "internal" as const, maxPages: 25, maxLinks: 5000, sections: "" }
 test("public intent maps link scope to navigation SQL and preserves URL identity", () => {
   const spec = publicCollectionSpec(base)
   assert.deepEqual(spec.seed_urls, [base.input])
   assert.equal(spec.follow_sql, "SELECT target_url AS url FROM nav.links WHERE relation_scope IN ('self', 'same_origin', 'same_host', 'same_site')")
+  assert.equal(spec.follow_link_limit, 5000)
+  assert.throws(() => publicCollectionSpec({...base, maxLinks: 10001}), /link limit/)
   assert.equal(spec.request_class, "public")
   assert.equal(publicCollectionSpec({...base, scope: "external"}).follow_sql, "SELECT target_url AS url FROM nav.links WHERE relation_scope = 'external'")
   assert.equal(publicCollectionSpec({...base, scope: "both"}).follow_sql, "SELECT target_url AS url FROM nav.links")

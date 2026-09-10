@@ -143,6 +143,8 @@ function AccessForm({
             ...(body.crawl as object),
             page_budgets: values("page_budgets"),
             default_page_budget: integer("default_page_budget"),
+            follow_link_limits: values("follow_link_limits"),
+            default_follow_link_limit: integer("default_follow_link_limit"),
             max_depths: values("max_depths"),
             default_max_depth: integer("default_max_depth"),
             retention_seconds: values("retention_seconds"),
@@ -244,6 +246,7 @@ function AccessForm({
                   [
                     ["page_budgets", "default_page_budget", "Page budget"],
                     ["max_depths", "default_max_depth", "Maximum depth"],
+                    ["follow_link_limits", "default_follow_link_limit", "Maximum links per page"],
                     [
                       "retention_seconds",
                       "default_retention_seconds",
