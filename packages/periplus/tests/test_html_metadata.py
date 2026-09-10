@@ -20,16 +20,16 @@ class HtmlMetadataTests(unittest.TestCase):
         self.db.execute('''CREATE TABLE public_v1.html_element (
             content_id VARCHAR, node_index INTEGER, parent_index INTEGER,
             subtree_end_index INTEGER, tag VARCHAR, namespace VARCHAR,
-            attributes MAP(VARCHAR, VARCHAR))''')
+            attributes MAP(VARCHAR, VARCHAR), text_direct VARCHAR)''')
         self.db.execute(files('periplus.platform.catalogue').joinpath('sql/public_v1/views/html_metadata.sql').read_text())
 
     def load(self, html, content='fixture'):
         nodes, elements = parse_document(html)
         self.db.executemany('INSERT INTO public_v1.html_node VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                            [(content, *astuple(n)) for n in nodes])
-        self.db.executemany('INSERT INTO public_v1.html_element VALUES (?, ?, ?, ?, ?, ?, ?)',
+        self.db.executemany('INSERT INTO public_v1.html_element VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
                            [(content, e.element_index, e.parent_index, e.subtree_end_index,
-                             e.tag, e.namespace_uri, e.attributes) for e in elements])
+                             e.tag, e.namespace_uri, e.attributes, e.text_direct) for e in elements])
 
     def rows(self):
         return self.db.execute('SELECT kind,name,value FROM public_v1.html_metadata ORDER BY node_index,kind,name').fetchall()
@@ -61,3 +61,33 @@ class HtmlMetadataTests(unittest.TestCase):
                          [('title','HTML'),('meta_name','yes')])
         self.assertEqual([r[1] for r in self.db.execute('DESCRIBE public_v1.html_metadata').fetchall()],
                          ['VARCHAR','INTEGER','VARCHAR','VARCHAR','VARCHAR'])
+
+    def test_title_rcdata_matches_descendant_text(self):
+        sources = (
+            '<title>A <em>B</em> &amp; 雪</title>',
+            '<body><title>A <b>B</b></title>',
+            '<svg><title>SVG <tspan>nested</tspan></title></svg>',
+            '<svg><foreignObject><title>A <b>B</b></title></foreignObject></svg>',
+            '<template><title>A <b>B</b></title></template>',
+            '<title></title><title>second</title>',
+            '<select><title>A <b>B</b></title></select>',
+        )
+        for index, source in enumerate(sources):
+            self.load(source, str(index))
+        rows = self.db.execute("""SELECT e.text_direct,
+            coalesce(string_agg(n.value, '' ORDER BY n.node_index), '')
+            FROM public_v1.html_element e LEFT JOIN public_v1.html_node n
+             ON n.content_id=e.content_id AND n.node_index>e.node_index
+             AND n.node_index<e.subtree_end_index AND n.node_type='text'
+            WHERE e.tag='title' AND e.namespace='http://www.w3.org/1999/xhtml'
+            GROUP BY e.content_id,e.node_index,e.text_direct""").fetchall()
+        self.assertEqual(len(rows), 6)
+        self.assertTrue(all(direct == descendant for direct, descendant in rows))
+        self.assertEqual(self.db.execute("SELECT value FROM public_v1.html_metadata WHERE content_id='0'").fetchall(),
+                         [('A <em>B</em> & 雪',)])
+
+    def test_title_name_keeps_meta_declarations_without_node_dependency(self):
+        self.load('<title>Page</title><meta name="title" content="Declared">')
+        self.db.execute('DROP TABLE public_v1.html_node')
+        self.assertEqual(self.db.execute("SELECT kind,value FROM public_v1.html_metadata WHERE name='title' ORDER BY node_index").fetchall(),
+                         [('title','Page'),('meta_name','Declared')])

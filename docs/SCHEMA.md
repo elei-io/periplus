@@ -452,7 +452,9 @@ case. Original rel spelling and ordering remain in html_element.attributes.
 
 Missing content/href yields null; an explicitly empty attribute yields an empty
 string. An empty title yields an empty string. Title text concatenates descendant
-text without trimming or inserted separators. Relative URLs remain relative.
+text without trimming or inserted separators. The HTML5 parser handles HTML titles
+as RCDATA, so their stored `html_element.text_direct` supplies that same text.
+Relative URLs remain relative.
 The language and charset are declarations, not detection results; http-equiv is
 not evidence of a received HTTP header. No metadata inference, URL resolution,
 JSON-LD parsing, or body-level microdata extraction is performed.

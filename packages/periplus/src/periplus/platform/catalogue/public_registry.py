@@ -131,7 +131,7 @@ PUBLIC_OBJECTS = (
         ("name", "Declared metadata name or relation token; title, charset and lang use fixed names."),
         ("value", "Parsed declared value without normalization; null when the value attribute is absent."),
     ), "Explicit HTML metadata declarations, preserving source nodes and repeated declarations.",
-        ("material.html_nodes", "material.html_elements"), content_local=True),
+        ("material.html_elements",), content_local=True),
     _view("html_section", (
         ("content_id", "SHA-256 identity of captured bytes."),
         ("heading_node_index", "Heading that starts this passage."),
