@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from importlib.resources import files
+
 import json
 import runpy
 import sys
@@ -42,12 +44,14 @@ class QueryBenchmarkingTests(unittest.TestCase):
         try:
             connection.execute("CREATE SCHEMA public_v1")
             connection.execute("CREATE TABLE public_v1.capture(capture_id UUID, requested_url VARCHAR, effective_url VARCHAR, captured_at TIMESTAMPTZ, http_status_code INTEGER, content_id VARCHAR)")
-            connection.execute("CREATE TABLE public_v1.html_element(content_id VARCHAR, node_index INTEGER, tag VARCHAR, attributes MAP(VARCHAR,VARCHAR))")
-            connection.execute("CREATE TABLE public_v1.link(capture_id UUID, resolved_url VARCHAR)")
+            connection.execute("CREATE TABLE public_v1.html_element(content_id VARCHAR, node_index INTEGER, tag VARCHAR, attributes MAP(VARCHAR,VARCHAR), parent_index INTEGER, sibling_index INTEGER, subtree_end_index INTEGER, text_direct VARCHAR)")
+            connection.execute("CREATE TABLE public_v1.link(capture_id UUID, node_index INTEGER, raw_href VARCHAR, resolved_url VARCHAR)")
             connection.execute("CREATE TABLE public_v1.html_heading(content_id VARCHAR, node_index INTEGER, text VARCHAR)")
             connection.execute("CREATE TABLE public_v1.html_section(content_id VARCHAR, heading_node_index INTEGER)")
             connection.execute("CREATE TABLE public_v1.html_jsonld(content_id VARCHAR, node_index INTEGER, value JSON, parse_error VARCHAR)")
             connection.execute("CREATE TABLE public_v1.html_metadata(content_id VARCHAR, node_index INTEGER, kind VARCHAR, name VARCHAR, value VARCHAR)")
+            connection.execute("CREATE TABLE public_v1.html_node(content_id VARCHAR, node_index INTEGER, subtree_end_index INTEGER, node_type VARCHAR, value VARCHAR)")
+            connection.execute(files("periplus.platform.catalogue").joinpath("sql/public_v1/helpers/subtree_text.sql").read_text())
             for case in discover_cases(root).values():
                 parameters = {"scope": case.scales[0]} if case.scales[0] else None
                 connection.execute("EXPLAIN " + case.sql, parameters)
