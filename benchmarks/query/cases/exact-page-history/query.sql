@@ -1,10 +1,9 @@
 SELECT
-    observation_id,
-    outcome,
+    capture_id,
     http_status_code,
     content_id,
-    observed_at
-FROM web.observation
+    captured_at
+FROM public_v1.capture
 WHERE coalesce(effective_url, requested_url) =
       'https://developer.mozilla.org/de/docs/Web/API/AudioNode/context'
-ORDER BY observed_at DESC NULLS LAST, observation_id DESC;
+ORDER BY captured_at DESC NULLS LAST, capture_id DESC;

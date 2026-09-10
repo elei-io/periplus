@@ -12,6 +12,9 @@ compatibility layer, or abstraction. Read [docs/QUERY.md](docs/QUERY.md) before 
 [docs/EXTENSION_DEVELOPMENT.md](docs/EXTENSION_DEVELOPMENT.md) before building, testing, or
 changing the DuckLake CDC extension.
 
+For query performance work, follow [docs/QUERY_OPTIMIZATION.md](docs/QUERY_OPTIMIZATION.md)
+and use the shared `benchmarks/query/` bench.
+
 For every query performance issue, first classify it as schema/catalogue design, compiler/optimizer
 behavior, or both, using the evidence and decision rules in [docs/QUERY.md](docs/QUERY.md).
 Compiler actions include warnings, boundedness errors, and semantics-preserving SQL or plan

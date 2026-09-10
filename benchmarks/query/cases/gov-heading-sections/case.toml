@@ -1,0 +1,8 @@
+id = "gov-heading-sections"
+title = "Government URL heading discovery"
+use_case = "Find heading phrase matches and their section boundaries across captured URLs."
+classification = "both"
+ordered = false
+memory_limit = "512MB"
+max_warm_ms = 60000
+seconds = 120
