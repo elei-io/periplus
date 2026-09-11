@@ -1,0 +1,7 @@
+id = "prose-capture-previews"
+title = "Content discovery followed by capture URLs"
+use_case = "Find acquisition-related prose and return capture URLs with short previews."
+classification = "optimizer"
+ordered = false
+memory_limit = "512MB"
+max_warm_ms = 60000

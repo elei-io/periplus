@@ -27,7 +27,7 @@ from periplus.query.validation import _bounded_query, _one_statement
 from periplus.operations.access.schemas import QueryLimits
 from periplus.operations.query_history.schemas import PreparationEvidence
 
-COMPILER_VERSION = "public-query-v8"
+COMPILER_VERSION = "public-query-v9"
 
 class QueryMode(StrEnum):
     STABLE = "stable"
@@ -224,6 +224,35 @@ class QueryService:
                                 executable = _bounded_query(selected.sql, max_rows=limits.max_rows)
                                 plan = "\n".join(str(row[-1]) for row in d.execute("EXPLAIN " + selected.sql, execution_parameters).fetchall())
                                 optimizations = ["selected_content_scan_v1"]
+            if self.mode == QueryMode.EXPERIMENTAL and scope is None and not optimizations:
+                from periplus.query.prose_matches import prose_matches
+                matches = prose_matches(payload.sql, payload.parameters)
+                if matches is not None:
+                    installed = dict(d.execute(
+                        "SELECT view_name, sql FROM duckdb_views() WHERE database_name=? AND schema_name='public_v1'",
+                        [self.alias],
+                    ).fetchall())
+                    if matches.matches(d, installed):
+                        if not execute:
+                            diagnostics.append(Diagnostic(severity="info", code="prose_matches_available",
+                                message="Execution can collect bounded prose previews before joining captures in the same snapshot and deadline."))
+                        else:
+                            if expired.is_set():
+                                raise TimeoutError("Query time limit exceeded.")
+                            matched_parameters = matches.select(d)
+                            if expired.is_set():
+                                raise TimeoutError("Query time limit exceeded.")
+                            if matched_parameters is None:
+                                diagnostics.append(Diagnostic(severity="info", code="prose_matches_bound",
+                                    message="Matching previews exceed the optimization collection bound; executing the original query."))
+                            else:
+                                execution_parameters = matched_parameters
+                                executable = _bounded_query(matches.sql, max_rows=limits.max_rows)
+                                # Keep both phase plans visible without exposing bound previews.
+                                selection_plan = "\n".join(str(row[-1]) for row in d.execute("EXPLAIN " + matches.selection_sql, matches.selection_parameters).fetchall())
+                                join_plan = "\n".join(str(row[-1]) for row in d.execute("EXPLAIN " + matches.sql, execution_parameters).fetchall())
+                                plan = "Prose selection:\n" + selection_plan + "\nCapture join:\n" + join_plan
+                                optimizations = ["prose_matches_before_capture_v1"]
             if len(plan.encode()) > 64_000:
                 plan = plan.encode()[:64_000].decode(errors="ignore")
                 diagnostics.append(Diagnostic(severity="warning", code="plan_truncated", message="The execution plan preview was truncated."))

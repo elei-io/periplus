@@ -1,4 +1,4 @@
-"""Frozen-snapshot selected-content pair using the shared result/measurement bench.
+"""Frozen-snapshot staged query pair using the shared result/measurement bench.
 
 Receives the ordinary reader environment. Reports no SQL, parameters or result rows.
 Each candidate measurement includes key selection; no cross-snapshot key cache.
@@ -11,19 +11,21 @@ from time import monotonic
 
 from periplus.query import benchmarking as bench
 from periplus.query.selected_content import selected_content
+from periplus.query.prose_matches import prose_matches
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--case-root', type=Path, default=Path(__file__).resolve().parents[3] / 'benchmarks/query/cases')
     parser.add_argument('--case', required=True)
+    parser.add_argument('--rule', choices=['selected-content', 'prose-matches'], default='selected-content')
     parser.add_argument('--candidate-first', action='store_true')
     parser.add_argument('--report', type=Path, required=True)
     args = parser.parse_args()
     case = bench.discover_cases(args.case_root)[args.case]
-    selected = selected_content(case.sql)
+    selected = (prose_matches if args.rule == 'prose-matches' else selected_content)(case.sql)
     if selected is None:
-        raise SystemExit('Case is not eligible for selected-content execution')
+        raise SystemExit('Case is not eligible for the selected execution rule')
     connection = bench._connection(case)
     report = {'measurements': {}, 'complete': False}
     try:
@@ -37,18 +39,24 @@ def main():
             with bench.deadline(connection, case.seconds):
                 started = monotonic()
                 if label == 'candidate':
-                    keys = selected.select(connection)
-                    if keys is None:
-                        raise ValueError('Key collection bound exceeded')
+                    collected = selected.select(connection)
+                    if collected is None:
+                        raise ValueError('Intermediate collection bound exceeded')
+                    if args.rule == 'prose-matches':
+                        bindings = collected
+                        selected_count = len(collected['1'])
+                    else:
+                        bindings = {**selected.parameters, selected.key_parameter: collected}
+                        selected_count = len(collected)
                     selection_ms = (monotonic() - started) * 1000
                     remaining = case.seconds - selection_ms / 1000
                     if remaining < 1:
                         raise TimeoutError('Selection exhausted benchmark budget')
                     m = asdict(bench._measure(connection, replace(case, sql=selected.sql, seconds=int(remaining)), None, 0,
-                        bound_parameters={**selected.parameters, selected.key_parameter: keys}))
+                        bound_parameters=bindings))
                     m['normal_ms'] += selection_ms
                     m['selection_ms'] = selection_ms
-                    m['selected_key_count'] = len(keys)
+                    m['selected_input_rows'] = selected_count
                     m['within_time_budget'] = m['normal_ms'] <= case.max_warm_ms
                 else:
                     m = asdict(bench._measure(connection, case, None, 0))

@@ -197,3 +197,18 @@ is recorded as failure, never equality. For private incident SQL, create the cas
 under ignored `.artifacts/` with a matching case.toml and pass `--case-root`; remove
 it after the investigation. Public-service activation and limits still require
 separate QueryService validation.
+
+
+The same staged runner supports bounded prose previews:
+
+```sh
+uv run python scripts/query_selected_content_benchmark.py \
+  --case prose-capture-previews --rule prose-matches --candidate-first \
+  --report ../../.artifacts/query-benchmarks/prose-previews.json
+```
+
+Run both variant orders. Selection is included in candidate time and shares the
+pair's frozen transaction. A failed original is an incomplete comparison, even
+when the candidate succeeds; the investigation records independent full-result
+reference checks separately. Service-level acceptance must additionally include
+normal validation, result conversion, and the production container limit.

@@ -77,7 +77,7 @@ class QueryServiceTests(unittest.TestCase):
         self.assertEqual(stable.query_mode, QueryMode.STABLE)
         self.assertEqual(result.query_mode, QueryMode.EXPERIMENTAL)
         self.assertEqual(result.optimizations, [])
-        self.assertEqual(evidence.compiler_version, "public-query-v8:experimental")
+        self.assertEqual(evidence.compiler_version, "public-query-v9:experimental")
         self.assertNotEqual(result.compiler_version, stable.compiler_version)
         with self.assertRaises(ValueError):
             QueryService(self.config, mode="invalid")
@@ -105,7 +105,7 @@ class QueryServiceTests(unittest.TestCase):
         self.assertEqual(after.types, before.types)
         self.assertEqual(after.sql, request.sql)
         self.assertEqual(before.optimizations, ['capture_heading_content_scope_v1'])
-        self.assertEqual(before.compiler_version, 'public-query-v8:stable')
+        self.assertEqual(before.compiler_version, 'public-query-v9:stable')
         self.assertEqual(after.optimizations, ['capture_heading_content_scope_v1'])
         self.assertIn('__periplus_scope_', after.plan)
         self.assertEqual(stable.prepare(request).optimizations, after.optimizations)
@@ -216,7 +216,7 @@ class QueryServiceTests(unittest.TestCase):
             result = self.service.execute(request)
         self.assertEqual(prepared.sql, request.sql)
         self.assertEqual(result.sql, request.sql)
-        self.assertEqual(evidence.compiler_version, 'public-query-v8:stable')
+        self.assertEqual(evidence.compiler_version, 'public-query-v9:stable')
         self.assertEqual(evidence.plan, prepared.plan)
         self.assertFalse(any(d.code.startswith('content_scope') for d in result.diagnostics))
         self.assertEqual(self.service.connection.execute("SELECT current_setting('disabled_optimizers')").fetchone(), before)
@@ -519,6 +519,89 @@ class QueryServiceTests(unittest.TestCase):
         self.assertEqual(bounded.optimizations, [])
         self.assertIn('selected_content_bound', [d.code for d in bounded.diagnostics])
 
+    def test_prose_matches_execution_bounds_and_catalogue_guard(self):
+        from periplus.query.service import QueryMode
+        from periplus.query.prose_matches import ProseMatches
+        from test_prose_matches import SQL
+        experimental = QueryService(self.config, mode=QueryMode.EXPERIMENTAL)
+        self.addCleanup(experimental.close)
+        request = QueryRequest(sql=SQL, parameters=['robot'])
+        with patch.object(ProseMatches, 'select', side_effect=AssertionError('prep/stable must not select')):
+            prep = experimental.prepare(request)
+            stable = self.service.execute(request)
+        self.assertIn('prose_matches_available', [d.code for d in prep.diagnostics])
+        self.assertEqual(prep.optimizations, [])
+        actual = experimental.execute(request)
+        self.assertEqual(actual.rows, stable.rows)
+        self.assertEqual(actual.columns, stable.columns)
+        self.assertEqual(actual.types, stable.types)
+        self.assertEqual(actual.sql, SQL)
+        self.assertEqual(actual.parameters, ['robot'])
+        self.assertEqual(actual.optimizations, ['prose_matches_before_capture_v1'])
+        self.assertIn('Prose selection:', actual.plan)
+        self.assertIn('Capture join:', actual.plan)
+        for bound in ('MAX_MATCHES', 'MAX_MATCH_BYTES'):
+            with patch('periplus.query.prose_matches.' + bound, 0):
+                bounded = experimental.execute(request)
+            self.assertEqual(bounded.rows, stable.rows)
+            self.assertEqual(bounded.optimizations, [])
+            self.assertIn('prose_matches_bound', [d.code for d in bounded.diagnostics])
+        with patch.object(ProseMatches, 'matches', return_value=False):
+            self.assertEqual(experimental.execute(request).optimizations, [])
+        empty = experimental.execute(QueryRequest(sql=SQL, parameters=['absent']))
+        self.assertEqual(empty.rows, [])
+        self.assertEqual(empty.types, stable.types)
+        self.assertEqual(empty.optimizations, actual.optimizations)
+        # Validation does not abort the read transaction on an invalid regex.
+        with self.assertRaises(duckdb.Error):
+            experimental.execute(QueryRequest(sql=SQL, parameters=['[']))
+        self.assertEqual(experimental.execute(QueryRequest(sql='SELECT 1')).rows, [[1]])
+
+    def test_prose_matches_shares_deadline_and_admission(self):
+        from periplus.query.service import QueryMode
+        from periplus.query.prose_matches import ProseMatches
+        from test_prose_matches import SQL
+        experimental = QueryService(self.config, mode=QueryMode.EXPERIMENTAL, deadline=0.15)
+        self.addCleanup(experimental.close)
+        def expensive_selection(_matches, connection):
+            with self.assertRaises(BusyError):
+                experimental.execute(QueryRequest(sql='SELECT 1'))
+            connection.execute('SELECT sum(i*j) FROM range(1000000) a(i),range(1000000) b(j)')
+        with patch.object(ProseMatches, 'select', expensive_selection):
+            with self.assertRaises(TimeoutError):
+                experimental.execute(QueryRequest(sql=SQL, parameters=['robot']))
+        experimental.deadline = 20
+        self.assertEqual(experimental.execute(QueryRequest(sql='SELECT 1')).rows, [[1]])
+
+    def test_prose_matches_keeps_snapshot_across_phases(self):
+        from periplus.query.service import QueryMode
+        from periplus.query.prose_matches import ProseMatches
+        from test_prose_matches import SQL
+        # Embedded DuckDB metadata cannot open independent read-only and writer
+        # handles together. Share the attachment, with independent transactions.
+        self.service.close()
+        writer = DuckLakeConnectionFactory(self.config).connect(read_only=False)
+        self.addCleanup(writer.close)
+        with patch.object(QueryService, '_connect', lambda _: writer.cursor()):
+            experimental = QueryService(self.config, mode=QueryMode.EXPERIMENTAL)
+        experimental.connection.execute('USE periplus.public_v1')
+        self.addCleanup(experimental.close)
+        original_select = ProseMatches.select
+        snapshot = []
+        def select_then_commit(matches, connection):
+            selected = original_select(matches, connection)
+            snapshot.append(connection.execute("SELECT id FROM ducklake_current_snapshot('periplus')").fetchone()[0])
+            writer.execute("UPDATE periplus.ingest.visits SET effective_url='https://changed.example/'")
+            return selected
+        before = experimental.execute(QueryRequest(sql=SQL, parameters=['robot']))
+        with patch.object(ProseMatches, 'select', select_then_commit):
+            actual = experimental.execute(QueryRequest(sql=SQL, parameters=['robot']))
+        self.assertEqual(actual.source_snapshot, snapshot[0])
+        self.assertEqual(actual.rows, before.rows)
+        after = experimental.execute(QueryRequest(sql=SQL, parameters=['robot']))
+        self.assertGreater(after.source_snapshot, actual.source_snapshot)
+        self.assertEqual(after.rows, [['https://changed.example/', 'robot careers']])
+
     def test_selection_uses_existing_deadline_and_recovers(self):
         from periplus.query.service import QueryMode
         from periplus.query.selected_content import SelectedContent
@@ -545,6 +628,23 @@ class QueryServiceTests(unittest.TestCase):
         report = Path(self.directory.name) / 'selected-report.json'
         script = root / 'packages/periplus/scripts/query_selected_content_benchmark.py'
         with patch('periplus.query.benchmarking.catalogue_config_from_env', return_value=self.config), patch.object(sys, 'argv', [str(script), '--case', 'selected-content-headings', '--candidate-first', '--report', str(report)]), redirect_stdout(io.StringIO()):
+            runpy.run_path(str(script), run_name='__main__')
+        payload = json.loads(report.read_text())
+        self.assertTrue(payload['complete'])
+        self.assertEqual(payload['failures'], [])
+        self.assertTrue(payload['comparisons'][0]['exact_result'])
+        self.assertIn('selection_ms', payload['measurements']['candidate'])
+
+    def test_prose_matches_shared_benchmark(self):
+        import json
+        import runpy
+        import sys
+        from contextlib import redirect_stdout
+        import io
+        root = Path(__file__).resolve().parents[3]
+        report = Path(self.directory.name) / 'prose-report.json'
+        script = root / 'packages/periplus/scripts/query_selected_content_benchmark.py'
+        with patch('periplus.query.benchmarking.catalogue_config_from_env', return_value=self.config), patch.object(sys, 'argv', [str(script), '--case', 'prose-capture-previews', '--rule', 'prose-matches', '--candidate-first', '--report', str(report)]), redirect_stdout(io.StringIO()):
             runpy.run_path(str(script), run_name='__main__')
         payload = json.loads(report.read_text())
         self.assertTrue(payload['complete'])

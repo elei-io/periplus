@@ -76,7 +76,7 @@ SQL preparation and execution remain in the separate Python
 
 Both operations accept SQL and positional parameters and use the same public SQL validation.
 Preparation binds and explains without executing the analytical query, returning SQL, parameters,
-a query ID, diagnostics, and a plan. Compiler `public-query-v8` applies the promoted
+a query ID, diagnostics, and a plan. Compiler `public-query-v9` applies the promoted
 optimizations documented below in both stable and experimental. Responses preserve
 the submitted SQL and parameters and identify applied rewrites.
 The execution-only row-limit wrapper remains a resource control. DuckDB performs native
@@ -833,10 +833,10 @@ console links preserve the selected mode with `mode=experimental`. Stable uses
 `/api/query/experimental/exec`, `/api/query/experimental/prep` and
 `/api/query/experimental/helpers`. The SQL assistant validates against the selected mode.
 
-Stable and experimental share compiler `public-query-v8`, with mode suffixes
+Stable and experimental share compiler `public-query-v9`, with mode suffixes
 `:stable` and `:experimental`. Both include the promoted
 `capture_heading_content_scope_v1` and `prose_scalar_before_capture_v1` optimizations.
-Experimental additionally supports the execution-only selected-content rule below.
+Experimental additionally supports the execution-only selected-content and prose-preview rules below.
 New candidates remain experimental until explicitly promoted.
 
 `capture_heading_content_scope_v1` activates only for a conservative inner join of
@@ -931,3 +931,34 @@ broad selections are accepted, but correctness and resource limits are unchanged
 both gains and the broad synthetic regression. Stable execution is unchanged;
 compiler v8 identifies this revision in both modes. No persistent tables, global
 DuckDB optimizer settings, service limits or deployment topology are changed.
+
+
+### Experimental prose previews before capture joins
+
+`prose_matches_before_capture_v1` completes a prose search before joining its
+matching content IDs and short previews to captures. Both statements share the
+existing read transaction, admission slot, and total execution deadline. No
+persistent table, catalogue change, or native optimizer setting is involved.
+
+Initial eligibility is one capture/prose inner `USING (content_id)` join, in
+either direction, with a single `regexp_matches(p.text, pattern)` or
+`regexp_matches(lower(p.text), pattern)` predicate. Text references must be
+qualified. The pattern is a string literal or anonymous parameter, at most
+4,096 characters; regex options and invalid patterns stay native. Exactly one
+aliased `left(p.text, literal_length)` preview is supported, from zero to 10,000
+characters. Other outputs are qualified capture columns, optionally aliased.
+CTEs, ordering, grouping, distinct, limits, outer joins, additional predicates,
+and other expressions remain native. Reviewed installed view definitions must
+match before activation.
+
+Selection retains duplicates and collects at most 100,000 rows / 8 MiB of UTF-8
+string payload. Typed VARCHAR arrays preserve empty results and null behavior.
+Exceeding the collection bound uses native execution under the remaining deadline;
+it never returns a partial match domain. These intermediate bounds do not bound
+DuckDB's scan buffers or whole-process memory. Public result limits still apply.
+Preparation only reports availability, without running discovery. Execution
+reports the applied optimization and both phase plans; submitted SQL and user
+parameters are preserved.
+
+[Production-corpus evidence and deployment limitations](query-investigations/prose-capture-join/README.md)
+record completed comparisons, correctness checks, and process-memory failures.
