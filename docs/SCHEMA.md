@@ -102,6 +102,31 @@ content ownership and the complete generation lifecycle with the DOM projections
 Files are unpartitioned and sorted by content identity, avoiding bucket fan-out
 for this one-row-per-content corpus scan surface.
 
+### `material.vocabulary` and `material.term_stat`
+
+Private term materialization consists of:
+
+- `vocabulary(term VARCHAR, term_id BIGINT)`: one normalized term per generation.
+  Unpartitioned, sorted by `term`; missing terms are reserved under the generation claim.
+- `term_stat(term_id BIGINT, content_sha256 VARCHAR, frequency BIGINT)`: one positive
+  frequency per term/content pair. Unpartitioned, sorted by `(term_id, content_sha256)`.
+
+Terms come from the same body-text extraction as prose, using ICU root-locale word
+boundaries after case folding and NFC normalization. Numbers are retained; punctuation,
+whitespace and symbols are discarded. No stemming, stopword removal, positions or semantic
+ranking is implied. PyICU 2.16.2, ICU 77.1 and Unicode 16.0 are pinned and validated;
+changing tokenization requires a complete generation rebuild.
+
+The dictionary is generation-owned and append-only. Numeric IDs are private and can change
+between rebuilds. Frequencies share content ownership, replay, retirement and atomic activation
+with the other content projections. Unused reservations survive until the generation is removed.
+The public `term(content_id, text, frequency)` view exposes their logical contents;
+dictionary IDs and physical layout remain private.
+
+Term-major sorting is a starting layout, not a guarantee of bounded reads under appends.
+LakeDucktor owns compaction; overlapping file ranges and native multi-key scan filtering
+remain measured limitations described in the query investigation.
+
 ### `material.link_occurrences`
 
 One visit-owned anchor observation per deterministic `occurrence_id`:
@@ -138,6 +163,52 @@ and execution report `schema_version`; execution additionally reports
 `source_snapshot`. A schema version specifies semantics, not a data snapshot or a
 promise that an expired snapshot can be replayed. Physical layout is private.
 There are no `web` or `content` compatibility namespaces.
+
+### `public_v1.term`
+
+One row per normalized term and unique HTML content:
+
+| Column | Meaning |
+| --- | --- |
+| `content_id` | SHA-256 identity of captured HTML bytes. |
+| `text` | Normalized term extracted from body prose. |
+| `frequency` | BIGINT occurrence count within that content's body prose. |
+
+Terms use the same body text as `prose`. ICU case folding and NFC normalization
+mean `Monkeys` becomes `monkeys`, `Straße` becomes `strasse`, and canonically
+equivalent accented spellings share a term. ICU segments multilingual text,
+including Chinese and Japanese; terms are tokenizer units, not a promise of
+linguistic words. Numbers remain; punctuation and symbols do not. There is no
+stemming or stopword removal. SQL literals are not automatically tokenized:
+use the normalized spelling for exact equality.
+
+```sql
+-- Contents mentioning monkeys, with all their headings.
+SELECT h.level, h.text, h.node_index, t.content_id, t.frequency
+FROM term t
+JOIN html_heading h USING (content_id)
+WHERE t.text = 'monkeys'
+LIMIT 10;
+
+-- Match vocabulary spellings containing monkey.
+SELECT content_id, text, frequency
+FROM term
+WHERE text ILIKE '%monkey%'
+LIMIT 10;
+
+-- Both terms occur in the same content; this does not assert phrase order.
+SELECT a.content_id
+FROM term a JOIN term b USING (content_id)
+WHERE a.text = 'monkeys' AND b.text = 'zoo'
+LIMIT 10;
+```
+
+Repeated captures of identical content share frequencies; joining `capture` can
+repeat a term row for each capture. Empty prose has no term rows. Reserved terms
+with no postings are absent. Results have no implicit relevance order; heading
+joins return headings from matching content, not necessarily matching headings.
+Phrase verification belongs against prose. A LIMIT caps returned rows, not scan
+cost; common terms, broad patterns and DOM joins can still be expensive.
 
 ### `public_v1.prose`
 

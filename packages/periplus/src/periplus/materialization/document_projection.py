@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from itertools import islice
 
@@ -47,6 +47,7 @@ class VisitBatchContext:
     parsed_nodes_by_content: dict[str, tuple[NodeRow, ...]]
     observations_by_content: dict[str, tuple[DocumentObservation, ...]]
     content_output_hashes: frozenset[str]
+    dictionary_ids: dict[str, dict[str, int]] = field(default_factory=dict)
 
 
 def build_visit_batch_context(

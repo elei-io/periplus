@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -78,6 +78,8 @@ def prepare_batch(
     html_repository: RawHtmlRepository,
     run: MaterializationRun,
     batch: MaterializationBatch,
+    *,
+    active_generation: bool = False,
 ) -> PreparedBatch | BatchResult:
     applied = _applied_result(catalogue, batch.id)
     if applied is not None:
@@ -104,6 +106,21 @@ def prepare_batch(
         documents=documents,
         content_output_hashes=owned_hashes,
     )
+    # Reserve shared keys before encoding files. These append-only reservations
+    # may outlive a failed batch; IDs are never recycled within a generation.
+    dictionary_inputs = {
+        spec.name: spec.rows(context)
+        for spec in PROJECTIONS if spec.dictionary_key is not None
+    }
+    with step("dictionary_reservation"), write_claims({"generation": [str(run.id)]}):
+        if active_generation and not _is_active_generation(catalogue, run.id):
+            return BatchResult(0, 0, 0, 0, 0, 0, 0, superseded=True)
+        with catalogue.remote_transaction():
+            dictionary_ids = {
+                name: _reserve_dictionary(catalogue, run, name, rows)
+                for name, rows in dictionary_inputs.items()
+            }
+    context = replace(context, dictionary_ids=dictionary_ids)
     source_bytes = sum(source.content_bytes for source in sources)
     project_seconds = time.perf_counter() - project_started
     parquet_seconds = 0.0
@@ -111,6 +128,9 @@ def prepare_batch(
     files: dict[str, tuple[PreparedFile, ...]] = {}
     file_set_id = uuid4().hex
     for spec in PROJECTIONS:
+        if spec.dictionary_key is not None:
+            files[spec.name] = ()
+            continue
         project_started = time.perf_counter()
         with step("projection_rows"):
             output = spec.rows(context)
@@ -173,6 +193,8 @@ def commit_prepared_batch(
             return _result(prepared, commit_started, already_applied=True)
         with step("lake_transaction"), catalogue.remote_transaction():
             for spec in PROJECTIONS:
+                if spec.ownership_grain == "generation":
+                    continue
                 identities = (prepared.owned_content_hashes if spec.ownership_grain == "content"
                               else prepared.retained_visit_ids)
                 column = "content_sha256" if spec.ownership_grain == "content" else "visit_id"
@@ -354,6 +376,45 @@ def _document_sources(
         owned_hashes,
         tuple(tuple(item) for item in documents),
     )
+
+
+
+def _reserve_dictionary(
+    catalogue: Catalogue,
+    run: MaterializationRun,
+    name: str,
+    rows: pa.Table,
+) -> dict[str, int]:
+    """Called inside the generation claim and lake transaction.
+
+    Allocation has no external sequence: rollback, retries and overlapping
+    batches all reuse the committed dictionary. The claim serializes MAX + N.
+    """
+    if not rows.num_rows:
+        return {}
+    spec = BY_NAME[name]
+    key = _quote_identifier(spec.dictionary_key)
+    identity = _quote_identifier(spec.dictionary_id)
+    target = f"material.{_quote_identifier(run.generation_tables[name])}"
+    registration = f"_periplus_dictionary_{name}"
+    connection = catalogue.trusted_connection
+    connection.register(registration, rows)
+    try:
+        catalogue.trusted_remote_execute(f"""
+            INSERT INTO {target} ({key}, {identity})
+            SELECT missing.{key},
+                   (SELECT coalesce(max({identity}), 0) FROM {target})
+                       + row_number() OVER (ORDER BY missing.{key})
+            FROM (SELECT DISTINCT {key} FROM {registration}
+                  EXCEPT SELECT {key} FROM {target}) missing
+            ORDER BY missing.{key}
+        """)
+        return {str(term): int(term_id) for term, term_id in catalogue.trusted_remote_rows(f"""
+            SELECT d.{key}, d.{identity} FROM {target} d
+            SEMI JOIN {registration} r ON d.{key} = r.{key}
+        """)}
+    finally:
+        connection.unregister(registration)
 
 
 def _write_partitioned_parquet(

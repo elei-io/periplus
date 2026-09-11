@@ -57,9 +57,37 @@ class QueryServiceTests(unittest.TestCase):
         d.execute("INSERT INTO material.html_nodes (content_sha256, node_index, subtree_end_index, node_type, value, depth) VALUES ('helper-fixture',0,4,'element',NULL,0),('helper-fixture',1,2,'text','start',1),('helper-fixture',2,3,'text','nested',1),('helper-fixture',3,4,'text','end',1)")
         d.execute("UPDATE material.html_elements SET tag = 'title', namespace = 'HTML' WHERE content_sha256 = 'helper-fixture' AND element_index = 0")
         d.execute("INSERT INTO material.prose VALUES ('helper-fixture', 'robot careers')")
+        d.execute("INSERT INTO material.vocabulary VALUES ('robot', 1), ('robotics', 2), ('unused', 3)")
+        d.execute("INSERT INTO material.term_stat VALUES (1, 'helper-fixture', 2), (2, 'helper-fixture', 1)")
         d.close()
         self.service = QueryService(self.config)
         self.addCleanup(self.service.close)
+
+    def test_public_term_filtering_and_content_joins(self):
+        from periplus.query.service import QueryMode
+        experimental = QueryService(self.config, mode=QueryMode.EXPERIMENTAL)
+        self.addCleanup(experimental.close)
+        for service in (self.service, experimental):
+            exact = QueryRequest(sql="SELECT * FROM term WHERE text = ?", parameters=['robot'])
+            service.prepare(exact)
+            result = service.execute(exact)
+            self.assertEqual(result.columns, ['content_id', 'text', 'frequency'])
+            self.assertEqual(result.types, ['VARCHAR', 'VARCHAR', 'BIGINT'])
+            self.assertEqual(result.rows, [['helper-fixture', 'robot', 2]])
+            matched = service.execute(QueryRequest(
+                sql="SELECT text, frequency FROM public_v1.term WHERE text ILIKE ? ORDER BY text",
+                parameters=['%ROBOT%']))
+            self.assertEqual(matched.rows, [['robot', 2], ['robotics', 1]])
+            joined = service.execute(QueryRequest(sql="""SELECT c.effective_url, p.text, t.frequency
+                FROM term t JOIN prose p USING(content_id) JOIN capture c USING(content_id)
+                WHERE t.text = ?""", parameters=['robot']))
+            self.assertEqual(len(joined.rows), 1)
+            self.assertEqual(joined.rows[0][1:], ['robot careers', 2])
+            self.assertEqual(service.execute(QueryRequest(
+                sql="SELECT * FROM term WHERE text = 'unused'")).rows, [])
+            self.assertEqual(service.execute(QueryRequest(
+                sql="SELECT a.content_id FROM term a JOIN term b USING(content_id) "
+                    "WHERE a.text = 'robot' AND b.text = 'robotics'")).rows, [['helper-fixture']])
 
     def test_modes_preserve_results_and_have_separate_admission(self):
         from periplus.query.service import QueryMode

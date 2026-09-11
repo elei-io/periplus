@@ -83,8 +83,9 @@ def write_claims(identities: Mapping[str, Iterable[str]], *, allow_retired: bool
                  wait_seconds: float = 10):
     """Exclude overlapping writes; generation claims serialize publication commits.
 
-    Preparation belongs outside this scope. The remote write and its Postgres
-    completion receipt belong inside. A waiting caller holds no claims or lake
+    Parsing and file encoding belong outside this scope. Dictionary reservations
+    use a short generation-scoped transaction; final remote writes and their
+    Postgres completion receipt also belong inside. A waiting caller holds no claims or lake
     transaction. Process suspension beyond the hard deadline is outside the
     bounded-worker contract, as with physical object reclamation.
     """

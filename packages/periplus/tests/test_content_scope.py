@@ -45,7 +45,8 @@ class ContentScopeTests(unittest.TestCase):
         }.items()}
         context = VisitBatchContext((), (), (), {k: v[1] for k, v in parsed.items()},
                                     {k: v[0] for k, v in parsed.items()}, {}, frozenset(parsed))
-        for name, project in [(spec.name, spec.rows) for spec in PROJECTIONS]:
+        for name, project in [(spec.name, spec.rows) for spec in PROJECTIONS
+                              if spec.name not in {"vocabulary", "term_stat"}]:
             self.db.register('projection_rows', project(context))
             self.db.execute(f'INSERT INTO material.{name} SELECT * FROM projection_rows')
             self.db.unregister('projection_rows')

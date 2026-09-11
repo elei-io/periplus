@@ -491,3 +491,18 @@ the explicit maintenance procedure. Do not claim an image rollback reverses them
 After a routine rollout, verify Deployment availability, public health responses,
 worker readiness and ingestion progress. Helm/Flux readiness alone does not prove
 that backlog is shrinking or that user queries work.
+
+
+## Native term tokenizer
+
+The backend requires PyICU 2.16.2 linked against ICU 77.1 (Unicode 16.0).
+The runtime image and backend CI use `docker/periplus/install-icu.sh` to build the
+same upstream ICU release with its SHA-512 checksum verified. The script needs
+a Debian-compatible build environment, a C++ toolchain, curl and pkg-config;
+it installs into `/usr/local` and refreshes the linker cache. Local development
+must provide that same native version before `uv sync`.
+
+The materialization registry validates these versions at import and includes
+the tokenizer implementation in its generation digest. A different native ICU
+must fail startup instead of producing mixed tokenization inside one generation.
+An intentional tokenizer update changes the pin and requires a complete rebuild.
