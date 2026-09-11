@@ -25,18 +25,15 @@ The client reuses HTTP connections; close it with a context manager or `close()`
 Install the notebook integration from PyPI:
 
 ```sh
-uv add "periplus-python-sdk[notebook]>=0.5.0"
+uv add "periplus-python-sdk[notebook]>=0.6.0"
 ```
 
 In a Python setup cell, create a SQLAlchemy engine:
 
 ```python
-from sqlalchemy import create_engine
+from periplus_sdk import sql_api
 
-pp = create_engine(
-    "periplus:///public_v1",
-    connect_args={"base_url": "https://periplus.dev", "mode": "stable"},
-)
+pp = sql_api.create_engine("https://periplus.dev", mode="stable")
 ```
 
 Add a SQL cell, select **pp** in its connection dropdown, and enter:
@@ -66,16 +63,18 @@ captures = mo.sql(
 )
 ```
 
-Set `mode="experimental"` in `connect_args` for the experimental service. The URL
-path names the public schema; the HTTPS endpoint belongs in `base_url` (or set
-`PERIPLUS_PUBLIC_URL`). Run `pp.dispose()` when finished. This is a read-only
+Set `mode="experimental"` for the experimental service. Omit the URL to use
+`PERIPLUS_PUBLIC_URL`. Optional `timeout=140` and `schema_version="public_v1"`
+arguments configure the client deadline and public schema. Run `pp.dispose()` when finished. This is a read-only
 SQLAlchemy dialect for textual SQL and reflection, not a writable ORM backend.
 Each statement has its own server snapshot; SQLAlchemy transaction blocks do not
 provide a shared snapshot or rollback. The adapter makes no transaction requests.
 
 A complete notebook is in `examples/notebook.py`. The integration is tested with
-marimo 0.24.1 and SQLAlchemy 2.x. For SQLAlchemy without marimo, install the
-`sqlalchemy` extra instead of `notebook`.
+marimo 0.24.1 and SQLAlchemy 2.x. SQLAlchemy is included in the standard SDK install; the `notebook` extra adds
+marimo. Existing marimo environments only need `uv add "periplus-python-sdk>=0.6.0"`.
+The returned object is a standard SQLAlchemy Engine, also usable with pandas and
+ordinary Python scripts. Engine creation is lazy; the first query opens a connection.
 
 ## DB-API connection
 
@@ -179,10 +178,10 @@ Use `aclose()` when managing an async client's lifetime explicitly.
 Install the public-v1 client from PyPI:
 
 ```sh
-python -m pip install "periplus-python-sdk>=0.5.0"
+python -m pip install "periplus-python-sdk>=0.6.0"
 ```
 
-Version 0.5.0 supports the current public-v1 contract. For production, configure
+Version 0.6.0 supports the current public-v1 contract. For production, configure
 `PERIPLUS_PUBLIC_URL=https://periplus.dev`; no API token is required.
 Run the installed package against an available public app:
 
@@ -194,11 +193,11 @@ PERIPLUS_PUBLIC_URL=http://localhost:8080 python packages/periplus-python-sdk/ex
 
 Repository CI publishes immutable releases from tags named
 `periplus-python-sdk-v<version>`. The tag must exactly match the static version
-in `pyproject.toml`; for example, version `0.5.0` is released with:
+in `pyproject.toml`; for example, version `0.6.0` is released with:
 
 ```sh
-git tag periplus-python-sdk-v0.5.0
-git push origin periplus-python-sdk-v0.5.0
+git tag periplus-python-sdk-v0.6.0
+git push origin periplus-python-sdk-v0.6.0
 ```
 
 PyPI publishing uses Trusted Publishing rather than a stored API token. The
@@ -208,7 +207,7 @@ that GitHub environment with required reviewers before the first release.
 
 ## Public v1
 
-Install the updated SDK from PyPI with `python -m pip install "periplus-python-sdk>=0.5.0"`. The previously published 0.2.0 release predates this contract. `prepare` and `execute` accept keyword-only `schema_version="public_v1"` (the default); responses preserve `schema_version` separately from `source_snapshot`. Unavailable versions are rejected by the server.
+Install the updated SDK from PyPI with `python -m pip install "periplus-python-sdk>=0.6.0"`. The previously published 0.2.0 release predates this contract. `prepare` and `execute` accept keyword-only `schema_version="public_v1"` (the default); responses preserve `schema_version` separately from `source_snapshot`. Unavailable versions are rejected by the server.
 
 ## License
 

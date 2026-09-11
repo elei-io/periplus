@@ -9,7 +9,7 @@ from test_client import RESULT
 @unittest.skipUnless(importlib.util.find_spec('sqlalchemy') and importlib.util.find_spec('marimo'), 'notebook extra required')
 class NotebookTests(unittest.TestCase):
     def engine(self, *, truncated=False):
-        from sqlalchemy import create_engine
+        from periplus_sdk import sql_api
         factory = httpx.Client
         self.requests = []
         def handler(request):
@@ -27,7 +27,7 @@ class NotebookTests(unittest.TestCase):
         patcher = patch('periplus_sdk.client.httpx.Client', side_effect=lambda **kw: factory(**kw,transport=httpx.MockTransport(handler)))
         patcher.start()
         self.addCleanup(patcher.stop)
-        engine = create_engine('periplus:///public_v1',connect_args={'base_url':'https://public.example'})
+        engine = sql_api.create_engine('https://public.example')
         self.addCleanup(engine.dispose)
         return engine
 

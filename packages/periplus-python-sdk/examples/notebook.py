@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["periplus-python-sdk[notebook]>=0.5.0"]
+# dependencies = ["periplus-python-sdk[notebook]>=0.6.0"]
 # ///
 """Run with: uv run marimo edit packages/periplus-python-sdk/examples/notebook.py"""
 import marimo
@@ -12,16 +12,13 @@ app = marimo.App(width="medium")
 @app.cell
 def _():
     import marimo as mo
-    from sqlalchemy import create_engine
-    return create_engine, mo
+    from periplus_sdk import sql_api
+    return mo, sql_api
 
 
 @app.cell
-def _(create_engine):
-    pp = create_engine(
-        "periplus:///public_v1",
-        connect_args={"base_url": "https://periplus.dev", "mode": "stable"},
-    )
+def _(sql_api):
+    pp = sql_api.create_engine("https://periplus.dev", mode="stable")
     return (pp,)
 
 
