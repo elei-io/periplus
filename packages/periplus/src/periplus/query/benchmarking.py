@@ -222,7 +222,7 @@ def inspect_profile(
                     "rows_scanned": node.get("operator_rows_scanned"),
                 }
             )
-        if "SCAN" in name:
+        if "SCAN" in name or node.get("operator_type") == "TABLE_SCAN":
             scans.append(
                 {
                     "path": path,

@@ -228,3 +228,12 @@ Use `--input-dir` for a retained UTF-8 HTML corpus; without it, input is explici
 synthetic. The disposable lake compares old separate element/node storage with the
 unified node table using the shared measurement runner in both orders.
 See [the investigation](../../docs/query-investigations/node-layout/README.md).
+
+## Content summaries and positional postings
+
+The disposable comparison in
+[posting-summary](../../docs/query-investigations/posting-summary/README.md)
+measures existing production content/node discovery and isolated flat/packed
+positional layouts. It checks full-set fingerprints in both variant orders,
+retains ICU token provenance, and separates fixed rare matches from growing common
+matches under appends. It installs no production materializations.

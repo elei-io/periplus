@@ -18,6 +18,15 @@ from periplus.query.benchmarking import compare_reports, discover_cases, inspect
 
 
 class QueryBenchmarkingTests(unittest.TestCase):
+    def test_parquet_function_scan_is_reported(self):
+        profile = {"operator_name": "READ_PARQUET", "operator_type": "TABLE_SCAN",
+                   "operator_cardinality": 3, "operator_rows_scanned": 100,
+                   "extra_info": {"Total Files Read": "2", "Filters": "term_id=1"}}
+        _, scans = inspect_profile(profile)
+        self.assertEqual(len(scans), 1)
+        self.assertEqual(scans[0]["files_read"], "2")
+        self.assertEqual(scans[0]["output_cardinality"], 3)
+
     def test_bounded_results_never_accept_a_partial_result(self):
         connection = duckdb.connect()
         try:
