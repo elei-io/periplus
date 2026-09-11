@@ -2,7 +2,7 @@
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 name = "periplus-python-sdk"
-version = "0.4.0"
+version = "0.5.0"
 description = "Read-only Python client for the public Periplus query API"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -10,6 +10,13 @@ dependencies = [
     "httpx>=0.28",
     "pydantic>=2.12,<3",
 ]
+
+[project.optional-dependencies]
+sqlalchemy = ["sqlalchemy>=2.0,<3"]
+notebook = ["sqlalchemy>=2.0,<3", "marimo[sql]>=0.24.1"]
+
+[project.entry-points."sqlalchemy.dialects"]
+periplus = "periplus_sdk.sqlalchemy:PeriplusDialect"
 
 [project.urls]
 Repository = "https://github.com/elei-io/periplus"

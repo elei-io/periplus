@@ -20,6 +20,100 @@ For a hosted deployment, replace the URL with its public HTTPS origin. Alternati
 `PERIPLUS_PUBLIC_URL` and use `Client()`. An optional URL path prefix is preserved.
 The client reuses HTTP connections; close it with a context manager or `close()`.
 
+## Marimo SQL cells and schema browser
+
+Install the notebook integration from PyPI:
+
+```sh
+uv add "periplus-python-sdk[notebook]>=0.5.0"
+```
+
+In a Python setup cell, create a SQLAlchemy engine:
+
+```python
+from sqlalchemy import create_engine
+
+pp = create_engine(
+    "periplus:///public_v1",
+    connect_args={"base_url": "https://periplus.dev", "mode": "stable"},
+)
+```
+
+Add a SQL cell, select **pp** in its connection dropdown, and enter:
+
+```sql
+SELECT capture_id, requested_url
+FROM public_v1.capture
+LIMIT 10
+```
+
+Marimo displays the result as a table. Expand **pp → public_v1** in Data Sources
+to discover views and expand a view to load its columns for SQL completion.
+Discovery uses bounded `SHOW TABLES` and `DESCRIBE` through the same public API;
+no internal catalogue or storage credentials are used. Truncated discovery fails
+explicitly rather than displaying a silently incomplete schema. To eagerly load
+schemas and views, enable their discovery in marimo's Packages & Data settings.
+Column discovery is on demand by default, to avoid many public API requests.
+
+The Python equivalent of a SQL cell is:
+
+```python
+import marimo as mo
+
+captures = mo.sql(
+    "SELECT capture_id FROM public_v1.capture LIMIT 10",
+    engine=pp,
+)
+```
+
+Set `mode="experimental"` in `connect_args` for the experimental service. The URL
+path names the public schema; the HTTPS endpoint belongs in `base_url` (or set
+`PERIPLUS_PUBLIC_URL`). Run `pp.dispose()` when finished. This is a read-only
+SQLAlchemy dialect for textual SQL and reflection, not a writable ORM backend.
+Each statement has its own server snapshot; SQLAlchemy transaction blocks do not
+provide a shared snapshot or rollback. The adapter makes no transaction requests.
+
+A complete notebook is in `examples/notebook.py`. The integration is tested with
+marimo 0.24.1 and SQLAlchemy 2.x. For SQLAlchemy without marimo, install the
+`sqlalchemy` extra instead of `notebook`.
+
+## DB-API connection
+
+For SQL cells without schema browsing, or standard cursor-based Python code:
+
+```python
+from periplus_sdk import connect
+
+with connect("https://periplus.dev", mode="stable") as connection:
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT capture_id FROM public_v1.capture LIMIT ?", [10])
+        print(cursor.description)
+        print(cursor.fetchall())
+        print(cursor.result.source_snapshot)
+```
+
+Connections expose `cursor`, `execute`, `close`, and context managers. Cursors
+support `execute`, `fetchone`, `fetchmany`, `fetchall`, iteration, and close.
+Use positional `?` parameters. Decimal and temporal parameters are sent as
+strings; use explicit SQL casts. Binary and nested parameters are not supported
+by this adapter. Fetching only consumes the bounded result already received;
+it never issues pagination or retries. Connections/cursors are not thread-shared.
+`commit()` is a no-op; `rollback()` and `executemany()` are unsupported.
+
+`cursor.result` preserves the original query response. `connection.last_result`
+also retains it after marimo closes a cursor; a new execution clears it first.
+Truncation emits `periplus_sdk.dbapi.TruncationWarning` and sets `rowcount` to -1.
+DB-API failures use the standard exception hierarchy in `periplus_sdk.dbapi`;
+HTTP errors retain `status_code`, `code`, and `retry_after_seconds`.
+
+Scalar integer, floating-point, decimal, date, time, timestamp and BLOB results
+are decoded to Python values. UUIDs remain strings. Nested/other SQL types keep
+their JSON wire representation; out-of-range dates/timestamps remain strings.
+Temporal precision is limited to what the server JSON transport preserves.
+The cursor preserves duplicate column names, but dataframe libraries/marimo may
+not: use unique SQL aliases. Dataframe inference can lose types for empty or
+all-null results; `cursor.description` retains the SQL type names.
+
 ## Stable and experimental APIs
 
 Both clients accept `mode="stable"` (the default) or `mode="experimental"` at initialization:
@@ -85,10 +179,10 @@ Use `aclose()` when managing an async client's lifetime explicitly.
 Install the public-v1 client from PyPI:
 
 ```sh
-python -m pip install "periplus-python-sdk>=0.4.0"
+python -m pip install "periplus-python-sdk>=0.5.0"
 ```
 
-Version 0.4.0 supports the current public-v1 contract. For production, configure
+Version 0.5.0 supports the current public-v1 contract. For production, configure
 `PERIPLUS_PUBLIC_URL=https://periplus.dev`; no API token is required.
 Run the installed package against an available public app:
 
@@ -100,11 +194,11 @@ PERIPLUS_PUBLIC_URL=http://localhost:8080 python packages/periplus-python-sdk/ex
 
 Repository CI publishes immutable releases from tags named
 `periplus-python-sdk-v<version>`. The tag must exactly match the static version
-in `pyproject.toml`; for example, version `0.4.0` is released with:
+in `pyproject.toml`; for example, version `0.5.0` is released with:
 
 ```sh
-git tag periplus-python-sdk-v0.4.0
-git push origin periplus-python-sdk-v0.4.0
+git tag periplus-python-sdk-v0.5.0
+git push origin periplus-python-sdk-v0.5.0
 ```
 
 PyPI publishing uses Trusted Publishing rather than a stored API token. The
@@ -114,7 +208,7 @@ that GitHub environment with required reviewers before the first release.
 
 ## Public v1
 
-Install the updated SDK from PyPI with `python -m pip install "periplus-python-sdk>=0.4.0"`. The previously published 0.2.0 release predates this contract. `prepare` and `execute` accept keyword-only `schema_version="public_v1"` (the default); responses preserve `schema_version` separately from `source_snapshot`. Unavailable versions are rejected by the server.
+Install the updated SDK from PyPI with `python -m pip install "periplus-python-sdk>=0.5.0"`. The previously published 0.2.0 release predates this contract. `prepare` and `execute` accept keyword-only `schema_version="public_v1"` (the default); responses preserve `schema_version` separately from `source_snapshot`. Unavailable versions are rejected by the server.
 
 ## License
 
