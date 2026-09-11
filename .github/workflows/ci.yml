@@ -49,8 +49,7 @@ jobs:
       - name: Test Python SDK
         working-directory: packages/periplus
         run: >-
-          env PYTHONPATH=../periplus-python-sdk/src
-          uv run python -m unittest discover
+          uv run --with ../periplus-python-sdk python -m unittest discover
           -s ../periplus-python-sdk/tests
 
   frontend:
