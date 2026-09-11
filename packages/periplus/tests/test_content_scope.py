@@ -283,14 +283,14 @@ class ContentScopeTests(unittest.TestCase):
                 executable = _bounded_query(scoped.sql)
                 raw = self.db.execute('EXPLAIN (FORMAT JSON) ' + executable).fetchone()[-1]
                 self.assertEqual(shared_html_inputs(raw, key_cte=scoped.key_cte),
-                                 ())
+                                 ('html_nodes',) if not disabled else ())
                 self.assertEqual(self.db.execute(executable).fetchall(), expected)
                 profile = json.loads(self.db.execute('EXPLAIN (ANALYZE, FORMAT JSON) ' + executable).fetchone()[-1])
                 nodes = list(walk(profile))
                 shared = [n for n in nodes if str(n.get('extra_info', {}).get('CTE Name', '')).startswith('__common_subplan_')]
-                # The unified node layout no longer produces the old shared
-                # element-table producer for this fixture.
-                self.assertFalse(shared)
+                # Stored normalized tags let the optimizer share a node producer;
+                # disabling common_subplan removes that barrier.
+                self.assertEqual(bool(shared), not bool(disabled))
                 windows = [n['operator_cardinality'] for n in nodes if n.get('operator_name') == 'WINDOW']
                 self.assertEqual(windows, [3])  # Complete selected-document partition.
         self.db.execute("SET disabled_optimizers=''")

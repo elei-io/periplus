@@ -37,16 +37,16 @@ artifacts; no production catalogue was changed. Existing document token counts m
 for every sampled document, including normalization and ICU segmentation.
 
 The candidate prepared 2,211,350 nodes, 462,629 content postings and 1,255,848 node
-postings in 70.35 seconds. Peak process RSS through preparation was 2.61 GiB on macOS;
+postings in 73.73 seconds. Peak process RSS through preparation was 2.58 GiB on macOS;
 this includes parsing and Arrow preparation of the measured projections, not a complete
 production worker with every visit projection and remote writes. Whole comparison RSS
-was 4.15 GiB while retaining both layouts and running the local DuckLake benchmark.
+was 3.41 GiB while retaining both layouts and running the local DuckLake benchmark.
 This supports trying 1,000 visits within the existing 8 GiB worker limit, with monitoring;
 it does not prove safety for unusually large pages or every batch.
 
-Single-file Zstd Parquet DOM totals: separate nodes/elements 83,337,592 bytes;
-unified nodes 77,176,792 bytes (7.4% less). New node postings added 3,809,695 bytes,
-leaving DOM plus node postings 2,351,105 bytes smaller than the prior DOM alone.
+With normalized tags retained, single-file Zstd Parquet DOM totals: separate nodes/elements 83,337,592 bytes;
+unified nodes 77,776,782 bytes (6.7% less). New node postings added 3,809,695 bytes,
+leaving DOM plus node postings 1,751,115 bytes smaller than the prior DOM alone.
 These are controlled encoding sizes, not production S3 or metadata totals.
 
 Both-order query results matched. The canonical run used two threads, 512 MB DuckDB
@@ -64,6 +64,6 @@ Validation: full `make check` passed (755 backend tests, 34 environment-dependen
 SDK checks and all frontend checks/builds); 27 focused tests also passed, including the
 additional real-DuckLake node-posting commit, replay and replacement case.
 
-Paired order 1: separate warm 52.81 ms; unified warm 62.54 ms, 41 complete result rows.
+Paired order 1: separate warm 59.09 ms; unified warm 63.55 ms, 41 complete result rows.
 
-Paired order 2: separate warm 51.52 ms; unified warm 61.11 ms, 41 complete result rows.
+Paired order 2: separate warm 54.13 ms; unified warm 63.61 ms, 41 complete result rows.

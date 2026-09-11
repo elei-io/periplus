@@ -24,6 +24,7 @@ def project(context: VisitBatchContext) -> pa.Table:
                 node.namespace,
                 node.value,
                 node.depth,
+                elements[content_id][node.node_index].tag.lower() if node.node_type == "element" else None,
                 elements[content_id][node.node_index].attributes if node.node_type == "element" else None,
                 elements[content_id][node.node_index].text_direct if node.node_type == "element" else None,
             )
@@ -47,6 +48,7 @@ PROJECTION = ProjectionSpec(
         ProjectionColumn("namespace", pa.string(), "VARCHAR", "Namespace URI when applicable."),
         ProjectionColumn("value", pa.string(), "VARCHAR", "Text, comment or instruction value."),
         ProjectionColumn("depth", pa.int32(), "INTEGER", "Number of parent edges from the document root; root is zero.", False),
+        ProjectionColumn("tag", pa.string(), "VARCHAR", "Python-normalized element tag; null on other nodes."),
         ProjectionColumn("attributes", pa.map_(pa.string(), pa.string()), MapType("VARCHAR", "VARCHAR"), "Element attributes; null on other nodes."),
         ProjectionColumn("text_direct", pa.string(), "VARCHAR", "Ordered immediate element text; null on other nodes."),
     ),

@@ -97,6 +97,7 @@ class QueryServiceTests(unittest.TestCase):
         writer = DuckLakeConnectionFactory(self.config).connect(read_only=False)
         writer.execute("INSERT INTO periplus.material.html_nodes (content_sha256,node_index,subtree_end_index,name,namespace,node_type) VALUES ('helper-fixture',4,6,'h1','http://www.w3.org/1999/xhtml','element'),('helper-fixture',6,7,'h2','http://www.w3.org/1999/xhtml','element')")
         writer.execute("INSERT INTO periplus.material.html_nodes (content_sha256,node_index,subtree_end_index,node_type,value) VALUES ('helper-fixture',5,6,'text','Heading')")
+        writer.execute("UPDATE periplus.material.html_nodes SET tag=lower(name) WHERE node_type='element'")
         writer.close()
         self.service = QueryService(self.config)
         self.addCleanup(self.service.close)
@@ -162,6 +163,7 @@ class QueryServiceTests(unittest.TestCase):
         d.execute("INSERT INTO material.prose VALUES ('helper-fixture', 'robot careers')")
         d.execute("INSERT INTO material.term VALUES ('robot', 1), ('robotics', 2), ('unused', 3)")
         d.execute("INSERT INTO material.content_posting VALUES (1, 'helper-fixture', 2), (2, 'helper-fixture', 1)")
+        d.execute("UPDATE periplus.material.html_nodes SET tag=lower(name) WHERE node_type='element'")
         d.close()
         self.service = QueryService(self.config)
         self.addCleanup(self.service.close)
@@ -220,6 +222,7 @@ class QueryServiceTests(unittest.TestCase):
         writer.execute("UPDATE periplus.ingest.visits SET effective_url=requested_url")
         writer.execute("INSERT INTO periplus.material.html_nodes (content_sha256, node_index, subtree_end_index, name, namespace, node_type) VALUES ('helper-fixture',4,6,'h1','http://www.w3.org/1999/xhtml','element')")
         writer.execute("INSERT INTO periplus.material.html_nodes (content_sha256,node_index,subtree_end_index,node_type,value) VALUES ('helper-fixture',5,6,'text','Heading')")
+        writer.execute("UPDATE periplus.material.html_nodes SET tag=lower(name) WHERE node_type='element'")
         writer.close()
         stable = QueryService(self.config)
         experimental = QueryService(self.config, mode=QueryMode.EXPERIMENTAL)
@@ -367,6 +370,7 @@ class QueryServiceTests(unittest.TestCase):
                 ('helper-fixture',3,5,'element',NULL,1),
                 ('helper-fixture',4,5,'text','Child',2)""")
             writer.execute("UPDATE material.html_nodes SET name=CASE node_index WHEN 1 THEN 'h1' ELSE 'h2' END, namespace='http://www.w3.org/1999/xhtml' WHERE node_type='element'")
+            writer.execute("UPDATE periplus.material.html_nodes SET tag=lower(name) WHERE node_type='element'")
         finally:
             writer.close()
         self.service.connection = self.service._connect()
