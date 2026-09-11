@@ -43,7 +43,8 @@ statement timeout. No history payload is emitted to operational logs.
 ## Measurement semantics
 
 Elapsed time covers the server operation through result construction and transaction
-cleanup, excluding history normalization/delivery and browser transport. Result bytes
+cleanup, excluding history normalization/delivery. Streaming execution includes producer backpressure;
+buffered execution excludes response transport. Result bytes
 are the UTF-8 size of the JSON rows array, not wire/compressed bytes, scanned bytes or
 CPU cost. Preparation has no result-size or snapshot measurements. All unavailable
 values are null. Version is supplied by `PERIPLUS_SERVICE_VERSION` (Helm uses core image
@@ -125,3 +126,9 @@ or execution-list reads: they load only in the private execution detail's Plan t
 Plans can contain private literals and share SQL's access controls and 30-day deletion.
 Apply the migration before deploying API, query and admin; historical plans are not
 backfilled and unavailable evidence is not inferred.
+
+
+Notebook streams record their final delivered row count and JSON row-array bytes without
+retaining result rows. Large notebook input parameters remain subject to the existing 1 MiB
+history-record ceiling; oversized derived records can be dropped without failing the query.
+Input budgets do not enlarge private history storage or add another persistence path.

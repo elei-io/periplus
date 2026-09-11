@@ -136,6 +136,8 @@ function AccessForm({
           body.sql = {
             ...(body.sql as object),
             max_rows: integer("sql.max_rows"),
+            max_request_bytes: integer("sql.max_request_kib") * 1024,
+            max_parameter_values: integer("sql.max_parameter_values"),
             max_duration_seconds: integer("sql.max_duration_seconds"),
             max_result_bytes: integer("sql.max_result_mib") * 1024 * 1024,
           }
@@ -207,24 +209,33 @@ function AccessForm({
             </p>
             {key === "sql" && (
               <div className="space-y-4">
+                <h3 className="font-medium">Query limits</h3>
                 <div className="grid gap-4 sm:grid-cols-2">
                   <label>
                     Maximum result rows
-                    <Input name="sql.max_rows" type="number" min={1} max={10000} step={1} required defaultValue={policy.sql.max_rows} />
+                    <Input name="sql.max_rows" type="number" min={1} max={10000000} step={1} required defaultValue={policy.sql.max_rows} />
                   </label>
                   <label>
                     Maximum duration (seconds)
-                    <Input name="sql.max_duration_seconds" type="number" min={1} max={120} step={1} required defaultValue={policy.sql.max_duration_seconds} />
+                    <Input name="sql.max_duration_seconds" type="number" min={1} max={600} step={1} required defaultValue={policy.sql.max_duration_seconds} />
                   </label>
                   <label>
                     Maximum result size (MiB)
-                    <Input name="sql.max_result_mib" type="number" min={1} max={64} step={1} required defaultValue={policy.sql.max_result_bytes / (1024 * 1024)} />
+                    <Input name="sql.max_result_mib" type="number" min={1} max={1024} step={1} required defaultValue={policy.sql.max_result_bytes / (1024 * 1024)} />
+                  </label>
+                  <label>
+                    Maximum request size (KiB)
+                    <Input name="sql.max_request_kib" type="number" min={1} max={16384} step={1} required defaultValue={policy.sql.max_request_bytes / 1024} />
+                  </label>
+                  <label>
+                    Maximum parameter values
+                    <Input name="sql.max_parameter_values" type="number" min={1} max={1000000} step={1} required defaultValue={policy.sql.max_parameter_values} />
                   </label>
                 </div>
                 <p className="text-sm text-muted-foreground">
                   Execution limits apply to all new read-only query-service operations, including SDK,
                   assistant and scheduled seed queries. Running queries keep their starting limits.
-                  Results explicitly report truncation when they reach the row or size limit. Duration includes preparation.
+                  Results report truncation when they reach the row or size limit; notebook queries reject incomplete results by default. Request size includes SQL and parameters. Parameter values count containers and their values. Duration includes preparation and stream delivery.
                   Administrative SQL has separate permissions and limits.
                 </p>
               </div>

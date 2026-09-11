@@ -35,9 +35,11 @@ class CrawlPolicy(RatePolicy):
 
 class QueryLimits(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    max_rows: int = Field(default=1000, ge=1, le=10000)
-    max_duration_seconds: int = Field(default=20, ge=1, le=120)
-    max_result_bytes: int = Field(default=8 * 1024 * 1024, ge=1024 * 1024, le=64 * 1024 * 1024)
+    max_rows: int = Field(default=1000, ge=1, le=10_000_000)
+    max_duration_seconds: int = Field(default=20, ge=1, le=600)
+    max_result_bytes: int = Field(default=8 * 1024 * 1024, ge=1024 * 1024, le=1024 * 1024 * 1024)
+    max_request_bytes: int = Field(default=4 * 1024 * 1024, ge=1024, le=16 * 1024 * 1024)
+    max_parameter_values: int = Field(default=100_000, ge=1, le=1_000_000)
 
 class SqlPolicy(RatePolicy, QueryLimits):
     pass
