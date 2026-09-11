@@ -57,12 +57,12 @@ class TermExtractionTests(unittest.TestCase):
                 scanned = {}
                 def visit(node):
                     table = node.get('extra_info', {}).get('Table')
-                    if table in ('html_nodes', 'html_elements'):
+                    if table in ('html_nodes'):
                         scanned[table] = node['operator_cardinality']
                     for child in node.get('children', []):
                         visit(child)
                 visit(profile)
-                for table in ('html_nodes', 'html_elements'):
+                for table in ('html_nodes'):
                     expected = c.execute(f'SELECT count(*) FROM material.{table} WHERE content_sha256=?', [keys[0]]).fetchone()[0]
                     self.assertEqual(scanned[table], expected)
                 for selected, term in ((keys[:1], "uniquematch"), (keys[:2], "monkeys"), (["f" * 64], "absent")):

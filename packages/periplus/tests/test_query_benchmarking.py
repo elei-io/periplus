@@ -49,7 +49,7 @@ class QueryBenchmarkingTests(unittest.TestCase):
             connection.execute("CREATE TABLE public_v1.prose(content_id VARCHAR, text VARCHAR)")
             connection.execute("CREATE TABLE public_v1.term(content_id VARCHAR,text VARCHAR,frequency BIGINT)")
             connection.execute("CREATE TABLE public_v1.term_node(content_id VARCHAR, text VARCHAR, node_index INTEGER, frequency BIGINT)")
-            connection.execute("CREATE TABLE public_v1.html_heading(content_id VARCHAR, node_index INTEGER, text VARCHAR)")
+            connection.execute("CREATE TABLE public_v1.html_heading(content_id VARCHAR, node_index INTEGER, level INTEGER, text VARCHAR)")
             connection.execute("CREATE TABLE public_v1.html_section(content_id VARCHAR, heading_node_index INTEGER)")
             connection.execute("CREATE TABLE public_v1.html_jsonld(content_id VARCHAR, node_index INTEGER, value JSON, parse_error VARCHAR)")
             connection.execute("CREATE TABLE public_v1.html_metadata(content_id VARCHAR, node_index INTEGER, kind VARCHAR, name VARCHAR, value VARCHAR)")

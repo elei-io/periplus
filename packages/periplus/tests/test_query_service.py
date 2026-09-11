@@ -95,7 +95,7 @@ class QueryServiceTests(unittest.TestCase):
         from periplus.query.service import QueryMode
         self.service.close()
         writer = DuckLakeConnectionFactory(self.config).connect(read_only=False)
-        writer.execute("INSERT INTO periplus.material.html_elements (content_sha256,element_index,subtree_end_index,tag,namespace) VALUES ('helper-fixture',4,6,'h1','HTML'),('helper-fixture',6,7,'h2','HTML')")
+        writer.execute("INSERT INTO periplus.material.html_nodes (content_sha256,node_index,subtree_end_index,name,namespace,node_type) VALUES ('helper-fixture',4,6,'h1','http://www.w3.org/1999/xhtml','element'),('helper-fixture',6,7,'h2','http://www.w3.org/1999/xhtml','element')")
         writer.execute("INSERT INTO periplus.material.html_nodes (content_sha256,node_index,subtree_end_index,node_type,value) VALUES ('helper-fixture',5,6,'text','Heading')")
         writer.close()
         self.service = QueryService(self.config)
