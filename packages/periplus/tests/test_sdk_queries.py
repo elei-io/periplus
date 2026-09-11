@@ -30,7 +30,7 @@ class SdkQueryTests(unittest.IsolatedAsyncioTestCase):
             return PreparedQuery(query_id='00000000-0000-4000-8000-000000000001', sql=payload.sql, parameters=payload.parameters, diagnostics=[], plan='plan')
         def execute(payload, *, limits, evidence):
             return QueryResult(**prepare(payload, limits=limits, evidence=evidence).model_dump(), columns=['n'], types=['INTEGER'],
-                               rows=[[1]], elapsed_ms=1, source_snapshot=7, truncated=False)
+                               rows=[[1]], row_count=1, result_bytes=5, elapsed_ms=1, source_snapshot=7, truncated=False)
         app.state.query_limits = AsyncMock()
         app.state.query_limits.read.return_value = QueryLimits()
         app.state.query_service = Mock(prepare=prepare, execute=execute, compiler_version="public-query-v4:stable")

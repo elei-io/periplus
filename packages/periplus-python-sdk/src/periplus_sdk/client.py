@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 import math
 import os
-from typing import TypeVar
+from typing import Literal, TypeVar
 
 import httpx
 from pydantic import BaseModel, JsonValue, ValidationError
@@ -79,7 +79,10 @@ def _payload(sql: str, parameters: Sequence[JsonValue] | None, schema_version: s
 class Client:
     """Reusable synchronous public query client. Close it or use a with block."""
 
-    def __init__(self, base_url: str | None = None, *, timeout: float = 140):
+    def __init__(self, base_url: str | None = None, *, timeout: float = 620, mode: Literal["stable", "experimental"] = "stable"):
+        if mode not in {"stable", "experimental"}:
+            raise ConfigurationError("mode must be stable or experimental.")
+        self._query_path = "api/query/experimental/" if mode == "experimental" else "api/query/"
         self._http = httpx.Client(**_options(base_url, timeout))
 
     def __enter__(self) -> Client:
@@ -93,7 +96,7 @@ class Client:
 
     def _request(self, method: str, path: str, model: type[Model], **kwargs) -> Model:
         try:
-            response = self._http.request(method, "api/query/" + path, **kwargs)
+            response = self._http.request(method, self._query_path + path, **kwargs)
         except httpx.RequestError:
             raise TransportError("Could not complete the public query request.") from None
         return _decode(response, model)
@@ -104,6 +107,25 @@ class Client:
     def execute(self, sql: str, parameters: Sequence[JsonValue] | None = None, *, schema_version: str = "public_v1") -> QueryResult:
         return self._request("POST", "exec", QueryResult, json=_payload(sql, parameters, schema_version))
 
+    def stream(self, sql: str, parameters: Sequence[JsonValue] | None = None, *,
+               schema_version: str = "public_v1", allow_partial: bool = False):
+        """Stream batches from one snapshot; use as a context manager for early exit."""
+        from .stream import MEDIA_TYPE, QueryStream
+        try:
+            request = self._http.build_request("POST", self._query_path + "exec",
+                headers={"accept": MEDIA_TYPE}, json=_payload(sql, parameters, schema_version))
+            response = self._http.send(request, stream=True)
+            try:
+                if not response.is_success:
+                    response.read()
+                    _decode(response, QueryResult)
+                return QueryStream(response, allow_partial=allow_partial)
+            except BaseException:
+                response.close()
+                raise
+        except httpx.RequestError:
+            raise TransportError("Could not open the public query stream.") from None
+
     def helpers(self) -> QueryHelpers:
         return self._request("GET", "helpers", QueryHelpers)
 
@@ -111,7 +133,10 @@ class Client:
 class AsyncClient:
     """Reusable asynchronous public query client. Use an async with block."""
 
-    def __init__(self, base_url: str | None = None, *, timeout: float = 140):
+    def __init__(self, base_url: str | None = None, *, timeout: float = 620, mode: Literal["stable", "experimental"] = "stable"):
+        if mode not in {"stable", "experimental"}:
+            raise ConfigurationError("mode must be stable or experimental.")
+        self._query_path = "api/query/experimental/" if mode == "experimental" else "api/query/"
         self._http = httpx.AsyncClient(**_options(base_url, timeout))
 
     async def __aenter__(self) -> AsyncClient:
@@ -125,7 +150,7 @@ class AsyncClient:
 
     async def _request(self, method: str, path: str, model: type[Model], **kwargs) -> Model:
         try:
-            response = await self._http.request(method, "api/query/" + path, **kwargs)
+            response = await self._http.request(method, self._query_path + path, **kwargs)
         except httpx.RequestError:
             raise TransportError("Could not complete the public query request.") from None
         return _decode(response, model)

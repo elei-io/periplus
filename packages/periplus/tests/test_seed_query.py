@@ -13,7 +13,7 @@ def result(**changes):
     return dict(query_id="query-17", sql="SELECT ? AS url", parameters=["https://example.com/"],
                 diagnostics=[], plan="plan", columns=["url"], types=["VARCHAR"],
                 rows=[["https://example.com/"]], truncated=False, elapsed_ms=1,
-                source_snapshot=17) | changes
+                source_snapshot=17, row_count=1, result_bytes=26) | changes
 
 
 class SeedQueryTests(unittest.TestCase):

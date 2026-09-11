@@ -30,8 +30,7 @@ class QueryLimitsClient:
                 response = await self.client.get("access")
             response.raise_for_status()
             sql = response.json()["sql"]
-            return QueryLimits(max_rows=sql["max_rows"], max_duration_seconds=sql["max_duration_seconds"],
-                               max_result_bytes=sql["max_result_bytes"])
+            return QueryLimits(**{name: sql[name] for name in QueryLimits.model_fields})
         except (httpx.HTTPError, TimeoutError, ValueError, KeyError, TypeError, ValidationError):
             # No cached/default policy on failure; no origin details reach the caller.
             raise QueryLimitsUnavailable() from None

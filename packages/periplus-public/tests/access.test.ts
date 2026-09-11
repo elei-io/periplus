@@ -8,7 +8,7 @@ const policy = {
   crawl_admission: { pending_acquisitions: 42, accepting: true },
   crawl: { ...rate, queue_limit: 10000, page_budgets: [5], default_page_budget: 5, follow_link_limits: [1000, 5000], default_follow_link_limit: 1000, max_depths: [0], default_max_depth: 0, retention_seconds: [null], default_retention_seconds: null },
   assistant: rate,
-  sql: { ...rate, max_rows: 1000, max_duration_seconds: 20, max_result_bytes: 8388608 },
+  sql: { ...rate, max_rows: 1000, max_duration_seconds: 20, max_result_bytes: 8388608, max_request_bytes: 4194304, max_parameter_values: 100000 },
 }
 
 test("valid access settings retain server-owned SQL limits", () => {

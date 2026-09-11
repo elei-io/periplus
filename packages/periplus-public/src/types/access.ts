@@ -14,7 +14,7 @@ const accessPolicySchema = z.object({
     retention_seconds: z.array(z.number().int().positive().nullable()), default_retention_seconds: z.number().int().positive().nullable(),
   }),
   assistant: ratePolicySchema,
-  sql: ratePolicySchema.extend({ max_rows: z.number().int().positive(), max_duration_seconds: z.number().int().positive(), max_result_bytes: z.number().int().positive() }),
+  sql: ratePolicySchema.extend({ max_rows: z.number().int().positive(), max_duration_seconds: z.number().int().positive(), max_result_bytes: z.number().int().positive(), max_request_bytes: z.number().int().positive(), max_parameter_values: z.number().int().positive() }),
 })
 export type AccessPolicy = z.infer<typeof accessPolicySchema>
 

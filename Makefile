@@ -7,7 +7,7 @@ sync:
 check:
 	cd packages/periplus && uv run python -m compileall src/periplus
 	cd packages/periplus && uv run python -m unittest discover -s tests
-	cd packages/periplus && PYTHONPATH=../periplus-python-sdk/src uv run python -m unittest discover -s ../periplus-python-sdk/tests
+	cd packages/periplus && uv run --with ../periplus-python-sdk python -m unittest discover -s ../periplus-python-sdk/tests
 	npm run check:packages
 	npm run test:packages
 	npm run check:public

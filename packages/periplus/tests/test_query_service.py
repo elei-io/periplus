@@ -17,6 +17,85 @@ from periplus.query.service import QueryService, QueryRequest, BusyError
 
 
 class QueryServiceTests(unittest.TestCase):
+    def test_stream_metadata_is_also_subject_to_result_byte_budget(self):
+        from periplus.query.service import ResultLimitError
+        frames = []
+        with self.assertRaises(ResultLimitError):
+            self.service.execute(QueryRequest(sql='SELECT ? WHERE false', parameters=['x' * (2 * 1024 * 1024)]),
+                                 limits=QueryLimits(max_result_bytes=1024 * 1024), emit=frames.append)
+        self.assertEqual(frames, [])
+
+
+    def test_sdk_stream_contract_through_real_query_http(self):
+        import asyncio
+        import sys
+        import httpx
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from periplus.query.server_http import router
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'periplus-python-sdk/src'))
+        from periplus_sdk import Client, ApiError
+        app = FastAPI()
+        app.include_router(router, prefix='/api')
+        app.state.query_service = self.service
+        app.state.query_slot = asyncio.Semaphore(1)
+        app.state.query_limits = AsyncMock()
+        app.state.query_limits.read.return_value = QueryLimits(max_rows=25_000)
+        app.state.query_history = AsyncMock()
+        with TestClient(app) as http, Client('http://query.test') as sdk:
+            sdk._http.close()
+            def transport(request):
+                response = http.post(request.url.path, content=request.content, headers=dict(request.headers))
+                return httpx.Response(response.status_code, headers=response.headers, content=response.content)
+            sdk._http = httpx.Client(base_url='http://query.test', transport=httpx.MockTransport(transport),
+                                     headers={'x-periplus-query-source': 'sdk'})
+            with sdk.stream('SELECT unnest(?::INTEGER[]) AS n', [list(range(20_001))]) as stream:
+                rows = [row for batch in stream for row in batch]
+                self.assertEqual(rows, [[i] for i in range(20_001)])
+                self.assertTrue(stream.result.complete)
+                self.assertEqual(stream.result.row_count, 20_001)
+                self.assertEqual(stream.result.limits['max_rows'], 25_000)
+            record = app.state.query_history.record.await_args_list[-1].args[0]
+            self.assertEqual(record.result_rows, 20_001)
+            self.assertEqual(record.source, 'sdk')
+            app.state.query_limits.read.return_value = QueryLimits(max_rows=2)
+            with sdk.stream('SELECT unnest(?::INTEGER[]) AS n', [[1, 2, 3]]) as stream:
+                with self.assertRaises(ApiError) as raised:
+                    list(stream)
+                self.assertEqual(raised.exception.code, 'result_limit')
+                self.assertTrue(stream.result.truncated)
+            with sdk.stream('SELECT 7 AS n') as stream:
+                self.assertEqual(list(stream), [[[7]]])
+
+
+    def test_stream_batches_match_buffered_results_and_larger_limits(self):
+        payload = QueryRequest(sql="SELECT unnest(?::INTEGER[]) AS n", parameters=[list(range(20_001))])
+        frames = []
+        limits = QueryLimits(max_rows=25_000)
+        streamed = self.service.execute(payload, limits=limits, emit=frames.append)
+        buffered = self.service.execute(payload, limits=limits)
+        self.assertEqual(streamed.rows, [])
+        self.assertEqual(streamed.row_count, 20_001)
+        self.assertFalse(streamed.truncated)
+        self.assertEqual(frames[0]['type'], 'metadata')
+        self.assertEqual(frames[0]['source_snapshot'], buffered.source_snapshot)
+        batches = [frame['rows'] for frame in frames[1:]]
+        self.assertTrue(all(len(batch) <= 1024 for batch in batches))
+        self.assertEqual([row for batch in batches for row in batch], buffered.rows)
+        capped = self.service.execute(payload, limits=QueryLimits(max_rows=12), emit=lambda frame: None)
+        self.assertEqual((capped.row_count, capped.truncation_reason), (12, 'max_rows'))
+        self.assertTrue(capped.truncated)
+
+
+    def test_stream_consumer_failure_releases_connection(self):
+        def broken(frame):
+            raise TimeoutError('consumer disconnected')
+        with self.assertRaises(TimeoutError):
+            self.service.execute(QueryRequest(sql='SELECT 1'), emit=broken)
+        self.assertEqual(self.service.execute(QueryRequest(sql='SELECT 2')).rows, [[2]])
+
+
+
     def setUp(self):
         self.directory = TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
@@ -413,7 +492,7 @@ class QueryServiceTests(unittest.TestCase):
             self.assertEqual(invalid.status_code, 422)
             self.assertEqual(invalid.json()['code'], 'sql_invalid')
             self.assertEqual(client.post('/query/report', headers=headers).status_code, 404)
-            self.assertEqual(client.post('/query/exec', headers=headers, content='x'*140000).status_code, 413)
+            self.assertEqual(client.post('/query/exec', headers=headers, content='x'*(16 * 1024 * 1024 + 1)).status_code, 413)
             self.assertEqual(client.get('/graph-runs/', headers=headers).status_code, 404)
 
     def test_byte_budget_is_independent_of_row_budget(self):
