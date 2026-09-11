@@ -87,7 +87,8 @@ def _conjuncts(expression: exp.Expression):
         yield expression
 
 
-def content_scope(sql: str, *, materialize_inputs: bool = False, heading_driver: bool = False) -> ContentScope | None:
+def content_scope(sql: str, *, materialize_inputs: bool = False, heading_driver: bool = False,
+                  input_barrier: bool = False) -> ContentScope | None:
     """Produce at most one alternative; unsupported syntax retains original SQL."""
     numbered = _number_parameters(sql)
     if numbered is None:
@@ -204,6 +205,10 @@ def content_scope(sql: str, *, materialize_inputs: bool = False, heading_driver:
                 primitive_names[name] = prefix+name
                 restricted = parse_one(
                     f'SELECT b.* FROM public_v1.{name} b SEMI JOIN {keys} USING (content_id)', read='duckdb')
+                if input_barrier:
+                    # OFFSET 0 preserves all rows while keeping downstream view
+                    # predicates above the content semijoin in the native plan.
+                    restricted = restricted.offset(0)
                 ctes.append(exp.CTE(this=restricted, alias=exp.TableAlias(this=exp.to_identifier(primitive_names[name])), materialized=materialize_inputs))
             return exp.select('*').from_(primitive_names[name])
         body = parse_one(definitions[name], read='duckdb').expression.copy()
@@ -227,6 +232,43 @@ def content_scope(sql: str, *, materialize_inputs: bool = False, heading_driver:
     if len(result) > _MAX_SQL:
         return None
     return ContentScope(result, definitions, keys)
+
+
+def prose_heading_scope(sql: str, parameters: list[object] | tuple[object, ...] = ()) -> ContentScope | None:
+    """Experimental prose/heading inner joins, with one total text predicate."""
+    if any(not isinstance(value, str) for value in parameters):
+        return None
+    tree = _one_statement(sql)
+    if not isinstance(tree, exp.Select) or tree.args.get('with_'):
+        return None
+    tables = list(tree.find_all(exp.Table))
+    if len(tables) != 2 or sorted(t.name for t in tables) != ['html_heading', 'prose']:
+        return None
+    prose = next(t for t in tables if t.name == 'prose')
+    joins = tree.args.get('joins') or []
+    if len(joins) != 1:
+        return None
+    join = joins[0]
+    if not join.args.get('using'):
+        on = join.args.get('on')
+        if (on is None or not isinstance(on.unnest(), exp.EQ)
+                or not all(isinstance(c, exp.Column) and c.name == 'content_id'
+                           for c in (on.unnest().this, on.unnest().expression))):
+            return None
+    where = tree.args.get('where')
+    if where is None:
+        return None
+    predicate = where.this.unnest()
+    if not isinstance(predicate, (exp.EQ, exp.Like, exp.ILike)):
+        return None
+    column, value = predicate.this.unnest(), predicate.expression.unnest()
+    if (not isinstance(column, exp.Column) or column.table != prose.alias_or_name
+            or column.name != 'text'
+            or not ((isinstance(value, exp.Literal) and value.is_string)
+                    or isinstance(value, exp.Placeholder))):
+        return None
+    # All grammar, catalogue, alias, parameter and join checks remain shared.
+    return content_scope(sql, materialize_inputs=True, input_barrier=True)
 
 
 def capture_heading_scope(sql: str, parameters: list[object] | tuple[object, ...] = ()) -> ContentScope | None:

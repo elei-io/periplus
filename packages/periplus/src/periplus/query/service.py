@@ -190,13 +190,16 @@ class QueryService:
             optimizations = []
             # Promoted baseline shared by both modes. Future candidates are
             # explicitly gated on EXPERIMENTAL after this common selection.
-            from periplus.query.content_scope import capture_heading_scope
+            from periplus.query.content_scope import capture_heading_scope, prose_heading_scope
             from periplus.query.prose_scalar import prose_scalar
             scope = capture_heading_scope(payload.sql, payload.parameters)
             optimization = "capture_heading_content_scope_v1"
             if scope is None:
                 scope = prose_scalar(payload.sql, payload.parameters)
                 optimization = "prose_scalar_before_capture_v1"
+            if scope is None and self.mode == QueryMode.EXPERIMENTAL:
+                scope = prose_heading_scope(payload.sql, payload.parameters)
+                optimization = "prose_heading_input_barrier_v1"
             if scope is not None:
                 installed = dict(d.execute(
                     "SELECT view_name, sql FROM duckdb_views() WHERE database_name=? AND schema_name='public_v1'",

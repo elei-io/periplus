@@ -3,6 +3,27 @@
 Periplus uses the official DuckDB and DuckLake extensions directly. LakeDucktor owns physical lake
 maintenance; Periplus owns ingestion evidence and logical materialization generations.
 
+## DuckLake small term-ID sets use optional scan filters
+
+- **Periplus caller:** experimental vocabulary-to-term-stat discovery, not a shipped projection.
+- **Evidence:** DuckDB 1.5.5, local DuckLake, 2,080,010 postings in eight term-ID
+  buckets. A vocabulary join obtains dynamic `optional: term_id IN (504,607)`
+  plus optional min/max bounds; the postings scan emits 560,010 rows into a join
+  returning 20 postings. Literal `IN (504,607)` emits 584,994 rows before an exact
+  filter. Two equality scans emit ten rows each. All complete results agree.
+- **Reproducer:** `benchmarks/query/experiments/vocabulary_lookup.py`; the
+  investigation in `docs/query-investigations/vocabulary-materialization/README.md`
+  documents fixed inputs, full filter annotations, shared-bench measurements and
+  before/after compaction. Existing summary profiles omit dynamic-filter fields;
+  the reproducer captures them explicitly.
+- **Requested investigation:** whether small-set/static and dynamic IN filters can
+  be enforced earlier in the DuckLake/Parquet scan, rather than used only as
+  optional pruning hints. Equality is an isolating control, not evidence that
+  arbitrary SQL should be expanded into one scan per term.
+- **Scope:** performance opportunity, not a correctness bug. All forms read 80
+  files before compaction and two after; overlapping per-batch ranges independently
+  explain file fan-out. No Periplus workaround or custom query extension added.
+
 ## DuckLake rejects column comments on views
 
 - **Periplus caller:** public `web.*` and `content.*` catalogue documentation.

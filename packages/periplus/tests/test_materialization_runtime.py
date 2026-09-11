@@ -1187,7 +1187,9 @@ class MaterializationParquetTests(unittest.TestCase):
             run,
             batch,
             active_generation=False,
+            assert_writable=prepare_batch.call_args.kwargs["assert_writable"],
         )
+        self.assertTrue(callable(prepare_batch.call_args.kwargs["assert_writable"]))
         self.assertEqual(commit_prepared_batch.call_count, 2)
         self.assertTrue(
             all(

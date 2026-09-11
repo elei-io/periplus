@@ -32,6 +32,8 @@ from periplus.materialization.store import (
     AsyncMaterializationRunStore,
     MaterializationBatch,
     MaterializationRun,
+    MaterializationRunStore,
+    MaterializationRunStopped,
 )
 from periplus.materialization.sql import sql_string, sql_string_list
 from periplus.platform.catalogue import catalogue_from_env
@@ -419,6 +421,8 @@ async def _handle_batch(
             message,
             description=f"rebuild batch {batch.id}",
         )
+    except MaterializationRunStopped:
+        await _ack_after_durable_outcome(message, description="stopped rebuild batch")
     except (json.JSONDecodeError, ValidationError):
         logging.exception("discarding invalid materialization batch work")
         await message.term()
@@ -436,6 +440,7 @@ async def _handle_batch(
                 batch is not None
                 and batch.attempts >= 5
                 and is_retryable_catalogue_transaction_conflict(exc)
+                and not is_retryable_catalogue_unavailability(exc)
             )
             if batch is not None and (not retryable or exhausted):
                 logging.exception(
@@ -603,17 +608,21 @@ def _commit_retained_batch(catalogue, html_repository, run, batch, *, active_gen
     # the remaining identities instead of retrying the same retired rows forever.
     from periplus.retention.identities import EvidenceRetired
     prepared = None
+    assert_writable = (None if active_generation else
+                       lambda: MaterializationRunStore().assert_writable(run.id))
 
     def commit():
         nonlocal prepared
         if prepared is None:
             prepared = prepare_batch(catalogue, html_repository, run, batch,
-                                     active_generation=active_generation)
+                                     active_generation=active_generation,
+                                     assert_writable=assert_writable)
         if isinstance(prepared, BatchResult):
             return prepared
         try:
             return commit_prepared_batch(catalogue, run, batch, prepared,
-                                         active_generation=active_generation)
+                                         active_generation=active_generation,
+                                         assert_writable=assert_writable)
         except EvidenceRetired as exc:
             prepared = None
             # This is retryable only for a materializer that will reprepare.
@@ -881,7 +890,12 @@ async def _try_cleanup_failed_run(
 def _cleanup_failed_run(run: MaterializationRun) -> None:
     if not run.generation_tables:
         return
-    with catalogue_from_env(threads=1, memory_limit="1GB") as catalogue:
+    # Wait for bounded writers; delayed writers recheck terminal state under
+    # this same claim before touching either the dictionary or projection tables.
+    with write_claims({"generation": [str(run.id)]}), catalogue_from_env(threads=1, memory_limit="1GB") as catalogue:
+        current = MaterializationRunStore().get(run.id)
+        if current is None or current.status != "failed":
+            return
         catalogue.drop_materialization_generations(
             run.generation_tables.values()
         )

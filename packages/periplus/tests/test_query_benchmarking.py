@@ -47,6 +47,7 @@ class QueryBenchmarkingTests(unittest.TestCase):
             connection.execute("CREATE TABLE public_v1.html_element(content_id VARCHAR, node_index INTEGER, tag VARCHAR, attributes MAP(VARCHAR,VARCHAR), parent_index INTEGER, sibling_index INTEGER, subtree_end_index INTEGER, text_direct VARCHAR)")
             connection.execute("CREATE TABLE public_v1.link(capture_id UUID, node_index INTEGER, raw_href VARCHAR, resolved_url VARCHAR)")
             connection.execute("CREATE TABLE public_v1.prose(content_id VARCHAR, text VARCHAR)")
+            connection.execute("CREATE TABLE public_v1.term(content_id VARCHAR,text VARCHAR,frequency BIGINT)")
             connection.execute("CREATE TABLE public_v1.term_node(content_id VARCHAR, text VARCHAR, node_index INTEGER, frequency BIGINT)")
             connection.execute("CREATE TABLE public_v1.html_heading(content_id VARCHAR, node_index INTEGER, text VARCHAR)")
             connection.execute("CREATE TABLE public_v1.html_section(content_id VARCHAR, heading_node_index INTEGER)")

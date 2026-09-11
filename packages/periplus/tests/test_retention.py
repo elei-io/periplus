@@ -294,6 +294,12 @@ class RetentionTests(unittest.TestCase):
         from periplus.materialization.registry import PROJECTIONS
         visit = self.visit()
         run = SimpleNamespace(id=uuid4(), generation_tables={spec.name: spec.name for spec in PROJECTIONS})
+        from periplus.materialization.models import MaterializationRunRecord
+        from periplus.materialization.registry import REGISTRY_DIGEST
+        with self.sessions.begin() as session:
+            session.add(MaterializationRunRecord(id=run.id, status="running",
+                source_snapshot=1, covered_snapshot=1, registry_digest=REGISTRY_DIGEST,
+                batch_size=500, generation_tables=run.generation_tables))
         batch = SimpleNamespace(id=uuid4(), visit_ids=(str(visit.visit.visit_id),), snapshot=self.catalogue.latest_snapshot())
         calls = 0
         def prepare(*args, **kwargs):
