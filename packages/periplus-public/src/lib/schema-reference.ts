@@ -1,15 +1,6 @@
 // Public v1 contract. Keep aligned with public_registry.py.
 export const schemaReference = [
   {
-    "name": "public_v1.prose",
-    "grain": "One searchable body-text row per unique materialized HTML content. Repeated captures share a row.",
-    "key": "content_id",
-    "columns": [
-      ["content_id", "VARCHAR", "SHA-256 identity of captured HTML bytes."],
-      ["text", "VARCHAR", "Body text in document order with collapsed whitespace and block separators. Excludes script, style, template and noscript subtrees; retains navigation, footers and hidden content. Empty bodies yield an empty string."]
-    ]
-  },
-  {
     "name": "public_v1.capture",
     "grain": "Acquisitions with retained HTML, including retained HTML HTTP error responses.",
     "key": "capture_id",
@@ -58,6 +49,7 @@ export const schemaReference = [
     "grain": "Complete HTML5 parsed document nodes.",
     "key": "content_id + node_index",
     "columns": [
+      ["text", "VARCHAR", "Parsed text-node value; NULL on every other node kind."],
       [
         "content_id",
         "VARCHAR",
@@ -110,6 +102,7 @@ export const schemaReference = [
     "grain": "HTML elements sharing identity and positions with html_node.",
     "key": "content_id + node_index",
     "columns": [
+      ["text", "VARCHAR", "All descendant text nodes in document order; preserves whitespace, inserts no separators, includes script/style; empty when absent."],
       [
         "content_id",
         "VARCHAR",

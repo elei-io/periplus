@@ -1,3 +1,8 @@
+Current page-discovery and element-text cases are `search-discovery` and `element-text`.
+Superseded public prose/term workloads are archived under `retired/`; they are not
+part of the current public contract or normal case discovery. Historical experiment
+results remain evidence for internal storage choices, not supported public examples.
+
 # Query optimization bench
 
 The disposable vocabulary/term-stat materialization experiment is documented in

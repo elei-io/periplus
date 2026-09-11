@@ -20,9 +20,6 @@ from periplus.query.http import _public_metadata, metadata
 
 
 EXPECTED_PUBLIC_RELATIONS = {
-    ("public_v1", "prose"),
-    ("public_v1", "term"),
-    ("public_v1", "term_node"),
     ("public_v1", "capture"),
     ("public_v1", "link"),
     ("public_v1", "html_element"),
@@ -66,7 +63,7 @@ class PublicCatalogueTests(unittest.TestCase):
             {(item.schema, item.name) for item in objects if item.kind == "view"},
             EXPECTED_PUBLIC_RELATIONS,
         )
-        self.assertEqual([(item.schema, item.name) for item in objects if item.kind == "table_macro"], [("public_v1", "subtree_text")])
+        self.assertEqual([(item.schema, item.name) for item in objects if item.kind == "table_macro"], [("public_v1", "subtree_text"), ("public_v1", "search")])
         self.assertTrue(all(not item.requires_functions for item in objects))
 
     def test_installs_and_validates_public_views(self) -> None:
@@ -88,7 +85,7 @@ class PublicCatalogueTests(unittest.TestCase):
         self.assertEqual(views, EXPECTED_PUBLIC_RELATIONS)
         with self.assertRaises(duckdb.CatalogException):
             self.catalogue.connection.execute("SELECT * FROM public_v1.object")
-        self.assertEqual(macros, [("subtree_text",)])
+        self.assertEqual(set(macros), {("subtree_text",), ("search",)})
 
     def test_install_removes_superseded_web_and_dom_objects(self) -> None:
         self.catalogue.connection.execute("CREATE SCHEMA web")
@@ -134,6 +131,18 @@ class PublicCatalogueTests(unittest.TestCase):
             [row[0] for row in self.catalogue.connection.execute("DESCRIBE public_v1.link").fetchall()],
             ["capture_id", "node_index", "raw_href", "resolved_url"],
         )
+
+    def test_removed_search_internals_are_dropped_without_touching_materials(self):
+        self.catalogue.connection.execute("CREATE SCHEMA public_v1")
+        for name in ('prose', 'term', 'term_node'):
+            self.catalogue.connection.execute(f'CREATE VIEW public_v1.{name} AS SELECT 1 AS obsolete')
+        install_public_catalogue(self.catalogue)
+        validate_public_catalogue(self.catalogue)
+        for name in ('prose', 'term', 'term_node'):
+            with self.assertRaises(duckdb.CatalogException):
+                self.catalogue.connection.execute(f'SELECT * FROM public_v1.{name}')
+        for name in ('prose', 'term', 'content_posting', 'node_posting', 'html_nodes'):
+            self.catalogue.connection.execute(f'SELECT * FROM material.{name} LIMIT 0')
 
     def test_views_preserve_observation_content_and_occurrence_grains(self) -> None:
         install_public_catalogue(self.catalogue)
@@ -311,7 +320,7 @@ class PublicCatalogueTests(unittest.TestCase):
             {(str(row[0]), str(row[1])) for row in rows},
             EXPECTED_PUBLIC_RELATIONS,
         )
-        self.assertEqual(set(macro_rows), {("public_v1", "subtree_text")})
+        self.assertEqual(set(macro_rows), {("public_v1", "subtree_text"), ("public_v1", "search")})
 
         response = asyncio.run(metadata(_LocalCatalogueControl(self.catalogue)))
         self.assertEqual(response.catalogue_version, PUBLIC_CATALOGUE_VERSION)
@@ -319,7 +328,7 @@ class PublicCatalogueTests(unittest.TestCase):
             {(item.schema_name, item.name) for item in response.relations},
             EXPECTED_PUBLIC_RELATIONS,
         )
-        self.assertEqual([item.name for item in response.macros], ["subtree_text"])
+        self.assertEqual([item.name for item in response.macros], ["subtree_text", "search"])
 
 
 class _LocalCatalogue:

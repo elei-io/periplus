@@ -28,23 +28,6 @@ _TREE_COLUMNS = (
 )
 
 PUBLIC_OBJECTS = (
-    _view("prose", (
-        ("content_id", "SHA-256 identity of captured HTML bytes; one row per unique content."),
-        ("text", "Body text with collapsed whitespace and block separators; excludes script, style, template and noscript subtrees; no CSS visibility inference."),
-    ), "Materialized searchable HTML body text, retaining navigation and footer text.", ("material.prose",)),
-    _view("term", (
-        ("content_id", "SHA-256 identity of captured HTML bytes; one row per normalized term and content."),
-        ("text", "ICU term from body prose, case-folded and NFC-normalized; includes numbers; no stemming or stopword removal."),
-        ("frequency", "Number of occurrences of this normalized term in the content's body prose."),
-    ), "Normalized terms and their frequencies in HTML body prose; no phrase order or relevance ranking.",
-       ("material.term", "material.content_posting")),
-    _view("term_node", (
-        ("content_id", "SHA-256 identity of captured HTML bytes."),
-        ("text", "Normalized ICU term from the complete body prose."),
-        ("node_index", "Contributing text node; join html_node by content_id and node_index."),
-        ("frequency", "Occurrences touching this node; cross-node occurrences count in each contributing node and are not additive."),
-    ), "Term matches located on body text nodes, including terms split across inline elements.",
-       ("material.term", "material.node_posting")),
     _view("capture", (
         ("capture_id", "Acquisition identity with retained content."),
         ("requested_url", "Normalized requested URL."),
@@ -61,12 +44,14 @@ PUBLIC_OBJECTS = (
         ("name", "Local element/doctype name or processing instruction target."),
         ("namespace", "Namespace URI when applicable."),
         ("value", "Text, comment or processing instruction content."),
+        ("text", "Parsed value for text nodes; NULL for every other node kind. No normalization."),
     ), "Complete HTML5 parsed document nodes.", ("material.html_nodes",), content_local=True),
     _view("html_element", (*_TREE_COLUMNS,
         ("tag", "Local element tag name."),
         ("namespace", "Namespace URI when applicable."),
         ("attributes", "Attribute map; namespaced keys use {namespace-uri}local-name."),
         ("text_direct", "Immediate child text concatenated in order, without normalization."),
+        ("text", "All descendant text nodes concatenated in document order; empty when absent. Preserves whitespace, includes script/style/title text, inserts no separators, ignores comments and CSS visibility."),
     ), "HTML elements sharing identity and positions with html_node.", ("material.html_nodes",), content_local=True),
     _view("html_form", (
         ("content_id", "SHA-256 identity of captured bytes."),

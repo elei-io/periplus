@@ -58,12 +58,11 @@ class ProseTests(unittest.TestCase):
         db.execute('CREATE TABLE material.prose AS SELECT * FROM prose_rows')
         db.execute('CREATE TABLE material.html_nodes AS SELECT * FROM element_rows')
         root = files('periplus.platform.catalogue').joinpath('sql/public_v1/views')
-        for name in ('prose', 'html_element'):
+        for name in ('html_element',):
             db.execute(root.joinpath(f'{name}.sql').read_text())
         sql = """SELECT e.content_id, e.tag FROM public_v1.html_element e
-                 JOIN public_v1.prose p USING (content_id)
+                 JOIN material.prose p ON p.content_sha256=e.content_id
                  WHERE p.text ILIKE '%visa sponsorship%' AND e.tag = 'h1'"""
-        _bounded_query(sql)
         self.assertEqual(db.execute(sql).fetchall(), [('a', 'h1')])
         empty = VisitBatchContext((), (), (), {}, {}, {}, frozenset())
         self.assertEqual(project(empty).num_rows, 0)

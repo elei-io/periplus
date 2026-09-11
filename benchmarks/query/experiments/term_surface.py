@@ -110,7 +110,7 @@ def run(input_dir, report_path, batch_size=5):
             """).fetchone()
             common = c.execute("SELECT text FROM public_v1.term WHERE regexp_full_match(text,'[a-z]{3,}') GROUP BY text ORDER BY count(*) DESC,text LIMIT 1").fetchone()[0]
             second = c.execute("SELECT text FROM public_v1.term WHERE content_id=? AND text<>? AND regexp_full_match(text,'[a-z]{3,}') ORDER BY frequency DESC,text LIMIT 1", [content_id,term]).fetchone()[0]
-            case = load_case(ROOT.parent / "cases/exp-term-discovery")
+            case = load_case(ROOT.parent / "retired/exp-term-discovery")
             with patch.dict(os.environ, {
                 "PERIPLUS_DUCKLAKE_ALIAS": "periplus", "PERIPLUS_DUCKLAKE_METADATA_PATH": str(root / "metadata.duckdb"),
                 "PERIPLUS_DUCKLAKE_DATA_PATH": str(root / "data"), "PERIPLUS_DUCKLAKE_METADATA_SCHEMA": "ducklake",

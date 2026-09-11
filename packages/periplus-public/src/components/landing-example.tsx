@@ -23,24 +23,17 @@ export function LandingExample() {
       </Card>)}
     </div>
     <Card className="landing-query-panel">
-      <CardHeader><CardTitle><h3>Count AI mentions by domain</h3></CardTitle><CardDescription>Count “artificial intelligence” and standalone “AI” across each domain, using the latest capture of each page.</CardDescription></CardHeader>
+      <CardHeader><CardTitle><h3>Discover pages about artificial intelligence</h3></CardTitle><CardDescription>Find up to 100 ranked contents with a title, representative URL, and matching snippet.</CardDescription></CardHeader>
       <CardContent className="flex min-w-0 flex-col gap-4">
         <SqlExample sql={landingSql} />
         <Table>
-          <TableCaption>Illustrative data · fictional domains and counts</TableCaption>
-          <TableHeader><TableRow><TableHead>domain</TableHead><TableHead>mentions</TableHead><TableHead>matching_pages</TableHead></TableRow></TableHeader>
+          <TableCaption>Illustrative results · fictional pages</TableCaption>
+          <TableHeader><TableRow><TableHead>title</TableHead><TableHead>url</TableHead><TableHead>snippet</TableHead><TableHead>score</TableHead></TableRow></TableHeader>
           <TableBody>{[
-            ["research.example.com", 284, 42],
-            ["robotics.example.com", 196, 31],
-            ["ventures.example.com", 153, 27],
-            ["computing.example.com", 128, 24],
-            ["healthtech.example.com", 97, 19],
-            ["manufacturing.example.com", 76, 16],
-            ["education.example.com", 58, 13],
-            ["climate.example.com", 43, 11],
-            ["logistics.example.com", 29, 8],
-            ["agriculture.example.com", 17, 5],
-          ].map(([domain, mentions, pages]) => <TableRow key={domain}><TableCell>{domain}</TableCell><TableCell>{mentions}</TableCell><TableCell>{pages}</TableCell></TableRow>)}</TableBody>
+            ["Artificial intelligence research", "https://research.example.com/ai", "Artificial intelligence research", 6],
+            ["Our investments", "https://ventures.example.com/portfolio", "Investing in artificial intelligence companies", 3],
+            ["Latest news", "https://computing.example.com/news", "Our team studies artificial intelligence applications", 1],
+          ].map(([title, url, snippet, score]) => <TableRow key={url}><TableCell>{title}</TableCell><TableCell>{url}</TableCell><TableCell>{snippet}</TableCell><TableCell>{score}</TableCell></TableRow>)}</TableBody>
         </Table>
       </CardContent>
     </Card>

@@ -76,7 +76,7 @@ SQL preparation and execution remain in the separate Python
 
 Both operations accept SQL and positional parameters and use the same public SQL validation.
 Preparation binds and explains without executing the analytical query, returning SQL, parameters,
-a query ID, diagnostics, and a plan. Compiler `public-query-v8` applies the promoted
+a query ID, diagnostics, and a plan. Compiler `public-query-v10` applies the promoted
 optimizations documented below in both stable and experimental. Responses preserve
 the submitted SQL and parameters and identify applied rewrites.
 The execution-only row-limit wrapper remains a resource control. DuckDB performs native
@@ -134,32 +134,16 @@ The public query gateway allows 610 seconds; the Python SDK defaults to 620 seco
 impose shorter deadlines, including bounded agent runs and crawler selections. These do not
 increase the server's limits. Administrative SQL retains its separate fixed result limits.
 
-### Term discovery
+### Page discovery and structured text
 
-`public_v1.term(content_id, text, frequency)` is a portable view over the private
-generation vocabulary and content frequencies. Exact and pattern predicates on
-`text` select terms; join the resulting `content_id` to prose, captures or HTML
-relations. The public manifest supplies schema descriptions to query metadata and
-shell discovery. Internal IDs are not public.
-
-This is a schema/catalogue addition exposing the term materialization. No compiler
-rewrite is added or promoted. Existing prose-only optimizations retain their scope.
-Correct SQL remains available in both execution modes, but native multi-key filtering
-and overlapping files under appends still limit scan pruning. See
-[SCHEMA.md](SCHEMA.md#public_v1term) for normalization and examples.
-
-### Content-first prose discovery
-
-`public_v1.prose` materializes normalized body text once per unique HTML content.
-Use `prose.text` predicates to discover candidate content IDs, then join captures
-or DOM relations using `content_id`. A document match does not establish that a
-particular element contains the phrase; structural claims require verification.
-
-This addresses a schema/catalogue gap: corpus text discovery otherwise requires
-repeated DOM text reconstruction. It is not an optimizer rewrite or a search
-index. Arbitrary substring predicates still scan searchable text, and join
-pruning must be measured with EXPLAIN ANALYZE on representative corpus sizes.
-No production-scale speedup or bounded DOM scan is asserted by this addition.
+Use `search('query')` for ranked page discovery, and `html_element.text` or
+`html_node.text` for deterministic structural predicates. Search owns matching,
+ranking, snippets and a 100-content result cap; see [the full contract](SCHEMA.md#public_v1searchquery).
+Internal prose and postings are not public SQL relations. Their body-only index
+coverage cannot safely accelerate arbitrary element predicates. Any future
+candidate optimization must prove complete coverage and reapply the predicate.
+This change is classified as schema/catalogue design. Superseded public-prose
+compiler passes are removed; no DISTINCT-term optimization is introduced.
 
 ## 2. Python SDK
 
@@ -851,9 +835,9 @@ console links preserve the selected mode with `mode=experimental`. Stable uses
 `/api/query/experimental/exec`, `/api/query/experimental/prep` and
 `/api/query/experimental/helpers`. The SQL assistant validates against the selected mode.
 
-Stable and experimental share compiler `public-query-v8`, with mode suffixes
+Stable and experimental share compiler `public-query-v10`, with mode suffixes
 `:stable` and `:experimental`. Both include the promoted
-`capture_heading_content_scope_v1` and `prose_scalar_before_capture_v1` optimizations.
+`capture_heading_content_scope_v1` optimization.
 Experimental additionally supports the execution-only selected-content rule below.
 New candidates remain experimental until explicitly promoted.
 
@@ -879,33 +863,6 @@ See [the first-three investigation](query-investigations/experimental-first-thre
 for paired production evidence and rejected candidates. No shared physical layout
 or catalogue relation changes are part of this activation.
 
-### Prose counts before capture joins (shared baseline)
-
-`prose_scalar_before_capture_v1` computes a regex match count per prose row in a
-statement-local materialized CTE before joining capture history. It retains the
-inner join, latest eligible capture per requested URL, and all subsequent filters
-and aggregation. Full prose no longer crosses that join. This is a compiler
-intervention available in both modes; public schema, lake layout and materializations
-are unchanged.
-
-Initial eligibility follows the measured broad-analytics family: one nonrecursive
-CTE containing a capture/prose inner `USING (content_id)` join, `DISTINCT ON
-(requested_url)`, and ordering by requested URL, descending capture time and capture
-ID. Exactly one aliased `len(regexp_extract_all(text, literal_pattern))` is moved.
-Other projected fields must also have explicit, unique aliases. Qualified public
-relations, source aliases and either join direction are supported. Selective
-predicates, inner limits, outer joins, raw-text outputs, parameters, additional
-sources/CTEs, regex options/groups and unsupported grammar remain native.
-
-The original binds first. Both installed public view definitions must match and
-the bounded literal regex is validated with DuckDB inside the read transaction;
-invalid patterns do not abort that validation transaction. No discovery scan runs
-during preparation. Regex semantics, output types and labels remain unchanged.
-
-[Evidence and limitations](query-investigations/prose-scalar/README.md) include
-same-snapshot equality and latency comparisons in both orders. This still scans
-prose across the corpus and does not guarantee completion within 512 MB.
-
 ### Promotion to the shared baseline
 
 The existing experimental rules were promoted unchanged at the user's request.
@@ -919,7 +876,7 @@ optimized endpoint, while experimental remains available for future candidates.
 
 `selected_content_scan_v1` resolves distinct non-null content IDs from a leading
 filtered capture CTE during execution, then passes one bound array to exact
-membership filters on HTML primitives and prose. Selection and extraction share
+membership filters on HTML primitives. Selection and extraction share
 the existing read transaction, admission slot and operation deadline. Prep binds
 and explains the original statement and reports `selected_content_available`;
 it never executes discovery. Execution reports the applied optimization and its
@@ -928,7 +885,7 @@ actual extraction plan while preserving the submitted SQL and parameters.
 Initial grammar: one to four nonrecursive SELECT CTEs; the first directly projects
 capture columns including content_id, has a WHERE and no joins, aggregates or
 limit. Each subsequent SELECT block starts from that CTE. Heading, section,
-metadata and prose joins must preserve its content domain through ordinary inner
+and metadata joins must preserve its content domain through ordinary inner
 or left joins, using content_id or a required equality to the driver content_id.
 Auxiliary CTE joins use capture_id. Reviewed deterministic expressions and literal
 or parameter UUID casts are supported; windows, correlated subqueries, arbitrary
@@ -947,29 +904,9 @@ The acceptance priority is completion at bounded resources: modest slowdowns for
 broad selections are accepted, but correctness and resource limits are unchanged.
 [Investigation and evidence](query-investigations/request-scope/README.md) record
 both gains and the broad synthetic regression. Stable execution is unchanged;
-compiler v8 identifies this revision in both modes. No persistent tables, global
+compiler v10 identifies this revision in both modes. No persistent tables, global
 DuckDB optimizer settings, service limits or deployment topology are changed.
 
-### Locating term matches in HTML
-
-`term_node(content_id, text, node_index, frequency)` locates ICU occurrences on
-contributing body text nodes. Join through `html_node.parent_index` to inspect the
-containing element. Specify the text-node kind when joining the unified node table:
-
-```sql
-SELECT e.tag, count(*) AS matching_nodes
-FROM term_node t
-JOIN html_node n USING (content_id, node_index)
-JOIN html_element e ON e.content_id = n.content_id AND e.node_index = n.parent_index
-WHERE t.text = 'monkey' AND n.node_type = 'text'
-GROUP BY e.tag;
-```
-
-The explicit kind is logically redundant for valid postings but avoids an expensive
-unrestricted self-join plan in the measured layout. It does not guarantee file pruning.
-A word split across inline elements matches all contributing text nodes; node frequencies
-count intersecting occurrences and must not be summed as document frequency. Use `term`
-for document frequencies. Parent elements are structural context, not visibility evidence.
 
 ### Notebook input and streaming transport
 
@@ -1007,12 +944,3 @@ Migration `20260911_0016` adds input budgets to the existing policy without chan
 result budgets or rate windows. Roll out core, gateway and SDK together. Ingress must allow
 the configured body size, streaming without response buffering, and 610-second transport
 ceiling. Assistant and crawler clients may retain shorter caller deadlines.
-
-Experimental mode also considers `prose_heading_input_barrier_v1` before bounded
-selected-content extraction. It accepts only a two-table prose/heading inner join,
-a content-ID equality, and one qualified prose-text equality/LIKE/ILIKE predicate
-with string parameters. Unsupported shapes retain the existing optimizer path.
-It materializes the selected prose and puts an OFFSET 0 boundary above scoped DOM
-inputs. Installed-view guards and the original bind run before rewriting; Stable
-is unchanged. Local research and regression cases are retained under
-`benchmarks/query/experiments/` and the vocabulary-materialization investigation.

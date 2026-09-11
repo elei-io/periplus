@@ -260,7 +260,7 @@ first query's snapshot across the round trip.
 
 ```python
 with Client("https://periplus.dev") as client:
-    with client.stream("SELECT content_id FROM public_v1.prose") as stream:
+    with client.stream("SELECT content_id FROM public_v1.capture") as stream:
         for rows in stream:
             process_batch(rows)
         print(stream.result.row_count, stream.result.source_snapshot)
@@ -281,3 +281,25 @@ Operators must raise these settings for larger workloads. No SDK parameter grant
 server budget. Stream metadata includes effective limits; input rejections name the budget.
 Deploy the API, query service, public gateway and SDK together after applying Alembic
 revision `20260911_0016`. Ingress must permit the configured request size and stream duration.
+
+### Search and HTML text
+
+```python
+with Client("https://periplus.dev") as client:
+    hits = client.execute(
+        "SELECT * FROM search(?) ORDER BY score DESC, content_id", ["monkey"]
+    )
+    if hits.rows:
+        content_id = hits.rows[0][hits.columns.index("content_id")]
+        elements = client.execute(
+            "SELECT content_id, node_index, tag, text FROM html_element "
+            "WHERE content_id = ? AND tag = 'h1' AND text ILIKE ?",
+            [content_id, "%monkey%"],
+        )
+```
+
+Search returns up to 100 unique contents with title, representative URL, snippet
+and score. It initially matches literal substrings; percent and underscore are
+literal inside the search argument. Element predicates use ordinary SQL wildcard
+semantics and complete parsed descendant text with preserved whitespace.
+Prose, vocabulary and postings remain internal.

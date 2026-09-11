@@ -1,0 +1,7 @@
+id = "element-text"
+title = "Find text in selected HTML headings"
+use_case = "Find matching h1 elements in a known content partition."
+classification = "schema"
+ordered = true
+memory_limit = "512MB"
+max_warm_ms = 60000

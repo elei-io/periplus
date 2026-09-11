@@ -28,7 +28,7 @@ from periplus.query.validation import _bounded_query, _one_statement
 from periplus.operations.access.schemas import QueryLimits
 from periplus.operations.query_history.schemas import PreparationEvidence
 
-COMPILER_VERSION = "public-query-v8"
+COMPILER_VERSION = "public-query-v10"
 
 class QueryMode(StrEnum):
     STABLE = "stable"
@@ -190,16 +190,9 @@ class QueryService:
             optimizations = []
             # Promoted baseline shared by both modes. Future candidates are
             # explicitly gated on EXPERIMENTAL after this common selection.
-            from periplus.query.content_scope import capture_heading_scope, prose_heading_scope
-            from periplus.query.prose_scalar import prose_scalar
+            from periplus.query.content_scope import capture_heading_scope
             scope = capture_heading_scope(payload.sql, payload.parameters)
             optimization = "capture_heading_content_scope_v1"
-            if scope is None:
-                scope = prose_scalar(payload.sql, payload.parameters)
-                optimization = "prose_scalar_before_capture_v1"
-            if scope is None and self.mode == QueryMode.EXPERIMENTAL:
-                scope = prose_heading_scope(payload.sql, payload.parameters)
-                optimization = "prose_heading_input_barrier_v1"
             if scope is not None:
                 installed = dict(d.execute(
                     "SELECT view_name, sql FROM duckdb_views() WHERE database_name=? AND schema_name='public_v1'",
