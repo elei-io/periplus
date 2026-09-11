@@ -6,7 +6,7 @@ from unittest.mock import patch
 import httpx
 
 from periplus_sdk import connect, dbapi
-from test_client import RESULT
+from test_client import RESULT, stream_response
 
 
 def response(**kw):
@@ -17,8 +17,11 @@ class DBAPITests(unittest.TestCase):
     def connection(self, handler=None, **options):
         factory = httpx.Client
         handler = handler or (lambda request: httpx.Response(200, json=response()))
-        with patch('periplus_sdk.client.httpx.Client', side_effect=lambda **kw:
-                   factory(**kw, transport=httpx.MockTransport(handler))):
+        def streaming_handler(request):
+            result = handler(request)
+            return stream_response(result.json()) if result.is_success else result
+        with patch('periplus_sdk.client.httpx.Client' , side_effect=lambda **kw:
+                   factory(**kw, transport=httpx.MockTransport(streaming_handler))):
             c = connect('https://public.example/prefix', **options)
         self.addCleanup(c.close)
         return c
@@ -29,7 +32,7 @@ class DBAPITests(unittest.TestCase):
         with self.assertRaises(dbapi.ProgrammingError):
             cur.fetchone()
         cur.execute('SELECT ? AS n', [1])
-        self.assertEqual(cur.rowcount, 1)
+        self.assertEqual(cur.rowcount, -1)
         self.assertEqual([d[0] for d in cur.description], ['n', 'n'])
         self.assertEqual(cur.description[1][1], 'DECIMAL(20,2)')
         self.assertEqual(cur.fetchmany(0), [])
@@ -41,7 +44,7 @@ class DBAPITests(unittest.TestCase):
         cur.execute('SELECT 1')
         self.assertEqual(list(cur), [(9007199254740993, Decimal('123.45'))])
         other = c.execute('SELECT 1')
-        self.assertEqual(other.rowcount, 1)
+        self.assertEqual(other.rowcount, -1)
         self.assertEqual(cur.fetchall(), [])
 
     def test_empty_and_fetchmany(self):
@@ -54,7 +57,7 @@ class DBAPITests(unittest.TestCase):
             cur.fetchmany(-1)
         c = self.connection(lambda r: httpx.Response(200, json=response(rows=[])))
         cur = c.execute('SELECT 1 WHERE false')
-        self.assertEqual(cur.rowcount, 0)
+        self.assertEqual(cur.rowcount, -1)
         self.assertEqual(len(cur.description), 2)
         self.assertEqual(cur.fetchall(), [])
 
@@ -73,8 +76,9 @@ class DBAPITests(unittest.TestCase):
 
     def test_truncation_and_lifecycle(self):
         c = self.connection(lambda r: httpx.Response(200,json=RESULT))
-        with self.assertWarns(dbapi.TruncationWarning):
-            cur = c.execute('SELECT 1')
+        cur = c.execute('SELECT 1')
+        with self.assertRaises(dbapi.OperationalError):
+            cur.fetchall()
         self.assertEqual(cur.rowcount, -1)
         self.assertTrue(c.last_result.truncated)
         c.commit()
@@ -115,4 +119,4 @@ class DBAPITests(unittest.TestCase):
     def test_malformed_rows(self):
         c=self.connection(lambda r:httpx.Response(200,json=response(rows=[[1]])))
         with self.assertRaises(dbapi.InterfaceError):
-            c.execute('SELECT 1')
+            c.execute('SELECT 1').fetchall()

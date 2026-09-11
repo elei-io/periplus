@@ -27,7 +27,7 @@ class LimitsTests(unittest.IsolatedAsyncioTestCase):
                      httpx.Response(200, json={'sql': QueryLimits(max_rows=3).model_dump()}),
                      httpx.Response(503, text='private origin'),
                      httpx.Response(200, json={'sql': {'max_rows': 3}}),
-                     httpx.Response(200, json={'sql': QueryLimits().model_dump() | {'max_rows': 10001}})]
+                     httpx.Response(200, json={'sql': QueryLimits().model_dump() | {'max_rows': 10_000_001}})]
         def handler(request):
             self.assertEqual(request.url.path, '/access')
             self.assertEqual(request.headers['Authorization'], 'Bearer query-secret')
@@ -78,9 +78,9 @@ class LimitsTests(unittest.IsolatedAsyncioTestCase):
 
 class PolicyTests(unittest.TestCase):
     def test_supported_bounds(self):
-        for field, value in [('max_rows', 0), ('max_rows', 10001), ('max_duration_seconds', 0),
-                             ('max_duration_seconds', 121), ('max_result_bytes', 1024),
-                             ('max_result_bytes', 64 * 1024 * 1024 + 1)]:
+        for field, value in [('max_rows', 0), ('max_rows', 10_000_001), ('max_duration_seconds', 0),
+                             ('max_duration_seconds', 601), ('max_result_bytes', 1024),
+                             ('max_result_bytes', 1024 * 1024 * 1024 + 1)]:
             with self.subTest(field=field, value=value), self.assertRaises(ValidationError):
                 AccessPolicy.model_validate({'sql': {field: value}})
 

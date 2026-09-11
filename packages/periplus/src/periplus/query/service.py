@@ -14,6 +14,7 @@ import threading
 import time
 from uuid import UUID, uuid4
 from typing import Literal
+from collections.abc import Callable
 from periplus.platform.catalogue.public import PUBLIC_SCHEMA
 
 import duckdb
@@ -27,7 +28,7 @@ from periplus.query.validation import _bounded_query, _one_statement
 from periplus.operations.access.schemas import QueryLimits
 from periplus.operations.query_history.schemas import PreparationEvidence
 
-COMPILER_VERSION = "public-query-v7"
+COMPILER_VERSION = "public-query-v8"
 
 class QueryMode(StrEnum):
     STABLE = "stable"
@@ -40,7 +41,7 @@ _active_queries = Gauge("periplus_query_active_operations", "Occupied query admi
 
 class QueryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    sql: str = Field(min_length=1, max_length=100_000)
+    sql: str = Field(min_length=1, max_length=1_000_000)
     schema_version: Literal["public_v1"] = PUBLIC_SCHEMA
     parameters: list[JsonValue] = Field(default_factory=list, max_length=100)
 
@@ -70,9 +71,16 @@ class QueryResult(PreparedQuery):
     truncated: bool
     elapsed_ms: float
     source_snapshot: int = Field(ge=0)
+    row_count: int = Field(ge=0)
+    result_bytes: int = Field(ge=0)
+    truncation_reason: Literal["max_rows", "max_result_bytes"] | None = None
 
 
 class BusyError(Exception):
+    pass
+
+
+class ResultLimitError(Exception):
     pass
 
 
@@ -121,22 +129,22 @@ class QueryService:
     def prepare(self, payload: QueryRequest, *, limits: QueryLimits = QueryLimits(), evidence: PreparationEvidence | None = None) -> PreparedQuery:
         return self._run(payload, execute=False, limits=limits, evidence=evidence)
 
-    def execute(self, payload: QueryRequest, *, limits: QueryLimits = QueryLimits(), evidence: PreparationEvidence | None = None) -> QueryResult:
-        return self._run(payload, execute=True, limits=limits, evidence=evidence)
+    def execute(self, payload: QueryRequest, *, limits: QueryLimits = QueryLimits(), evidence: PreparationEvidence | None = None, emit: Callable[[dict], None] | None = None, cancelled: threading.Event | None = None) -> QueryResult:
+        return self._run(payload, execute=True, limits=limits, evidence=evidence, emit=emit, cancelled=cancelled)
 
-    def _run(self, payload: QueryRequest, *, execute: bool, limits: QueryLimits, evidence: PreparationEvidence | None):
+    def _run(self, payload: QueryRequest, *, execute: bool, limits: QueryLimits, evidence: PreparationEvidence | None, emit=None, cancelled=None):
         if not self._lock.acquire(blocking=False):
             raise BusyError("Query server is busy. Try again shortly.")
         _active_queries.inc()
         try:
             if self.connection is None:
                 self.connection = self._connect()
-            return self._run_admitted(payload, execute=execute, limits=limits, evidence=evidence)
+            return self._run_admitted(payload, execute=execute, limits=limits, evidence=evidence, emit=emit, cancelled=cancelled)
         finally:
             _active_queries.dec()
             self._lock.release()
 
-    def _run_admitted(self, payload: QueryRequest, *, execute: bool, limits: QueryLimits, evidence: PreparationEvidence | None):
+    def _run_admitted(self, payload: QueryRequest, *, execute: bool, limits: QueryLimits, evidence: PreparationEvidence | None, emit=None, cancelled=None):
         started = time.monotonic()
         query_id = str(uuid4())
         d = self.connection
@@ -149,8 +157,7 @@ class QueryService:
         if evidence is not None:
             evidence.duckdb_version = duckdb.__version__
             evidence.compiler_version = self.compiler_version
-            evidence.effective_limits = dict(max_rows=limits.max_rows, max_duration_seconds=duration,
-                                             max_result_bytes=limits.max_result_bytes)
+            evidence.effective_limits = limits.model_dump() | {"max_duration_seconds": duration}
         timer = threading.Timer(duration, interrupt)
         timer.start()
         from periplus.platform.telemetry import event
@@ -158,6 +165,7 @@ class QueryService:
         status = "failed"
         rows = []
         truncated = False
+        row_count = 0
         try:
             executable = _bounded_query(payload.sql, max_rows=limits.max_rows)
             statement = _one_statement(payload.sql)
@@ -181,13 +189,16 @@ class QueryService:
             optimizations = []
             # Promoted baseline shared by both modes. Future candidates are
             # explicitly gated on EXPERIMENTAL after this common selection.
-            from periplus.query.content_scope import capture_heading_scope
+            from periplus.query.content_scope import capture_heading_scope, prose_heading_scope
             from periplus.query.prose_scalar import prose_scalar
             scope = capture_heading_scope(payload.sql, payload.parameters)
             optimization = "capture_heading_content_scope_v1"
             if scope is None:
                 scope = prose_scalar(payload.sql, payload.parameters)
                 optimization = "prose_scalar_before_capture_v1"
+            if scope is None and self.mode == QueryMode.EXPERIMENTAL:
+                scope = prose_heading_scope(payload.sql, payload.parameters)
+                optimization = "prose_heading_input_barrier_v1"
             if scope is not None:
                 installed = dict(d.execute(
                     "SELECT view_name, sql FROM duckdb_views() WHERE database_name=? AND schema_name='public_v1'",
@@ -218,23 +229,49 @@ class QueryService:
             types = [str(col[1]) for col in cursor.description]
             rows = []
             size = len(prepared.model_dump_json().encode()) + len(json.dumps([columns, types]).encode()) + 1024
+            if size > limits.max_result_bytes:
+                raise ResultLimitError(f"Query metadata exceeds max_result_bytes ({limits.max_result_bytes} bytes).")
             truncated = False
+            reason = None
+            batch_bytes = 0
+            row_payload_bytes = 2
+            if emit:
+                emit(dict(type="metadata", **prepared.model_dump(mode="json"), columns=columns, types=types,
+                          source_snapshot=snapshot, limits=limits.model_dump()))
             while True:
+                if cancelled is not None and cancelled.is_set():
+                    raise TimeoutError("Query stream was cancelled.")
+                if expired.is_set():
+                    raise TimeoutError("Query time limit exceeded.")
                 row = cursor.fetchone()
                 if row is None:
                     break
                 converted = [_json_value(value) for value in row]
-                size += len(json.dumps(converted, ensure_ascii=False).encode()) + 1
-                if len(rows) == limits.max_rows or size > limits.max_result_bytes:
+                row_bytes = len(json.dumps(converted, ensure_ascii=False).encode()) + 1
+                if row_count == limits.max_rows or size + row_bytes > limits.max_result_bytes:
                     truncated = True
+                    reason = "max_rows" if row_count == limits.max_rows else "max_result_bytes"
                     break
-                if expired.is_set():
-                    raise TimeoutError("Query time limit exceeded.")
+                size += row_bytes
+                row_payload_bytes += len(json.dumps(converted, ensure_ascii=False, separators=(",", ":")).encode()) + (1 if row_count else 0)
+                row_count += 1
                 rows.append(converted)
+                batch_bytes += row_bytes
+                if emit and (len(rows) >= 1024 or batch_bytes >= 256 * 1024):
+                    emit(dict(type="rows", rows=rows))
+                    rows = []
+                    batch_bytes = 0
             if expired.is_set():
                 raise TimeoutError("Query time limit exceeded.")
+            if emit and rows:
+                emit(dict(type="rows", rows=rows))
+                rows = []
             status = "completed"
-            return QueryResult(**prepared.model_dump(), columns=columns, types=types, rows=rows, truncated=truncated, source_snapshot=snapshot, elapsed_ms=(time.monotonic()-started)*1000)
+            return QueryResult(**prepared.model_dump(), columns=columns, types=types, rows=rows,
+                               row_count=row_count, result_bytes=row_payload_bytes, truncated=truncated,
+                               truncation_reason=reason, source_snapshot=snapshot,
+                               elapsed_ms=(time.monotonic()-started)*1000)
+
         except (duckdb.FatalException, duckdb.InternalException):
             invalidated = True
             raise
@@ -260,7 +297,7 @@ class QueryService:
                     except duckdb.Error:
                         pass
                     logger.warning("query_connection_discarded query_id=%s", query_id)
-                event("query_finished", operation_id=query_id, outcome=status, truncated=truncated, rows=len(rows), elapsed_ms=(time.monotonic()-started)*1000)
+                event("query_finished", operation_id=query_id, outcome=status, truncated=truncated, rows=row_count, elapsed_ms=(time.monotonic()-started)*1000)
 
 
 def _json_value(value):

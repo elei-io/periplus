@@ -5,7 +5,7 @@ import duckdb
 from pydantic import BaseModel
 
 from periplus.query.helpers import safe_helper_error
-from periplus.query.service import BusyError
+from periplus.query.service import BusyError, ResultLimitError
 
 
 class QueryError(BaseModel):
@@ -14,6 +14,8 @@ class QueryError(BaseModel):
 
 
 def query_error(error: Exception) -> tuple[int, QueryError]:
+    if isinstance(error, ResultLimitError):
+        return 422, QueryError(code="resource_limit", detail=str(error))
     if isinstance(error, BusyError):
         return 429, QueryError(code="service_busy", detail="Query server is busy. Try again shortly.")
     if isinstance(error, (TimeoutError, duckdb.InterruptException)):

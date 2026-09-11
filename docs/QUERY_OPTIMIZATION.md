@@ -155,7 +155,10 @@ same unrecorded experiments.
 ## Execution-mode promotion
 
 Stable contains the promoted compiler baseline. Experimental includes that same
-baseline plus explicitly gated new candidates; it is currently identical to stable.
+baseline plus explicitly gated new candidates. The current experimental-only
+candidate is `prose_heading_input_barrier_v1`; see [QUERY.md](QUERY.md) for its
+eligibility and [the investigation](query-investigations/vocabulary-materialization/query-api-barrier.md)
+for measured benefits and remaining physical-read limits.
 Develop new candidates only in experimental, then replay stable and experimental
 against the same frozen snapshot using
 `benchmarks/query/`. Require equivalent results (including duplicates, nulls and

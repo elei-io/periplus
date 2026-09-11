@@ -9,7 +9,19 @@ from periplus_sdk import AsyncClient, Client, ApiError, ConfigurationError, Resp
 
 PREP = dict(query_mode='stable', compiler_version='public-query-v8:stable', optimizations=[], schema_version='public_v1', query_id='q', sql='SELECT ? AS n', parameters=[1], diagnostics=[], plan='plan')
 RESULT = dict(**PREP, columns=['n', 'n'], types=['BIGINT', 'DECIMAL(20,2)'],
-              rows=[['9007199254740993', '123.45']], truncated=True, elapsed_ms=1.2, source_snapshot=4)
+              rows=[['9007199254740993', '123.45']], truncated=True, elapsed_ms=1.2, source_snapshot=4, row_count=1, result_bytes=32)
+
+
+def stream_response(result, *, terminal=True):
+    metadata = {k: v for k, v in result.items() if k not in {'rows', 'truncated', 'elapsed_ms'}}
+    metadata.update(type='metadata', limits={'max_rows': 1000, 'max_result_bytes': 8388608})
+    frames = [metadata, {'type': 'rows', 'rows': result['rows']}]
+    if terminal:
+        frames.append(dict(type='complete', row_count=len(result['rows']), result_bytes=100,
+                           truncated=result['truncated'], elapsed_ms=result['elapsed_ms'],
+                           truncation_reason='max_rows' if result['truncated'] else None))
+    return httpx.Response(200, headers={'content-type':'application/x-ndjson'},
+                          content=''.join(json.dumps(frame)+'\n' for frame in frames))
 
 
 class ClientTests(unittest.TestCase):

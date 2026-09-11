@@ -12,12 +12,35 @@ from periplus.materialization.registry import PROJECTIONS
 from periplus.platform.catalogue.client import _column_type
 from periplus.platform.catalogue.public import public_objects
 from periplus.platform.catalogue.schema import expected_columns
-from periplus.query.content_scope import content_scope, capture_heading_scope, _source
+from periplus.query.content_scope import content_scope, capture_heading_scope, prose_heading_scope, _source
 from periplus.query.validation import _bounded_query
 from periplus.query.scope_plan import shared_html_inputs
 
 
 class ContentScopeTests(unittest.TestCase):
+    def test_prose_heading_barrier_equivalence_and_eligibility(self):
+        sql = "SELECT h.*,p.text AS prose_text FROM prose p JOIN html_heading h USING(content_id) WHERE p.text ILIKE ? ORDER BY h.content_id,h.node_index"
+        # Duplicate driver rows must multiply output exactly as the original join.
+        self.db.execute("INSERT INTO material.prose SELECT * FROM material.prose WHERE content_sha256='a'")
+        for pattern in ('%robot%', '%', '%absent%'):
+            candidate = prose_heading_scope(sql, [pattern])
+            self.assertIsNotNone(candidate)
+            self.assertIn('OFFSET 0', candidate.sql)
+            self.assertTrue(candidate.matches(self.db, self.installed))
+            _bounded_query(candidate.sql)
+            before = self.db.execute(sql, [pattern])
+            description, rows = before.description, before.fetchall()
+            after = self.db.execute(candidate.sql, [pattern])
+            self.assertEqual(description, after.description)
+            self.assertEqual(rows, after.fetchall())
+        for other in (sql + ' LIMIT 1', sql.replace('JOIN', 'LEFT JOIN'),
+                      sql.replace('p.text ILIKE ?', 'p.text ILIKE ? OR h.level=1'),
+                      sql.replace('html_heading', 'html_section'),
+                      sql.replace('p.text ILIKE ?', 'random()>0.5'),
+                      'WITH prose AS (SELECT NULL AS content_id, NULL AS text) ' + sql):
+            self.assertIsNone(prose_heading_scope(other, ['%robot%']), other)
+        self.assertIsNone(prose_heading_scope(sql, [None]))
+
     def setUp(self):
         self.db = duckdb.connect()
         self.addCleanup(self.db.close)
@@ -45,7 +68,8 @@ class ContentScopeTests(unittest.TestCase):
         }.items()}
         context = VisitBatchContext((), (), (), {k: v[1] for k, v in parsed.items()},
                                     {k: v[0] for k, v in parsed.items()}, {}, frozenset(parsed))
-        for name, project in [(spec.name, spec.rows) for spec in PROJECTIONS]:
+        for name, project in [(spec.name, spec.rows) for spec in PROJECTIONS
+                              if spec.name not in {"vocabulary", "term_stat"}]:
             self.db.register('projection_rows', project(context))
             self.db.execute(f'INSERT INTO material.{name} SELECT * FROM projection_rows')
             self.db.unregister('projection_rows')

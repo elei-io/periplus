@@ -17,6 +17,110 @@ from periplus.query.service import QueryService, QueryRequest, BusyError
 
 
 class QueryServiceTests(unittest.TestCase):
+    def test_stream_metadata_is_also_subject_to_result_byte_budget(self):
+        from periplus.query.service import ResultLimitError
+        frames = []
+        with self.assertRaises(ResultLimitError):
+            self.service.execute(QueryRequest(sql='SELECT ? WHERE false', parameters=['x' * (2 * 1024 * 1024)]),
+                                 limits=QueryLimits(max_result_bytes=1024 * 1024), emit=frames.append)
+        self.assertEqual(frames, [])
+
+    def test_sdk_stream_contract_through_real_query_http(self):
+        import asyncio
+        import sys
+        import httpx
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from periplus.query.server_http import router
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'periplus-python-sdk/src'))
+        from periplus_sdk import Client, ApiError
+        app = FastAPI()
+        app.include_router(router, prefix='/api')
+        app.state.query_service = self.service
+        app.state.query_slot = asyncio.Semaphore(1)
+        app.state.query_limits = AsyncMock()
+        app.state.query_limits.read.return_value = QueryLimits(max_rows=25_000)
+        app.state.query_history = AsyncMock()
+        with TestClient(app) as http, Client('http://query.test') as sdk:
+            sdk._http.close()
+            def transport(request):
+                response = http.post(request.url.path, content=request.content, headers=dict(request.headers))
+                return httpx.Response(response.status_code, headers=response.headers, content=response.content)
+            sdk._http = httpx.Client(base_url='http://query.test', transport=httpx.MockTransport(transport),
+                                     headers={'x-periplus-query-source': 'sdk'})
+            with sdk.stream('SELECT unnest(?::INTEGER[]) AS n', [list(range(20_001))]) as stream:
+                rows = [row for batch in stream for row in batch]
+                self.assertEqual(rows, [[i] for i in range(20_001)])
+                self.assertTrue(stream.result.complete)
+                self.assertEqual(stream.result.row_count, 20_001)
+                self.assertEqual(stream.result.limits['max_rows'], 25_000)
+            record = app.state.query_history.record.await_args_list[-1].args[0]
+            self.assertEqual(record.result_rows, 20_001)
+            self.assertEqual(record.source, 'sdk')
+            app.state.query_limits.read.return_value = QueryLimits(max_rows=2)
+            with sdk.stream('SELECT unnest(?::INTEGER[]) AS n', [[1, 2, 3]]) as stream:
+                with self.assertRaises(ApiError) as raised:
+                    list(stream)
+                self.assertEqual(raised.exception.code, 'result_limit')
+                self.assertTrue(stream.result.truncated)
+            with sdk.stream('SELECT 7 AS n') as stream:
+                self.assertEqual(list(stream), [[[7]]])
+
+    def test_stream_batches_match_buffered_results_and_larger_limits(self):
+        payload = QueryRequest(sql="SELECT unnest(?::INTEGER[]) AS n", parameters=[list(range(20_001))])
+        frames = []
+        limits = QueryLimits(max_rows=25_000)
+        streamed = self.service.execute(payload, limits=limits, emit=frames.append)
+        buffered = self.service.execute(payload, limits=limits)
+        self.assertEqual(streamed.rows, [])
+        self.assertEqual(streamed.row_count, 20_001)
+        self.assertFalse(streamed.truncated)
+        self.assertEqual(frames[0]['type'], 'metadata')
+        self.assertEqual(frames[0]['source_snapshot'], buffered.source_snapshot)
+        batches = [frame['rows'] for frame in frames[1:]]
+        self.assertTrue(all(len(batch) <= 1024 for batch in batches))
+        self.assertEqual([row for batch in batches for row in batch], buffered.rows)
+        capped = self.service.execute(payload, limits=QueryLimits(max_rows=12), emit=lambda frame: None)
+        self.assertEqual((capped.row_count, capped.truncation_reason), (12, 'max_rows'))
+        self.assertTrue(capped.truncated)
+
+    def test_stream_consumer_failure_releases_connection(self):
+        def broken(frame):
+            raise TimeoutError('consumer disconnected')
+        with self.assertRaises(TimeoutError):
+            self.service.execute(QueryRequest(sql='SELECT 1'), emit=broken)
+        self.assertEqual(self.service.execute(QueryRequest(sql='SELECT 2')).rows, [[2]])
+
+    def test_prose_heading_barrier_only_in_experimental_and_catalogue_guarded(self):
+        from periplus.query.service import QueryMode
+        self.service.close()
+        writer = DuckLakeConnectionFactory(self.config).connect(read_only=False)
+        writer.execute("INSERT INTO periplus.material.html_elements (content_sha256,element_index,subtree_end_index,tag,namespace) VALUES ('helper-fixture',4,6,'h1','HTML'),('helper-fixture',6,7,'h2','HTML')")
+        writer.execute("INSERT INTO periplus.material.html_nodes (content_sha256,node_index,subtree_end_index,node_type,value) VALUES ('helper-fixture',5,6,'text','Heading')")
+        writer.close()
+        self.service = QueryService(self.config)
+        self.addCleanup(self.service.close)
+        experimental = QueryService(self.config, mode=QueryMode.EXPERIMENTAL)
+        self.addCleanup(experimental.close)
+        request = QueryRequest(sql="SELECT h.level,h.text FROM prose p JOIN html_heading h USING(content_id) WHERE p.text ILIKE ? ORDER BY h.node_index", parameters=['%robot%'])
+        before = self.service.execute(request)
+        after = experimental.execute(request)
+        self.assertEqual(before.rows, [[1, 'Heading'], [2, '']])
+        term_request = QueryRequest(sql="SELECT h.level,h.text FROM term t JOIN html_heading h USING(content_id) WHERE t.text = ? ORDER BY h.node_index", parameters=['robot'])
+        for service in (self.service, experimental):
+            service.prepare(term_request)
+            self.assertEqual(service.execute(term_request).rows, before.rows)
+        self.assertEqual(after.rows, before.rows)
+        self.assertEqual(after.columns, before.columns)
+        self.assertEqual(after.types, before.types)
+        self.assertEqual(after.sql, request.sql)
+        self.assertEqual(after.parameters, request.parameters)
+        self.assertEqual(before.optimizations, [])
+        self.assertEqual(after.optimizations, ['prose_heading_input_barrier_v1'])
+        self.assertEqual(experimental.prepare(request).optimizations, after.optimizations)
+        with patch('periplus.query.content_scope.ContentScope.matches', return_value=False):
+            self.assertEqual(experimental.execute(request).optimizations, [])
+
     def setUp(self):
         self.directory = TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
@@ -57,9 +161,37 @@ class QueryServiceTests(unittest.TestCase):
         d.execute("INSERT INTO material.html_nodes (content_sha256, node_index, subtree_end_index, node_type, value, depth) VALUES ('helper-fixture',0,4,'element',NULL,0),('helper-fixture',1,2,'text','start',1),('helper-fixture',2,3,'text','nested',1),('helper-fixture',3,4,'text','end',1)")
         d.execute("UPDATE material.html_elements SET tag = 'title', namespace = 'HTML' WHERE content_sha256 = 'helper-fixture' AND element_index = 0")
         d.execute("INSERT INTO material.prose VALUES ('helper-fixture', 'robot careers')")
+        d.execute("INSERT INTO material.vocabulary VALUES ('robot', 1), ('robotics', 2), ('unused', 3)")
+        d.execute("INSERT INTO material.term_stat VALUES (1, 'helper-fixture', 2), (2, 'helper-fixture', 1)")
         d.close()
         self.service = QueryService(self.config)
         self.addCleanup(self.service.close)
+
+    def test_public_term_filtering_and_content_joins(self):
+        from periplus.query.service import QueryMode
+        experimental = QueryService(self.config, mode=QueryMode.EXPERIMENTAL)
+        self.addCleanup(experimental.close)
+        for service in (self.service, experimental):
+            exact = QueryRequest(sql="SELECT * FROM term WHERE text = ?", parameters=['robot'])
+            service.prepare(exact)
+            result = service.execute(exact)
+            self.assertEqual(result.columns, ['content_id', 'text', 'frequency'])
+            self.assertEqual(result.types, ['VARCHAR', 'VARCHAR', 'BIGINT'])
+            self.assertEqual(result.rows, [['helper-fixture', 'robot', 2]])
+            matched = service.execute(QueryRequest(
+                sql="SELECT text, frequency FROM public_v1.term WHERE text ILIKE ? ORDER BY text",
+                parameters=['%ROBOT%']))
+            self.assertEqual(matched.rows, [['robot', 2], ['robotics', 1]])
+            joined = service.execute(QueryRequest(sql="""SELECT c.effective_url, p.text, t.frequency
+                FROM term t JOIN prose p USING(content_id) JOIN capture c USING(content_id)
+                WHERE t.text = ?""", parameters=['robot']))
+            self.assertEqual(len(joined.rows), 1)
+            self.assertEqual(joined.rows[0][1:], ['robot careers', 2])
+            self.assertEqual(service.execute(QueryRequest(
+                sql="SELECT * FROM term WHERE text = 'unused'")).rows, [])
+            self.assertEqual(service.execute(QueryRequest(
+                sql="SELECT a.content_id FROM term a JOIN term b USING(content_id) "
+                    "WHERE a.text = 'robot' AND b.text = 'robotics'")).rows, [['helper-fixture']])
 
     def test_modes_preserve_results_and_have_separate_admission(self):
         from periplus.query.service import QueryMode
@@ -77,7 +209,7 @@ class QueryServiceTests(unittest.TestCase):
         self.assertEqual(stable.query_mode, QueryMode.STABLE)
         self.assertEqual(result.query_mode, QueryMode.EXPERIMENTAL)
         self.assertEqual(result.optimizations, [])
-        self.assertEqual(evidence.compiler_version, "public-query-v7:experimental")
+        self.assertEqual(evidence.compiler_version, "public-query-v8:experimental")
         self.assertNotEqual(result.compiler_version, stable.compiler_version)
         with self.assertRaises(ValueError):
             QueryService(self.config, mode="invalid")
@@ -105,7 +237,7 @@ class QueryServiceTests(unittest.TestCase):
         self.assertEqual(after.types, before.types)
         self.assertEqual(after.sql, request.sql)
         self.assertEqual(before.optimizations, ['capture_heading_content_scope_v1'])
-        self.assertEqual(before.compiler_version, 'public-query-v7:stable')
+        self.assertEqual(before.compiler_version, 'public-query-v8:stable')
         self.assertEqual(after.optimizations, ['capture_heading_content_scope_v1'])
         self.assertIn('__periplus_scope_', after.plan)
         self.assertEqual(stable.prepare(request).optimizations, after.optimizations)
@@ -216,7 +348,7 @@ class QueryServiceTests(unittest.TestCase):
             result = self.service.execute(request)
         self.assertEqual(prepared.sql, request.sql)
         self.assertEqual(result.sql, request.sql)
-        self.assertEqual(evidence.compiler_version, 'public-query-v7:stable')
+        self.assertEqual(evidence.compiler_version, 'public-query-v8:stable')
         self.assertEqual(evidence.plan, prepared.plan)
         self.assertFalse(any(d.code.startswith('content_scope') for d in result.diagnostics))
         self.assertEqual(self.service.connection.execute("SELECT current_setting('disabled_optimizers')").fetchone(), before)
@@ -389,7 +521,7 @@ class QueryServiceTests(unittest.TestCase):
             self.assertEqual(invalid.status_code, 422)
             self.assertEqual(invalid.json()['code'], 'sql_invalid')
             self.assertEqual(client.post('/query/report', headers=headers).status_code, 404)
-            self.assertEqual(client.post('/query/exec', headers=headers, content='x'*140000).status_code, 413)
+            self.assertEqual(client.post('/query/exec', headers=headers, content='x'*(16 * 1024 * 1024 + 1)).status_code, 413)
             self.assertEqual(client.get('/graph-runs/', headers=headers).status_code, 404)
 
     def test_byte_budget_is_independent_of_row_budget(self):

@@ -3,6 +3,27 @@
 Periplus uses the official DuckDB and DuckLake extensions directly. LakeDucktor owns physical lake
 maintenance; Periplus owns ingestion evidence and logical materialization generations.
 
+## DuckLake small term-ID sets use optional scan filters
+
+- **Periplus caller:** experimental vocabulary-to-term-stat discovery, not a shipped projection.
+- **Evidence:** DuckDB 1.5.5, local DuckLake, 2,080,010 postings in eight term-ID
+  buckets. A vocabulary join obtains dynamic `optional: term_id IN (504,607)`
+  plus optional min/max bounds; the postings scan emits 560,010 rows into a join
+  returning 20 postings. Literal `IN (504,607)` emits 584,994 rows before an exact
+  filter. Two equality scans emit ten rows each. All complete results agree.
+- **Reproducer:** `benchmarks/query/experiments/vocabulary_lookup.py`; the
+  investigation in `docs/query-investigations/vocabulary-materialization/README.md`
+  documents fixed inputs, full filter annotations, shared-bench measurements and
+  before/after compaction. Existing summary profiles omit dynamic-filter fields;
+  the reproducer captures them explicitly.
+- **Requested investigation:** whether small-set/static and dynamic IN filters can
+  be enforced earlier in the DuckLake/Parquet scan, rather than used only as
+  optional pruning hints. Equality is an isolating control, not evidence that
+  arbitrary SQL should be expanded into one scan per term.
+- **Scope:** performance opportunity, not a correctness bug. All forms read 80
+  files before compaction and two after; overlapping per-batch ranges independently
+  explain file fan-out. No Periplus workaround or custom query extension added.
+
 ## DuckLake rejects column comments on views
 
 - **Periplus caller:** public `web.*` and `content.*` catalogue documentation.
@@ -165,3 +186,44 @@ contract across schema-only boundaries, including manual commit and filtered DML
   establish file pruning or justify unconditional rewrites.
 - **Periplus status:** read-only experiments only. No extra materialization,
   deployment change, optimizer extension, or production prep rewrite was added.
+
+### Term-derived extraction: join direction and append overlap
+
+- **Local reproduction (2026-09-11):** DuckDB v1.5.5 / DuckLake `d8a1881e`,
+  deterministic fixed-key growth from 100 to 5,000 contents. See
+  [extraction-pruning](docs/query-investigations/vocabulary-materialization/extraction-pruning.md)
+  for commands, complete same-snapshot comparisons and physical evidence.
+- **Native planning:** term membership computes 70,000 heading groups for 14
+  requested results. A literal ID computes only 14; a VALUES key relation also
+  scans broadly. Explicit input scoping fixes the aggregation but leaves the
+  element scan broad. At 1,000 contents, disabling only `build_side_probe_side`
+  changes scoped element output from 55,000 rows/eight files to 55 rows/one file,
+  and term-selected prose output from 1,000 rows to one. Disabling only
+  `join_order` fixes the scoped element path but not prose. Results agree.
+- **Physical access:** with ordinary settings, even literal equality opens 27
+  node files after unrelated appends although only one contains the key. Prose
+  opens 41 files for one match. Overlapping content ranges and compaction are
+  separate from late filtering; stable file counts alone do not prove stable bytes.
+- **Needed investigation:** preserve useful dynamic-filter direction and propagate
+  demanded keys below document-local aggregation without broad global optimizer
+  disabling. Evaluate exact set-filter execution alongside the existing optional-IN
+  observation. No production optimizer settings or compiler behavior changed.
+
+Subsequent local work found that OFFSET 0 boundaries on materialized, content-scoped
+primitive inputs preserve both single-key dynamic filters with normal optimizer
+settings. The query API now tests this only in experimental mode for eligible
+prose/heading inner joins; it is not deployed or promoted. See
+[query-api-barrier](docs/query-investigations/vocabulary-materialization/query-api-barrier.md).
+Multi-key optional filters and append overlap remain unresolved.
+
+The follow-up [multi-key extraction experiment](docs/query-investigations/vocabulary-materialization/multikey-extraction.md)
+holds 10/100/1,000 matches fixed while growing from 2,000 to 10,000 contents.
+Input scoping keeps heading groups at 140/1,400/14,000, but the 100-key candidate
+still emits 1,060,030 node rows for 10,900 required nodes. Smaller 8,192-row groups
+do not improve that output. At one compacted snapshot, increasing
+`dynamic_or_filter_threshold` from 50 to 1024 adds optional IN filters but changes
+neither scan output nor files read; the 1,000-key API candidate slows from about
+54 ms to 136 ms in both setting orders. Static prose IN also emits the whole
+10,000-row prose relation. Investigate exact multi-key evaluation and row-group
+selection; do not infer bounded I/O from an IN appearing in the plan. No runtime
+threshold, production row-group setting or stable compiler behavior changed.

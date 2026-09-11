@@ -3,7 +3,7 @@ import importlib.util
 import unittest
 from unittest.mock import patch
 import httpx
-from test_client import RESULT
+from test_client import RESULT, stream_response
 
 
 @unittest.skipUnless(importlib.util.find_spec('sqlalchemy') and importlib.util.find_spec('marimo'), 'notebook extra required')
@@ -23,7 +23,7 @@ class NotebookTests(unittest.TestCase):
                 columns = ['column_name','column_type','null','key','default','extra']
                 types = ['VARCHAR']*6
                 rows = [['capture_id','UUID','NO',None,None,None],['captured_at','TIMESTAMP WITH TIME ZONE','YES',None,None,None]]
-            return httpx.Response(200,json=dict(RESULT,columns=columns,types=types,rows=rows,truncated=truncated))
+            return stream_response(dict(RESULT,columns=columns,types=types,rows=rows,truncated=truncated))
         patcher = patch('periplus_sdk.client.httpx.Client', side_effect=lambda **kw: factory(**kw,transport=httpx.MockTransport(handler)))
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -72,11 +72,9 @@ class NotebookTests(unittest.TestCase):
 
     def test_truncated_discovery_is_not_silently_partial(self):
         from sqlalchemy import inspect, exc
-        from periplus_sdk.dbapi import TruncationWarning
         engine=self.engine(truncated=True)
-        with self.assertWarns(TruncationWarning):
-            with self.assertRaises(exc.InvalidRequestError):
-                inspect(engine).get_view_names()
+        with self.assertRaises(exc.OperationalError):
+            inspect(engine).get_view_names()
 
     def test_reflection_quotes_identifiers_and_rejects_private_schemas(self):
         from sqlalchemy import inspect, exc
@@ -86,3 +84,39 @@ class NotebookTests(unittest.TestCase):
         self.assertIn('DESCRIBE "public_v1"."odd""name"',self.requests)
         with self.assertRaises(exc.InvalidRequestError):
             inspector.get_columns('visits',schema='ingest')
+
+    def test_python_filtered_ids_bind_into_native_marimo_sql(self):
+        import json
+        import marimo as mo
+        from periplus_sdk import sql_api
+        from sqlalchemy import inspect
+        from marimo._sql.get_engines import get_engines_from_variables
+        factory = httpx.Client
+        engine = self.engine()
+        captured = []
+        def handler(request):
+            payload = json.loads(request.content)
+            captured.append(payload)
+            if payload['sql'].startswith('SHOW TABLES'):
+                self.assertEqual(payload['parameters'], [])
+                return stream_response(dict(RESULT, columns=['name'], types=['VARCHAR'], rows=[['capture']], truncated=False))
+            ids = payload['parameters'][0]
+            return stream_response(dict(RESULT, columns=['content_id'], types=['VARCHAR'],
+                                        rows=[[value] for value in ids], truncated=False))
+        with engine.connect() as connection:
+            client = connection.connection.dbapi_connection._client
+            client._http.close()
+            client._http = factory(base_url='https://public.example', transport=httpx.MockTransport(handler))
+        # A Python-filtered selection larger than the previous entire request budget.
+        ids = [f'{i:064x}' for i in range(5000) if i % 2 == 0]
+        selected = sql_api.bind(engine, content_ids=ids)
+        self.assertEqual(len(get_engines_from_variables([('selected', selected)])), 1)
+        frame = mo.sql('SELECT unnest(CAST(:content_ids AS VARCHAR[])) AS content_id', engine=selected, output=False)
+        self.assertEqual(frame['content_id'].to_list(), ids)
+        self.assertEqual(captured[0]['parameters'], [ids])
+        self.assertLess(len(captured[0]['sql']), 100)
+        self.assertEqual(inspect(selected).get_view_names(), ['capture'])
+        # Empty selections remain typed SQL lists, rather than invalid IN ().
+        empty = sql_api.bind(engine, content_ids=[])
+        frame = mo.sql('SELECT unnest(CAST(:content_ids AS VARCHAR[])) AS content_id', engine=empty, output=False)
+        self.assertEqual(frame.height, 0)

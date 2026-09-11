@@ -91,11 +91,11 @@ class PeriplusDialect(default.DefaultDialect):
 
     def _complete(self, result):
         raw = result.cursor.result
-        if raw.truncated:
-            result.close()
-            raise exc.InvalidRequestError("Catalogue discovery was truncated by public query limits; refusing an incomplete schema.")
         try:
-            return result.fetchall()
+            rows = result.fetchall()
+            if raw.truncated:
+                raise exc.InvalidRequestError("Catalogue discovery was truncated by public query limits; refusing an incomplete schema.")
+            return rows
         finally:
             result.close()
 

@@ -98,3 +98,32 @@ test("execution modes route independently and experimental never falls back", as
     names.forEach((name, index) => { if (previous[index] === undefined) delete process.env[name]; else process.env[name] = previous[index] })
   }
 })
+
+test("query stream negotiation and cancellation reach the upstream without buffering", async () => {
+  const oldFetch = globalThis.fetch
+  const oldToken = process.env.PERIPLUS_QUERY_API_TOKEN
+  process.env.PERIPLUS_QUERY_API_TOKEN = "internal-secret"
+  let cancelled = false
+  try {
+    globalThis.fetch = async (_url, options) => {
+      assert.equal(new Headers(options?.headers).get("accept"), "application/x-ndjson")
+      return new Response(new ReadableStream({
+        start(controller) { controller.enqueue(new TextEncoder().encode('{"type":"metadata"}\n')) },
+        cancel() { cancelled = true },
+      }), { headers: { "content-type": "application/x-ndjson", "x-accel-buffering": "no" } })
+    }
+    const response = await loadProxy(async () => null)(new Request("https://public.example/api/query/exec", {
+      method: "POST", headers: { accept: "application/x-ndjson" }, body: '{"sql":"SELECT 1"}',
+    }), "/query/exec")
+    assert.equal(response.headers.get("content-type"), "application/x-ndjson")
+    assert.equal(response.headers.get("x-accel-buffering"), "no")
+    const reader = response.body!.getReader()
+    assert.equal(new TextDecoder().decode((await reader.read()).value), '{"type":"metadata"}\n')
+    await reader.cancel()
+    assert.equal(cancelled, true)
+  } finally {
+    globalThis.fetch = oldFetch
+    if (oldToken === undefined) delete process.env.PERIPLUS_QUERY_API_TOKEN
+    else process.env.PERIPLUS_QUERY_API_TOKEN = oldToken
+  }
+})

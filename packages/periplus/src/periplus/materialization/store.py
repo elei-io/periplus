@@ -15,6 +15,7 @@ from periplus.materialization.models import (
 from periplus.materialization.registry import REGISTRY_DIGEST
 from periplus.platform.postgres.session import session_scope
 from sqlalchemy import select, text
+from periplus.platform.catalogue.exceptions import CatalogueConflictError
 
 RunStatus = Literal[
     "queued",
@@ -24,6 +25,10 @@ RunStatus = Literal[
     "completed",
     "failed",
 ]
+
+
+class MaterializationRunStopped(CatalogueConflictError):
+    """A delayed rebuild writer must not touch a terminal generation."""
 
 
 class MaterializationRunActive(RuntimeError):
@@ -64,6 +69,12 @@ class MaterializationBatch:
 
 
 class MaterializationRunStore:
+    def assert_writable(self, run_id: UUID) -> None:
+        """Call under the generation claim, before any rebuild lake write."""
+        run = self.get(run_id)
+        if run is None or run.status not in {"running", "activating"}:
+            raise MaterializationRunStopped(f"rebuild {run_id} is no longer writable")
+
     def create(
         self,
         *,
@@ -335,7 +346,7 @@ class MaterializationRunStore:
     def fail(self, run_id: UUID, error: BaseException) -> MaterializationRun:
         with session_scope() as session:
             record = _required_run(session, run_id, lock=True)
-            if record.status == "completed":
+            if record.status in {"completed", "failed"}:
                 return _run(record)
             record.status = "failed"
             record.completed_at = datetime.now(timezone.utc)

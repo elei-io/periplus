@@ -34,10 +34,10 @@ one complete materialization: physical and Arrow columns, ownership grain, ident
 partition transforms, sorting, projector, and description. There is no central list or second
 physical-schema declaration. Add one file, edit one file, or delete one file; then redeploy and run
 a complete rebuild. The generation digest includes the complete source of every discovered
-projection file, so an implementation-only edit cannot silently reuse the previous generation.
+projection file and its declared implementation dependencies, so an implementation-only edit cannot silently reuse the previous generation.
 
-The current files project structural HTML and searchable body prose at content grain, plus link occurrences
-and readiness membership at visit grain. HTML readiness also requires the active content root
+The current files project structural HTML, searchable body prose and term frequencies at content grain,
+link occurrences and readiness membership at visit grain, and a shared vocabulary at generation grain. HTML readiness also requires the active content root
 marker because a separate batch may own shared-content output.
 
 A visit batch loads visits and documents from a pinned snapshot, groups unique HTML
@@ -45,7 +45,21 @@ sources, and parses each body once. The batch containing the minimum retained HT
 `document_id` for each content hash owns its DOM output. The decision is deterministic
 for that snapshot, including replay; every observation emits its own link occurrences.
 
-Registry callbacks produce Arrow tables. Generic lifecycle code writes partitioned,
+Registry callbacks produce Arrow tables. Generation-owned dictionaries declare a natural
+VARCHAR key and generated BIGINT identity. Their projector supplies distinct natural keys.
+Before encoding dependent projections, preparation takes the existing generation claim and
+reserves missing keys in one DuckLake transaction. It assigns IDs above the committed maximum
+and reads the batch's mapping back. This phase is serialized; parsing and Parquet encoding stay
+outside the claim. Live preparation verifies that its generation is still active before reserving
+into canonical tables. A superseded batch cannot populate the replacement generation.
+
+Reservations are append-only within a generation. A failed preparation may leave unused terms,
+and content retirement removes frequencies without pruning vocabulary. IDs are never reused.
+A full rebuild makes a fresh dictionary; internal IDs may differ while terms and frequencies
+remain identical. Dictionary rows are not part of content replacement or batch file registration.
+No dictionary cursor, sequence table, second service, or compatibility path is added.
+
+Generic lifecycle code writes partitioned,
 sorted immutable Parquet outside the commit claim. Under exact generation, observation
 and content claims in Postgres, one lake transaction replaces the batch's visit-owned
 and content-owned identities and registers its files. It then records completion in
@@ -224,10 +238,12 @@ no query results or crawl history are added to control Postgres.
 The Grafana dashboard's **Materialization time by operation (all attempts)** panel
 uses `periplus_materialization_step_duration_seconds`. Its bounded `step` and
 `outcome` labels distinguish source lookup, HTML read/decode, HTML parsing,
-projection row construction, Parquet encoding/upload, file-size lookup,
+projection row construction, dictionary reservation (including its claim wait and transaction),
+Parquet encoding/upload, file-size lookup,
 commit-claim acquisition, the lake transaction, and the Postgres receipt write.
 Every completed operation attempt is observed, including exceptions and retries.
 An in-progress operation or a process killed before observation is not included.
+Batch output row/byte totals describe registered projection files and exclude shared dictionary reservations.
 These metrics do not persist in batch receipts; Prometheus retention controls history.
 
 The panel sums worker wall seconds per second across replicas, not CPU seconds
@@ -273,3 +289,17 @@ receive no success receipt or acknowledgement and consume no processing-failure
 budget. Redelivery uses the remaining claim lifetime capped at 30 seconds plus
 jitter, allowing early releases to become useful without occupying a writer lane.
 Uncertain writes retain their original claims and fail-stop bounds.
+
+### Failed rebuild write fencing
+
+Write-claim unavailability remains retryable across durable deliveries; it does not
+exhaust the five-delivery transaction-conflict budget. A run retains its first
+terminal error and timestamp. Later batch failures remain in worker logs.
+
+Failed-generation cleanup acquires the same exact generation claim as dictionary
+reservation and projection commits. Rebuild writers check control-state writability
+under that claim before lake writes. An already-writing batch can finish before
+cleanup acquires the claim; a delayed writer stops without updating batch completion
+or replacing the original failure. Cleanup retries through normal recovery when a
+claim is busy or an uncertain writer still owns it. No claim is forcibly expired,
+and no control database transaction spans lake I/O.

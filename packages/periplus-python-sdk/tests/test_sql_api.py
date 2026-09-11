@@ -7,7 +7,7 @@ import httpx
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
 from periplus_sdk import sql_api
-from test_client import RESULT
+from test_client import RESULT, stream_response
 
 
 class SQLApiTests(unittest.TestCase):
@@ -17,7 +17,7 @@ class SQLApiTests(unittest.TestCase):
             requests = []
             def handler(request):
                 requests.append(request)
-                return httpx.Response(200, json=dict(RESULT, columns=['n'], types=['INTEGER'], rows=[[42]], truncated=False))
+                return stream_response(dict(RESULT, columns=['n'], types=['INTEGER'], rows=[[42]], truncated=False))
             with self.subTest(mode=mode), patch.dict(os.environ, {'PERIPLUS_PUBLIC_URL':'https://public.example/prefix'}), patch(
                 'periplus_sdk.client.httpx.Client',
                 side_effect=lambda **kw: factory(**kw, transport=httpx.MockTransport(handler)),

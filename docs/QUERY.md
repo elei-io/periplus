@@ -76,7 +76,7 @@ SQL preparation and execution remain in the separate Python
 
 Both operations accept SQL and positional parameters and use the same public SQL validation.
 Preparation binds and explains without executing the analytical query, returning SQL, parameters,
-a query ID, diagnostics, and a plan. Compiler `public-query-v7` applies the promoted
+a query ID, diagnostics, and a plan. Compiler `public-query-v8` applies the promoted
 optimizations documented below in both stable and experimental. Responses preserve
 the submitted SQL and parameters and identify applied rewrites.
 The execution-only row-limit wrapper remains a resource control. DuckDB performs native
@@ -90,19 +90,23 @@ client telemetry endpoint. Server logs capture generated operation IDs, safe out
 
 Each query process owns one read-only DuckLake connection and accepts one operation at a time.
 Excess requests return 429 with Retry-After; there is no queue. Operator-configured duration, row and result-size limits default to 20 seconds, 1,000 rows and 8 MiB.
-Admin Public access permits 1–120 seconds, 1–10,000 rows and 1–64 MiB. These apply to preparation
+Admin Query limits permits 1–600 seconds, 1–10,000,000 rows and 1–1024 MiB.
+Input budgets default to 4 MiB and 100,000 parameter values, with ceilings of 16 MiB
+and 1,000,000 values (including collection containers). SQL text has a 1,000,000-character
+structural bound; the request-byte budget also includes all parameters. These apply to preparation
 and execution through this service, including browser, SDK, assistant, browsing and corpus-seed
 clients. Existing requests retain their starting limits; new requests read the current policy.
 Row and byte limits truncate results explicitly; duration interrupts the operation and returns 408.
-The duration starts at SQL preparation and excludes the bounded policy HTTP lookup and response
-transport. A default 512 MB DuckDB memory budget and 256 MB spill budget also bound execution.
+The duration starts at SQL preparation and excludes the bounded policy HTTP lookup.
+Stream execution includes backpressure and delivery, with a one-second transport cleanup allowance. A default 512 MB DuckDB memory budget and 256 MB spill budget also bound execution.
 Memory, spill and worker concurrency remain deployment-owned settings. Deployment-owned `PERIPLUS_DUCKDB_THREADS`, `PERIPLUS_DUCKDB_MEMORY_LIMIT`
 and `PERIPLUS_DUCKDB_MAX_TEMP_DIRECTORY_SIZE` override connection sizing before
 configuration is locked; Helm exposes them under `query.duckdb`. Each replica
 still admits one operation. These capacity settings do not change SQL semantics,
 credentials or the operator-configured execution limits. Result truncation is explicit. Integers outside JavaScript's safe range and decimals
-are returned as strings; SQL column types accompany results. Disconnecting does not promise
-cancellation: the server deadline still bounds the work.
+are returned as strings; SQL column types accompany results. Streaming disconnects request cancellation and interrupt the admitted connection;
+the admission slot remains occupied until execution and cleanup stop. Buffered requests
+remain bounded by their server deadline.
 An internal/fatal DuckDB error or failed transaction cleanup discards the connection. Cleanup does
 not replace the original query failure. The next admitted request creates a fresh attachment with
 the same read-only credentials and locked configuration; failed SQL is not automatically replayed.
@@ -126,9 +130,23 @@ settings reads and query-history appends only. A five-second lookup failure reje
 metadata-only and do not require this lookup. SQL request bodies cannot override limits.
 Apply Alembic revision `20260908_0010` before deploying this contract; it adds the defaults to the
 existing JSON policy and increments its optimistic version without resetting rate windows.
-Public query transports allow 130 seconds; the Python SDK defaults to 140 seconds. Callers may
+The public query gateway allows 610 seconds; the Python SDK defaults to 620 seconds. Callers may
 impose shorter deadlines, including bounded agent runs and crawler selections. These do not
 increase the server's limits. Administrative SQL retains its separate fixed result limits.
+
+### Term discovery
+
+`public_v1.term(content_id, text, frequency)` is a portable view over the private
+generation vocabulary and content frequencies. Exact and pattern predicates on
+`text` select terms; join the resulting `content_id` to prose, captures or HTML
+relations. The public manifest supplies schema descriptions to query metadata and
+shell discovery. Internal IDs are not public.
+
+This is a schema/catalogue addition exposing the term materialization. No compiler
+rewrite is added or promoted. Existing prose-only optimizations retain their scope.
+Correct SQL remains available in both execution modes, but native multi-key filtering
+and overlapping files under appends still limit scan pruning. See
+[SCHEMA.md](SCHEMA.md#public_v1term) for normalization and examples.
 
 ### Content-first prose discovery
 
@@ -833,11 +851,25 @@ console links preserve the selected mode with `mode=experimental`. Stable uses
 `/api/query/experimental/exec`, `/api/query/experimental/prep` and
 `/api/query/experimental/helpers`. The SQL assistant validates against the selected mode.
 
-Stable and experimental share compiler `public-query-v7`, with mode suffixes
+Stable and experimental share compiler `public-query-v8`, with mode suffixes
 `:stable` and `:experimental`. Both include the promoted
 `capture_heading_content_scope_v1` and `prose_scalar_before_capture_v1` optimizations.
-There are currently no experimental-only rules. New candidates must be added only
-on the experimental side of this shared baseline until explicitly promoted.
+Experimental additionally tries `prose_heading_input_barrier_v1` for a two-table
+inner join between `prose` and `html_heading`, joined only on `content_id`, with
+one qualified prose-text equality, LIKE or ILIKE predicate and string bindings.
+CTEs, outer joins, LIMIT/OFFSET, arbitrary expressions and other view families
+remain ineligible. The original statement binds first and reviewed installed-view
+definitions must match inside the same read transaction.
+
+The candidate materializes selected prose, derives distinct content keys, and
+restricts complete node/element inputs before heading reconstruction. An OFFSET 0
+boundary prevents downstream heading predicates from interfering with those
+content semijoins. It preserves duplicate driver rows in the final join, empty
+headings, ordered descendant text and the submitted SQL/parameters in responses.
+Native optimizer settings stay unchanged. This is experimental, not promoted;
+see [the measurements](query-investigations/vocabulary-materialization/query-api-barrier.md).
+It does not publish `term` or make substring discovery indexed. Append file overlap
+and optional multi-key filters still prevent a general bounded-read guarantee.
 
 `capture_heading_content_scope_v1` activates only for a conservative inner join of
 `capture` and `html_heading` with a single exact `capture.effective_url` equality,
@@ -895,3 +927,41 @@ The [promotion record](query-investigations/shared-query-baseline/README.md) lin
 the original frozen-snapshot evidence and records common-path activation tests.
 Existing research-only candidates remain research-only. Stable is now the normal
 optimized endpoint, while experimental remains available for future candidates.
+
+
+### Notebook input and streaming transport
+
+`POST /query/exec` negotiates `application/x-ndjson` through Accept; existing JSON consumers
+continue to use the buffered representation of the same operation. Both representations
+use identical validation, preparation, snapshot, row/byte budgets and single-operation
+admission. This is a delivery capability, not a catalogue change or optimizer rewrite.
+No second execution, pagination, persistent cursor, service, queue or result storage is added.
+
+The stream contains one `metadata` frame (prepared query, names/types, source snapshot and
+effective limits), `rows` frames, and exactly one terminal `complete` or `error` frame.
+Whitespace heartbeats are allowed. Completion includes row count, JSON row-array bytes,
+elapsed time, truncation flag and the exhausted row/byte budget. EOF without completion
+is a failed result. Completion is published only after transaction cleanup has succeeded.
+Batches target 1,024 rows or 256 KiB; a single wider row may exceed the batch target but
+must fit the total result budget. A two-frame queue provides backpressure to the same
+worker thread that owns the DuckDB connection. Slow clients and disconnects cannot release
+admission while that worker still operates. The gateway forwards Accept and streams frames
+without buffering, caching or retrying them.
+
+The SDK's synchronous `Client.stream()` and DB-API/SQLAlchemy engine consume this stream.
+DB-API retains at most its current batch, keeps metadata separately, and rejects truncation
+by default. `allow_partial=True` is explicit; broken streams always fail. `fetchall()` and
+marimo still collect the final dataframe in notebook memory. SQLAlchemy reflection refuses
+partial catalogue results even when normal queries opt into partial data.
+
+`sql_api.bind(engine, content_ids=python_list)` exposes named bindings through another
+marimo-discoverable SQLAlchemy engine sharing the original pool. SQL cells use
+`content_id IN (SELECT unnest(CAST(:content_ids AS VARCHAR[])))`. The adapter binds scalar
+lists as JSON data; it never interpolates ID literals or uploads a temporary table. Empty
+lists work through the explicit cast. Separate notebook SQL cells still use independent
+snapshots. The SDK README contains the complete Python filtering round trip.
+
+Migration `20260911_0016` adds input budgets to the existing policy without changing existing
+result budgets or rate windows. Roll out core, gateway and SDK together. Ingress must allow
+the configured body size, streaming without response buffering, and 610-second transport
+ceiling. Assistant and crawler clients may retain shorter caller deadlines.

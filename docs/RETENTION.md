@@ -51,6 +51,8 @@ Do not use that number as a capacity meter.
    request protection in a lake transaction. Record the retirement decision in
    Postgres before deleting evidence and all owned projections in the lake.
    Delete content-owned projections only after the last document reference disappears.
+   This includes term frequencies. Generation-owned vocabulary entries remain until their
+   generation is removed; unused term reservations are not content-owned evidence.
    Include active, rebuilding and retired generations. A crash between these steps
    leaves a durable decision and evidence that the next sweep can finish deleting.
 4. Expired collection retirement uses its exact collection claim, deletes fulfillments

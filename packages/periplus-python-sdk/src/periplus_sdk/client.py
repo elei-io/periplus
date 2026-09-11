@@ -79,7 +79,7 @@ def _payload(sql: str, parameters: Sequence[JsonValue] | None, schema_version: s
 class Client:
     """Reusable synchronous public query client. Close it or use a with block."""
 
-    def __init__(self, base_url: str | None = None, *, timeout: float = 140, mode: Literal["stable", "experimental"] = "stable"):
+    def __init__(self, base_url: str | None = None, *, timeout: float = 620, mode: Literal["stable", "experimental"] = "stable"):
         if mode not in {"stable", "experimental"}:
             raise ConfigurationError("mode must be stable or experimental.")
         self._query_path = "api/query/experimental/" if mode == "experimental" else "api/query/"
@@ -107,6 +107,25 @@ class Client:
     def execute(self, sql: str, parameters: Sequence[JsonValue] | None = None, *, schema_version: str = "public_v1") -> QueryResult:
         return self._request("POST", "exec", QueryResult, json=_payload(sql, parameters, schema_version))
 
+    def stream(self, sql: str, parameters: Sequence[JsonValue] | None = None, *,
+               schema_version: str = "public_v1", allow_partial: bool = False):
+        """Stream batches from one snapshot; use as a context manager for early exit."""
+        from .stream import MEDIA_TYPE, QueryStream
+        try:
+            request = self._http.build_request("POST", self._query_path + "exec",
+                headers={"accept": MEDIA_TYPE}, json=_payload(sql, parameters, schema_version))
+            response = self._http.send(request, stream=True)
+            try:
+                if not response.is_success:
+                    response.read()
+                    _decode(response, QueryResult)
+                return QueryStream(response, allow_partial=allow_partial)
+            except BaseException:
+                response.close()
+                raise
+        except httpx.RequestError:
+            raise TransportError("Could not open the public query stream.") from None
+
     def helpers(self) -> QueryHelpers:
         return self._request("GET", "helpers", QueryHelpers)
 
@@ -114,7 +133,7 @@ class Client:
 class AsyncClient:
     """Reusable asynchronous public query client. Use an async with block."""
 
-    def __init__(self, base_url: str | None = None, *, timeout: float = 140, mode: Literal["stable", "experimental"] = "stable"):
+    def __init__(self, base_url: str | None = None, *, timeout: float = 620, mode: Literal["stable", "experimental"] = "stable"):
         if mode not in {"stable", "experimental"}:
             raise ConfigurationError("mode must be stable or experimental.")
         self._query_path = "api/query/experimental/" if mode == "experimental" else "api/query/"
