@@ -51,7 +51,11 @@ threads / 4 GiB and returned 100 results, exceeding the live 120-second query po
 It collects the display title during field aggregation, avoiding another node scan.
 The final candidate also reuses prose's existing whitespace normalization rather than
 normalizing it again; title and description whitespace still require normalization.
-Its production timing remains a deployment gate. Corpus discovery scans fields and
+The final candidate also exceeded the 120-second production deadline. Deployment
+is blocked; correctness and small local timings do not establish production readiness.
+A compact content-owned title/description projection is the next layout candidate;
+that changes the physical registry and requires a rebuild, outside the current
+unchanged-registry constraint. Corpus discovery scans fields and
 grows with corpus size; the 100-result cap does not bound input I/O.
 
 Correctness fixtures cover split words, preserved whitespace, Unicode NFC and
