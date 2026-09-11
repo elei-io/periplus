@@ -56,6 +56,7 @@ class NotebookTests(unittest.TestCase):
         self.assertEqual(len(found),1)
         adapter=found[0][1]
         databases=adapter.get_databases(include_schemas=True,include_tables=True,include_table_details=True)
+        self.assertEqual(databases[0].name,'periplus')
         self.assertEqual(databases[0].schemas[0].name,'public_v1')
         table=databases[0].schemas[0].tables[0]
         self.assertEqual(table.name,'capture')

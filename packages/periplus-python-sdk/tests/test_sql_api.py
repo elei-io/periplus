@@ -24,6 +24,7 @@ class SQLApiTests(unittest.TestCase):
             ):
                 engine = sql_api.create_engine(mode=mode, timeout=37)
                 self.assertIsInstance(engine, Engine)
+                self.assertEqual(engine.url.database, "periplus")
                 self.assertEqual(requests, [])
                 try:
                     self.assertEqual(inspect(engine).default_schema_name, 'public_v1')

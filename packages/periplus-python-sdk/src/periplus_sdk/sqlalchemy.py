@@ -60,10 +60,10 @@ class PeriplusDialect(default.DefaultDialect):
 
     def create_connect_args(self, url):
         if url.username or url.password or url.host or url.port:
-            raise exc.ArgumentError("Use periplus:///public_v1 with base_url and mode in connect_args.")
+            raise exc.ArgumentError("Use periplus:///periplus with base_url and mode in connect_args.")
         if url.query:
             raise exc.ArgumentError("Pass connection options in connect_args, not URL query parameters.")
-        return [], {"schema_version": url.database or "public_v1"}
+        return [], {}
 
     def initialize(self, connection):
         self.default_schema_name = connection.connection.dbapi_connection.schema_version

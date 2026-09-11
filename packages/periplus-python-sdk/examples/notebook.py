@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["periplus-python-sdk[notebook]>=0.6.0"]
+# dependencies = ["periplus-python-sdk[notebook]>=0.6.1"]
 # ///
 """Run with: uv run marimo edit packages/periplus-python-sdk/examples/notebook.py"""
 import marimo
@@ -25,7 +25,7 @@ def _(sql_api):
 @app.cell
 def _(mo):
     mo.md("""
-    Select **pp** in SQL cells. Expand **pp → public_v1** in Data Sources
+    Select **pp** in SQL cells. Expand **pp → periplus → public_v1** in Data Sources
     to browse views and columns. Queries use the public service's
     execution and result limits.
     """)

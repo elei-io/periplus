@@ -20,6 +20,6 @@ def create_engine(
     dispose the engine when finished. Each query uses an independent server snapshot.
     """
     return _create_engine(
-        URL.create("periplus", database=schema_version),
-        connect_args={"base_url": base_url, "mode": mode, "timeout": timeout},
+        URL.create("periplus", database="periplus"),
+        connect_args={"base_url": base_url, "mode": mode, "timeout": timeout, "schema_version": schema_version},
     )
