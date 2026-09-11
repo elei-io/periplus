@@ -33,6 +33,19 @@ class NodeLayoutTests(unittest.TestCase):
         self.assertEqual(accent.content_counts, Counter({'café': 1}))
         self.assertEqual(len(accent.node_counts), 3)
 
+    def test_element_tag_normalization_preserves_unicode_contract(self):
+        nodes, elements = parse_document('<x-İ>A</x-İ><x-ΟΣ>B</x-ΟΣ><svg><linearGradient/></svg>')
+        context = VisitBatchContext((), (), (), {'a': elements}, {'a': nodes}, {}, frozenset({'a'}))
+        with duckdb.connect() as db:
+            db.execute('CREATE SCHEMA material; CREATE SCHEMA public_v1')
+            db.register('rows', BY_NAME['html_nodes'].rows(context))
+            db.execute('CREATE TABLE material.html_nodes AS SELECT * FROM rows')
+            db.execute(files('periplus.platform.catalogue').joinpath('sql/public_v1/views/html_element.sql').read_text())
+            self.assertEqual(db.execute('SELECT node_index,tag FROM public_v1.html_element ORDER BY node_index').fetchall(),
+                             [(e.element_index,e.tag.lower()) for e in elements])
+            self.assertEqual(db.execute("SELECT node_index,name FROM material.html_nodes WHERE node_type='element' ORDER BY node_index").fetchall(),
+                             [(n.node_index,n.name) for n in nodes if n.node_type=='element'])
+
     def test_shared_compute_and_public_element_matches(self):
         nodes, elements = parse_document('<p id="price">mon<strong>key</strong> monkey</p>')
         context = VisitBatchContext((), (), (), {'a': elements}, {'a': nodes}, {}, frozenset({'a'}))

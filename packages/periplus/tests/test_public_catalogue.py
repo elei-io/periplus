@@ -183,10 +183,10 @@ class PublicCatalogueTests(unittest.TestCase):
                     'utf-8', 'content-a', 100, 'objects/a', 'identity', 100
                 );
 
-            INSERT INTO material.html_nodes (content_sha256,node_index,parent_index,subtree_end_index,depth,sibling_index,name,namespace,attributes,text_direct,node_type) VALUES
-                ('content-a', 0, NULL, 2, 0, 0, 'html', 'http://www.w3.org/1999/xhtml',
+            INSERT INTO material.html_nodes (content_sha256,node_index,parent_index,subtree_end_index,depth,sibling_index,name,tag,namespace,attributes,text_direct,node_type) VALUES
+                ('content-a', 0, NULL, 2, 0, 0, 'html', 'html', 'http://www.w3.org/1999/xhtml',
                  MAP {}, '', 'element'),
-                ('content-a', 1, 0, 2, 1, 0, 'a', 'http://www.w3.org/1999/xhtml',
+                ('content-a', 1, 0, 2, 1, 0, 'a', 'a', 'http://www.w3.org/1999/xhtml',
                  MAP {'href': '/next'}, 'Next', 'element');
 
             INSERT INTO material.link_occurrences VALUES (

@@ -52,7 +52,7 @@ def run(count, input_dir, type_partition=False, term="monkey"):
     with TemporaryDirectory(prefix='periplus-node-layout-') as directory:
         root = Path(directory)
         sizes = {}
-        old_nodes = tables['html_nodes'].drop(['attributes', 'text_direct'])
+        old_nodes = tables['html_nodes'].drop(['tag', 'attributes', 'text_direct'])
         for name, table in {**tables, 'old_nodes': old_nodes, 'old_elements': legacy}.items():
             pq.write_table(table, root/f'{name}.parquet', compression='zstd')
             sizes[name] = (root/f'{name}.parquet').stat().st_size

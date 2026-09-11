@@ -68,7 +68,7 @@ The `node_index = 0` document row is the generation content-presence marker.
 
 ### Element data in `material.html_nodes`
 
-Element nodes carry `attributes` and `text_direct`; both are null on non-elements.
+Element nodes carry normalized `tag`, `attributes` and `text_direct`; these are null on non-elements.
 The public `html_element` view filters element rows from this single material table.
 Text-node order and provenance remain available for reconstruction and term matches.
 

@@ -44,7 +44,7 @@ was 4.15 GiB while retaining both layouts and running the local DuckLake benchma
 This supports trying 1,000 visits within the existing 8 GiB worker limit, with monitoring;
 it does not prove safety for unusually large pages or every batch.
 
-Single-file Zstd Parquet DOM totals: separate nodes/elements 83,337,592 bytes;
+Before retaining the normalized element tag column, single-file Zstd Parquet DOM totals: separate nodes/elements 83,337,592 bytes;
 unified nodes 77,176,792 bytes (7.4% less). New node postings added 3,809,695 bytes,
 leaving DOM plus node postings 2,351,105 bytes smaller than the prior DOM alone.
 These are controlled encoding sizes, not production S3 or metadata totals.
