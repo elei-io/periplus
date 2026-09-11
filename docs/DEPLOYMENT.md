@@ -275,7 +275,7 @@ restrictions; it does not establish enforcement for independent workers or other
 The query process uses its existing API URL and query token to read `GET /access` before each
 SQL operation. This is a required dependency for authoritative duration, row and result-size
 limits; failed reads reject queries. Apply migration `20260908_0010` before deploying. Public
-SQL proxies allow up to 130 seconds; configure ingress timeouts accordingly if raising the
+SQL proxies allow up to 610 seconds; configure ingress timeouts accordingly if raising the
 execution duration above its default 20 seconds. No control database credentials enter query pods.
 
 The query service also exposes authenticated `GET /query/helpers` for registry-derived SQL helper documentation. Catalogue setup installs helpers before query processes validate and serve them.
@@ -506,3 +506,11 @@ The materialization registry validates these versions at import and includes
 the tokenizer implementation in its generation digest. A different native ICU
 must fail startup instead of producing mixed tokenization inside one generation.
 An intentional tokenizer update changes the pin and requires a complete rebuild.
+
+
+Notebook streaming uses the existing query service and public gateway. Apply Alembic
+`20260911_0016` before rolling out the core, gateway and SDK contract. Admin request budgets
+can reach 16 MiB and query duration 600 seconds; ingress must allow these body sizes and
+610-second streaming responses without buffering. Result row/byte budgets apply to both
+JSON and streams. The SDK defaults to a 620-second HTTP timeout. Process memory, spill and
+concurrency remain deployment-owned; larger configured output budgets do not raise them.

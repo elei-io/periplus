@@ -24,7 +24,7 @@ export async function proxyQuery(request: Request, path: string, mode: QueryMode
     authorization: `Bearer ${token}`,
     "x-periplus-query-source": request.headers.get("x-periplus-query-source") === "sdk" ? "sdk" : "public_console",
   });
-  for (const name of ["content-type", "range"]) {
+  for (const name of ["content-type", "range", "accept"]) {
     const value = request.headers.get(name);
     if (value) headers.set(name, value);
   }
@@ -36,7 +36,7 @@ export async function proxyQuery(request: Request, path: string, mode: QueryMode
         headers,
         body: request.method === "POST" ? request.body : undefined,
         ...(request.method === "POST" ? { duplex: "half" } : {}),
-        signal: AbortSignal.any([request.signal, AbortSignal.timeout(130_000)]),
+        signal: AbortSignal.any([request.signal, AbortSignal.timeout(610_000)]),
         cache: "no-store",
       },
     );
@@ -48,6 +48,7 @@ export async function proxyQuery(request: Request, path: string, mode: QueryMode
       "accept-ranges",
       "cache-control",
       "retry-after",
+      "x-accel-buffering",
     ]) {
       const value = upstream.headers.get(name);
       if (value) responseHeaders.set(name, value);

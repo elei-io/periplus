@@ -40,10 +40,11 @@ class QueryAccessMiddleware:
             if message["type"] == "http.disconnect":
                 return
             body.extend(message.get("body", b""))
-            if len(body) > 128 * 1024:
-                return await JSONResponse({"detail": "Query request exceeds 128 KiB."}, status_code=413)(scope, receive, send)
+            if len(body) > 16 * 1024 * 1024:
+                return await JSONResponse({"detail": "Query request exceeds the 16 MiB transport ceiling."}, status_code=413)(scope, receive, send)
             if not message.get("more_body", False):
                 break
+        scope.setdefault("state", {})["query_request_bytes"] = len(body)
         original_receive = receive
         delivered = False
         async def bounded_receive():
@@ -81,6 +82,10 @@ async def _run_operation(request, payload, operation, evidence):
     try:
         async with slot:
             limits = await request.app.state.query_limits.read()
+            denial = _input_denial(request, payload, limits)
+            if denial is not None:
+                _query_outcomes.labels(operation, "input_limit").inc()
+                return denial
             result = await run_in_threadpool(getattr(request.app.state.query_service, operation), payload, limits=limits, evidence=evidence)
             _query_outcomes.labels(operation, "success").inc()
             return result
@@ -106,9 +111,63 @@ async def prepare(payload: QueryRequest, request: Request):
 
 @router.post("/exec", response_model=QueryResult)
 async def execute(payload: QueryRequest, request: Request):
+    from periplus.query.streaming import MEDIA_TYPE, QueryStreamResponse
+    if MEDIA_TYPE in request.headers.get("accept", ""):
+        slot = request.app.state.query_slot
+        if slot.locked():
+            return await _stream_denial(request, payload, JSONResponse({"code": "service_busy", "detail": "Query server is busy."}, status_code=429,
+                                headers={"Retry-After": "1"}))
+        await slot.acquire()
+        owned = True
+        try:
+            limits = await request.app.state.query_limits.read()
+            denial = _input_denial(request, payload, limits)
+            if denial is not None:
+                slot.release()
+                owned = False
+                return await _stream_denial(request, payload, denial)
+            return QueryStreamResponse(request, payload, limits)
+        except QueryLimitsUnavailable:
+            slot.release()
+            owned = False
+            return await _stream_denial(request, payload, JSONResponse({"code": "access_unavailable", "detail": "Query limits are temporarily unavailable."}, status_code=503))
+        except BaseException:
+            if owned:
+                slot.release()
+            raise
     return await _run(request, payload, "execute")
 
 
 @router.get("/helpers", response_model=QueryHelpers)
 async def helpers():
     return query_helpers()
+
+
+def _input_denial(request, payload, limits):
+    size = getattr(request.state, "query_request_bytes", None)
+    if size is None:
+        size = len(payload.model_dump_json().encode())
+    if size > limits.max_request_bytes:
+        return JSONResponse({"code": "request_limit", "detail": f"Query request exceeds max_request_bytes ({limits.max_request_bytes} bytes)."}, status_code=413)
+    pending = list(payload.parameters)
+    count = 0
+    while pending:
+        value = pending.pop()
+        count += 1
+        if count > limits.max_parameter_values:
+            return JSONResponse({"code": "parameter_limit", "detail": f"Query parameters exceed max_parameter_values ({limits.max_parameter_values})."}, status_code=413)
+        if isinstance(value, list):
+            pending.extend(value)
+        elif isinstance(value, dict):
+            pending.extend(value.values())
+    return None
+
+
+async def _stream_denial(request, payload, response):
+    import json
+    from periplus.query.history import track
+    code = json.loads(response.body)["code"]
+    _query_outcomes.labels("execute", code).inc()
+    async with track(request, payload, "execute") as record:
+        record.update(outcome="rejected" if response.status_code < 500 else "failed", error_code=code)
+    return response

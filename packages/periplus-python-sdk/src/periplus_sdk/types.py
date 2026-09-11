@@ -1,4 +1,6 @@
 """Public query wire types; SQL types and JSON values are preserved."""
+from typing import Literal
+
 from pydantic import BaseModel, Field, JsonValue
 
 
@@ -9,6 +11,9 @@ class Diagnostic(BaseModel):
 
 
 class PreparedQuery(BaseModel):
+    query_mode: Literal["stable", "experimental"]
+    compiler_version: str
+    optimizations: list[str]
     schema_version: str
     query_id: str
     sql: str
@@ -24,6 +29,9 @@ class QueryResult(PreparedQuery):
     truncated: bool
     elapsed_ms: float
     source_snapshot: int = Field(ge=0)
+    row_count: int = Field(ge=0)
+    result_bytes: int = Field(ge=0)
+    truncation_reason: Literal["max_rows", "max_result_bytes"] | None = None
 
 
 class HelperField(BaseModel):

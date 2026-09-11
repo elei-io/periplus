@@ -116,7 +116,7 @@ def result_fields(result):
     if hasattr(result, 'query_id'):
         values['execution_id'] = UUID(result.query_id)
     if hasattr(result, 'rows'):
-        values.update(result_rows=len(result.rows), truncated=result.truncated,
-            result_bytes=len(json.dumps(result.rows, ensure_ascii=False, separators=(',', ':')).encode()),
+        values.update(result_rows=getattr(result, 'row_count', len(result.rows)), truncated=result.truncated,
+            result_bytes=getattr(result, 'result_bytes', len(json.dumps(result.rows, ensure_ascii=False, separators=(',', ':')).encode())),
             source_snapshot=getattr(result, 'source_snapshot', None))
     return values
