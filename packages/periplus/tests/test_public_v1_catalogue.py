@@ -49,10 +49,10 @@ class PublicV1CatalogueTests(unittest.TestCase):
         db = duckdb.connect()
         self.addCleanup(db.close)
         db.execute('CREATE SCHEMA material; CREATE SCHEMA public_v1')
-        columns = ', '.join(f'{c.name} {c.duckdb_type}' for c in projection.columns)
-        db.execute(f'CREATE TABLE material.html_nodes ({columns})')
-        db.executemany('INSERT INTO material.html_nodes VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                       [('fixture', *astuple(n)) for n in nodes])
+        from periplus.materialization.document_projection import VisitBatchContext
+        context = VisitBatchContext((), (), (), {'fixture': elements}, {'fixture': nodes}, {}, frozenset({'fixture'}))
+        db.register('node_rows', projection.rows(context))
+        db.execute('CREATE TABLE material.html_nodes AS SELECT * FROM node_rows')
         root = files('periplus.platform.catalogue').joinpath('sql/public_v1')
         db.execute(root.joinpath('views/html_node.sql').read_text())
         self.assertEqual(db.execute('SELECT node_index, depth FROM public_v1.html_node ORDER BY node_index').fetchall(),

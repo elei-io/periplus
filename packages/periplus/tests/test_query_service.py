@@ -25,7 +25,6 @@ class QueryServiceTests(unittest.TestCase):
                                  limits=QueryLimits(max_result_bytes=1024 * 1024), emit=frames.append)
         self.assertEqual(frames, [])
 
-
     def test_sdk_stream_contract_through_real_query_http(self):
         import asyncio
         import sys
@@ -67,7 +66,6 @@ class QueryServiceTests(unittest.TestCase):
             with sdk.stream('SELECT 7 AS n') as stream:
                 self.assertEqual(list(stream), [[[7]]])
 
-
     def test_stream_batches_match_buffered_results_and_larger_limits(self):
         payload = QueryRequest(sql="SELECT unnest(?::INTEGER[]) AS n", parameters=[list(range(20_001))])
         frames = []
@@ -86,7 +84,6 @@ class QueryServiceTests(unittest.TestCase):
         self.assertEqual((capped.row_count, capped.truncation_reason), (12, 'max_rows'))
         self.assertTrue(capped.truncated)
 
-
     def test_stream_consumer_failure_releases_connection(self):
         def broken(frame):
             raise TimeoutError('consumer disconnected')
@@ -94,7 +91,35 @@ class QueryServiceTests(unittest.TestCase):
             self.service.execute(QueryRequest(sql='SELECT 1'), emit=broken)
         self.assertEqual(self.service.execute(QueryRequest(sql='SELECT 2')).rows, [[2]])
 
-
+    def test_prose_heading_barrier_only_in_experimental_and_catalogue_guarded(self):
+        from periplus.query.service import QueryMode
+        self.service.close()
+        writer = DuckLakeConnectionFactory(self.config).connect(read_only=False)
+        writer.execute("INSERT INTO periplus.material.html_nodes (content_sha256,node_index,subtree_end_index,name,namespace,node_type) VALUES ('helper-fixture',4,6,'h1','http://www.w3.org/1999/xhtml','element'),('helper-fixture',6,7,'h2','http://www.w3.org/1999/xhtml','element')")
+        writer.execute("INSERT INTO periplus.material.html_nodes (content_sha256,node_index,subtree_end_index,node_type,value) VALUES ('helper-fixture',5,6,'text','Heading')")
+        writer.close()
+        self.service = QueryService(self.config)
+        self.addCleanup(self.service.close)
+        experimental = QueryService(self.config, mode=QueryMode.EXPERIMENTAL)
+        self.addCleanup(experimental.close)
+        request = QueryRequest(sql="SELECT h.level,h.text FROM prose p JOIN html_heading h USING(content_id) WHERE p.text ILIKE ? ORDER BY h.node_index", parameters=['%robot%'])
+        before = self.service.execute(request)
+        after = experimental.execute(request)
+        self.assertEqual(before.rows, [[1, 'Heading'], [2, '']])
+        term_request = QueryRequest(sql="SELECT h.level,h.text FROM term t JOIN html_heading h USING(content_id) WHERE t.text = ? ORDER BY h.node_index", parameters=['robot'])
+        for service in (self.service, experimental):
+            service.prepare(term_request)
+            self.assertEqual(service.execute(term_request).rows, before.rows)
+        self.assertEqual(after.rows, before.rows)
+        self.assertEqual(after.columns, before.columns)
+        self.assertEqual(after.types, before.types)
+        self.assertEqual(after.sql, request.sql)
+        self.assertEqual(after.parameters, request.parameters)
+        self.assertEqual(before.optimizations, [])
+        self.assertEqual(after.optimizations, ['prose_heading_input_barrier_v1'])
+        self.assertEqual(experimental.prepare(request).optimizations, after.optimizations)
+        with patch('periplus.query.content_scope.ContentScope.matches', return_value=False):
+            self.assertEqual(experimental.execute(request).optimizations, [])
 
     def setUp(self):
         self.directory = TemporaryDirectory()
@@ -130,14 +155,13 @@ class QueryServiceTests(unittest.TestCase):
         )
         d.execute("UPDATE ingest.visits SET document_id = '00000000-0000-0000-0000-000000000001' WHERE requested_url = 'https://example.com/inline'")
         d.execute("INSERT INTO ingest.documents (document_id, visit_id, detected_media_type, content_sha256) SELECT document_id, visit_id, 'text/html', 'helper-fixture' FROM ingest.visits WHERE document_id IS NOT NULL")
-        d.execute("INSERT INTO material.html_elements (content_sha256, element_index, subtree_end_index, depth, text_direct) VALUES ('helper-fixture',0,2,0,'start'),('helper-fixture',1,2,1,'nested')")
         d.execute("UPDATE ingest.visits SET document_id = uuid() WHERE document_id IS NULL")
         d.execute("INSERT INTO ingest.documents (document_id, visit_id, detected_media_type, content_sha256) SELECT document_id, visit_id, 'text/html', visit_id::VARCHAR FROM ingest.visits WHERE requested_url <> 'https://example.com/inline'")
         d.execute("INSERT INTO material.html_nodes (content_sha256, node_index, subtree_end_index, node_type, value, depth) VALUES ('helper-fixture',0,4,'element',NULL,0),('helper-fixture',1,2,'text','start',1),('helper-fixture',2,3,'text','nested',1),('helper-fixture',3,4,'text','end',1)")
-        d.execute("UPDATE material.html_elements SET tag = 'title', namespace = 'HTML' WHERE content_sha256 = 'helper-fixture' AND element_index = 0")
+        d.execute("UPDATE material.html_nodes SET name = 'title', namespace = 'http://www.w3.org/1999/xhtml', text_direct = 'start' WHERE content_sha256 = 'helper-fixture' AND node_index = 0")
         d.execute("INSERT INTO material.prose VALUES ('helper-fixture', 'robot careers')")
-        d.execute("INSERT INTO material.vocabulary VALUES ('robot', 1), ('robotics', 2), ('unused', 3)")
-        d.execute("INSERT INTO material.term_stat VALUES (1, 'helper-fixture', 2), (2, 'helper-fixture', 1)")
+        d.execute("INSERT INTO material.term VALUES ('robot', 1), ('robotics', 2), ('unused', 3)")
+        d.execute("INSERT INTO material.content_posting VALUES (1, 'helper-fixture', 2), (2, 'helper-fixture', 1)")
         d.close()
         self.service = QueryService(self.config)
         self.addCleanup(self.service.close)
@@ -194,7 +218,7 @@ class QueryServiceTests(unittest.TestCase):
         self.service.close()
         writer = DuckLakeConnectionFactory(self.config).connect(read_only=False)
         writer.execute("UPDATE periplus.ingest.visits SET effective_url=requested_url")
-        writer.execute("INSERT INTO periplus.material.html_elements (content_sha256, element_index, subtree_end_index, tag, namespace) VALUES ('helper-fixture',4,6,'h1','HTML')")
+        writer.execute("INSERT INTO periplus.material.html_nodes (content_sha256, node_index, subtree_end_index, name, namespace, node_type) VALUES ('helper-fixture',4,6,'h1','http://www.w3.org/1999/xhtml','element')")
         writer.execute("INSERT INTO periplus.material.html_nodes (content_sha256,node_index,subtree_end_index,node_type,value) VALUES ('helper-fixture',5,6,'text','Heading')")
         writer.close()
         stable = QueryService(self.config)
@@ -334,11 +358,7 @@ class QueryServiceTests(unittest.TestCase):
         writer = DuckLakeConnectionFactory(self.config).connect()
         try:
             writer.execute('USE periplus')
-            writer.execute('DELETE FROM material.html_elements')
             writer.execute('DELETE FROM material.html_nodes')
-            writer.execute("""INSERT INTO material.html_elements
-                (content_sha256, element_index, subtree_end_index, tag, namespace) VALUES
-                ('helper-fixture',1,3,'h1','HTML'), ('helper-fixture',3,5,'h2','HTML')""")
             writer.execute("""INSERT INTO material.html_nodes
                 (content_sha256,node_index,subtree_end_index,node_type,value,depth) VALUES
                 ('helper-fixture',0,5,'document',NULL,0),
@@ -346,6 +366,7 @@ class QueryServiceTests(unittest.TestCase):
                 ('helper-fixture',2,3,'text','Heading',2),
                 ('helper-fixture',3,5,'element',NULL,1),
                 ('helper-fixture',4,5,'text','Child',2)""")
+            writer.execute("UPDATE material.html_nodes SET name=CASE node_index WHEN 1 THEN 'h1' ELSE 'h2' END, namespace='http://www.w3.org/1999/xhtml' WHERE node_type='element'")
         finally:
             writer.close()
         self.service.connection = self.service._connect()

@@ -169,7 +169,7 @@ class MaterializationReadinessTests(unittest.TestCase):
         # Commit the non-owner first: its visit and links are complete, shared DOM is not.
         commit_prepared_batch(self.catalogue, run, batches[1], prepared[1], active_generation=True)
         self.assertEqual(self.connection.execute('SELECT count(*) FROM material.visit_readiness').fetchone()[0], 1)
-        self.assertEqual(self.connection.execute('SELECT count(*) FROM material.html_elements').fetchone()[0], 0)
+        self.assertEqual(self.connection.execute('SELECT count(*) FROM material.html_nodes').fetchone()[0], 0)
         proofs = observation_readiness(self.catalogue, identities)
         self.assertFalse(proofs[identities[1]].query_ready)
         self.assertFalse(collection_readiness(self.catalogue, [collection])[collection].query_ready)

@@ -18,8 +18,8 @@ from periplus.materialization.registry import PROJECTIONS, BY_NAME
 
 
 def dictionary_context(context):
-    context.dictionary_ids["vocabulary"] = {row["term"]: i for i, row in
-        enumerate(BY_NAME["vocabulary"].rows(context).to_pylist(), 1)}
+    context.dictionary_ids["term"] = {row["text"]: i for i, row in
+        enumerate(BY_NAME["term"].rows(context).to_pylist(), 1)}
     return context
 
 

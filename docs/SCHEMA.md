@@ -66,25 +66,12 @@ node tree, including stored integer depth (document root = 0). It shares the
 parse context and position space with elements and links.
 The `node_index = 0` document row is the generation content-presence marker.
 
-### `material.html_elements`
+### Element data in `material.html_nodes`
 
-One row per `(content_sha256, element_index)`:
+Element nodes carry `attributes` and `text_direct`; both are null on non-elements.
+The public `html_element` view filters element rows from this single material table.
+Text-node order and provenance remain available for reconstruction and term matches.
 
-```text
-content_sha256, element_index
-parent_index, subtree_end_index, depth, child_index
-tag, namespace, attributes
-text_direct
-```
-
-The private `element_index` column uses the complete node position space: element
-positions may have gaps. `child_index` counts all sibling nodes. `text_direct`
-concatenates immediate text children.
-Rows are depth-first. `subtree_end_index` is exclusive. The document root in `material.html_nodes` is the content-projection
-presence marker; no content manifest or statistics row is maintained. That marker permanently
-prevents later visits from re-emitting content-grain HTML rows, while a deterministic
-minimum document identity selects one owner when genuinely new content first appears in parallel
-batches.
 
 ### `material.html_jsonld`
 
@@ -102,13 +89,13 @@ content ownership and the complete generation lifecycle with the DOM projections
 Files are unpartitioned and sorted by content identity, avoiding bucket fan-out
 for this one-row-per-content corpus scan surface.
 
-### `material.vocabulary` and `material.term_stat`
+### `material.term` and `material.content_posting`
 
 Private term materialization consists of:
 
-- `vocabulary(term VARCHAR, term_id BIGINT)`: one normalized term per generation.
-  Unpartitioned, sorted by `term`; missing terms are reserved under the generation claim.
-- `term_stat(term_id BIGINT, content_sha256 VARCHAR, frequency BIGINT)`: one positive
+- `term(text VARCHAR, term_id BIGINT)`: one normalized term per generation.
+  Unpartitioned, sorted by `text`; missing terms are reserved under the generation claim.
+- `content_posting(term_id BIGINT, content_sha256 VARCHAR, frequency BIGINT)`: one positive
   frequency per term/content pair. Unpartitioned, sorted by `(term_id, content_sha256)`.
 
 Terms come from the same body-text extraction as prose, using ICU root-locale word
@@ -885,3 +872,12 @@ continues. After dependencies are complete and evidence committed, `acquisition_
 selection context become null. `completed_status` and `completed_evidence` preserve current
 request progress; URL keys still enforce request-local deduplication. These compact rows
 are operational state, not a historical corpus, and retire with the parent request.
+
+### Node term occurrences
+
+`material.node_posting(term_id, content_sha256, node_index, frequency)` stores term
+occurrences touching eligible body text nodes, clustered by content, term and node.
+`public_v1.term_node(content_id, text, node_index, frequency)` exposes those matches.
+Terms are segmented from complete prose, including words split across inline nodes.
+One occurrence can touch several nodes; node frequencies are not additive.
+Shared batch context computes prose and occurrence maps once per unique content.

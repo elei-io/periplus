@@ -1,0 +1,8 @@
+id = "exp-term-extraction"
+title = "Fixed-content extraction after term discovery"
+use_case = "Compare literals, a key relation and term-derived keys while unrelated content appends in a disposable lake."
+classification = "both"
+ordered = true
+memory_limit = "512MB"
+max_warm_ms = 60000
+seconds = 60

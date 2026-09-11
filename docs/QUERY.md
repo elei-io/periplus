@@ -950,6 +950,26 @@ both gains and the broad synthetic regression. Stable execution is unchanged;
 compiler v8 identifies this revision in both modes. No persistent tables, global
 DuckDB optimizer settings, service limits or deployment topology are changed.
 
+### Locating term matches in HTML
+
+`term_node(content_id, text, node_index, frequency)` locates ICU occurrences on
+contributing body text nodes. Join through `html_node.parent_index` to inspect the
+containing element. Specify the text-node kind when joining the unified node table:
+
+```sql
+SELECT e.tag, count(*) AS matching_nodes
+FROM term_node t
+JOIN html_node n USING (content_id, node_index)
+JOIN html_element e ON e.content_id = n.content_id AND e.node_index = n.parent_index
+WHERE t.text = 'monkey' AND n.node_type = 'text'
+GROUP BY e.tag;
+```
+
+The explicit kind is logically redundant for valid postings but avoids an expensive
+unrestricted self-join plan in the measured layout. It does not guarantee file pruning.
+A word split across inline elements matches all contributing text nodes; node frequencies
+count intersecting occurrences and must not be summed as document frequency. Use `term`
+for document frequencies. Parent elements are structural context, not visibility evidence.
 
 ### Notebook input and streaming transport
 
@@ -987,3 +1007,12 @@ Migration `20260911_0016` adds input budgets to the existing policy without chan
 result budgets or rate windows. Roll out core, gateway and SDK together. Ingress must allow
 the configured body size, streaming without response buffering, and 610-second transport
 ceiling. Assistant and crawler clients may retain shorter caller deadlines.
+
+Experimental mode also considers `prose_heading_input_barrier_v1` before bounded
+selected-content extraction. It accepts only a two-table prose/heading inner join,
+a content-ID equality, and one qualified prose-text equality/LIKE/ILIKE predicate
+with string parameters. Unsupported shapes retain the existing optimizer path.
+It materializes the selected prose and puts an OFFSET 0 boundary above scoped DOM
+inputs. Installed-view guards and the original bind run before rewriting; Stable
+is unchanged. Local research and regression cases are retained under
+`benchmarks/query/experiments/` and the vocabulary-materialization investigation.

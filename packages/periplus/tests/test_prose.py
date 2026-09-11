@@ -8,7 +8,7 @@ from periplus.materialization.document_projection import VisitBatchContext
 from periplus.materialization.dom.nodes import parse_document
 from periplus.materialization.registry import PROJECTIONS
 from periplus.materialization.projections.prose import _body_text, project
-from periplus.materialization.projections.html_elements import project as elements_project
+from periplus.materialization.projections.html_nodes import project as elements_project
 from periplus.query.validation import _bounded_query
 
 
@@ -56,7 +56,7 @@ class ProseTests(unittest.TestCase):
         db.register('prose_rows', prose)
         db.register('element_rows', elements_project(context))
         db.execute('CREATE TABLE material.prose AS SELECT * FROM prose_rows')
-        db.execute('CREATE TABLE material.html_elements AS SELECT * FROM element_rows')
+        db.execute('CREATE TABLE material.html_nodes AS SELECT * FROM element_rows')
         root = files('periplus.platform.catalogue').joinpath('sql/public_v1/views')
         for name in ('prose', 'html_element'):
             db.execute(root.joinpath(f'{name}.sql').read_text())

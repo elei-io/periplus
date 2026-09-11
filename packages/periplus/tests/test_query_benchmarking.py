@@ -47,11 +47,13 @@ class QueryBenchmarkingTests(unittest.TestCase):
             connection.execute("CREATE TABLE public_v1.html_element(content_id VARCHAR, node_index INTEGER, tag VARCHAR, attributes MAP(VARCHAR,VARCHAR), parent_index INTEGER, sibling_index INTEGER, subtree_end_index INTEGER, text_direct VARCHAR)")
             connection.execute("CREATE TABLE public_v1.link(capture_id UUID, node_index INTEGER, raw_href VARCHAR, resolved_url VARCHAR)")
             connection.execute("CREATE TABLE public_v1.prose(content_id VARCHAR, text VARCHAR)")
-            connection.execute("CREATE TABLE public_v1.html_heading(content_id VARCHAR, node_index INTEGER, text VARCHAR)")
+            connection.execute("CREATE TABLE public_v1.term(content_id VARCHAR,text VARCHAR,frequency BIGINT)")
+            connection.execute("CREATE TABLE public_v1.term_node(content_id VARCHAR, text VARCHAR, node_index INTEGER, frequency BIGINT)")
+            connection.execute("CREATE TABLE public_v1.html_heading(content_id VARCHAR, node_index INTEGER, level INTEGER, text VARCHAR)")
             connection.execute("CREATE TABLE public_v1.html_section(content_id VARCHAR, heading_node_index INTEGER)")
             connection.execute("CREATE TABLE public_v1.html_jsonld(content_id VARCHAR, node_index INTEGER, value JSON, parse_error VARCHAR)")
             connection.execute("CREATE TABLE public_v1.html_metadata(content_id VARCHAR, node_index INTEGER, kind VARCHAR, name VARCHAR, value VARCHAR)")
-            connection.execute("CREATE TABLE public_v1.html_node(content_id VARCHAR, node_index INTEGER, subtree_end_index INTEGER, node_type VARCHAR, value VARCHAR)")
+            connection.execute("CREATE TABLE public_v1.html_node(content_id VARCHAR, node_index INTEGER, subtree_end_index INTEGER, node_type VARCHAR, value VARCHAR, parent_index INTEGER)")
             connection.execute(files("periplus.platform.catalogue").joinpath("sql/public_v1/helpers/subtree_text.sql").read_text())
             for case in discover_cases(root).values():
                 parameters = {"scope": case.scales[0]} if case.scales[0] else None

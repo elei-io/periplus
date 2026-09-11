@@ -198,3 +198,7 @@ the original batch size. Lease loss and infrastructure errors remain failures, n
 outages delay durable ingestion without consuming its document-failure budget.
 Structured `retention_sweep` and `retention_reclamation` events record counts
 without publishing object keys or observation identities.
+
+Node postings have content ownership just like content postings: both survive while any
+retained observation references the content and are removed at its final retirement.
+The shared generation term dictionary is not pruned by content retirement.

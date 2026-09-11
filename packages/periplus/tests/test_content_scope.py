@@ -12,12 +12,35 @@ from periplus.materialization.registry import PROJECTIONS
 from periplus.platform.catalogue.client import _column_type
 from periplus.platform.catalogue.public import public_objects
 from periplus.platform.catalogue.schema import expected_columns
-from periplus.query.content_scope import content_scope, capture_heading_scope, _source
+from periplus.query.content_scope import content_scope, capture_heading_scope, prose_heading_scope, _source
 from periplus.query.validation import _bounded_query
 from periplus.query.scope_plan import shared_html_inputs
 
 
 class ContentScopeTests(unittest.TestCase):
+    def test_prose_heading_barrier_equivalence_and_eligibility(self):
+        sql = "SELECT h.*,p.text AS prose_text FROM prose p JOIN html_heading h USING(content_id) WHERE p.text ILIKE ? ORDER BY h.content_id,h.node_index"
+        # Duplicate driver rows must multiply output exactly as the original join.
+        self.db.execute("INSERT INTO material.prose SELECT * FROM material.prose WHERE content_sha256='a'")
+        for pattern in ('%robot%', '%', '%absent%'):
+            candidate = prose_heading_scope(sql, [pattern])
+            self.assertIsNotNone(candidate)
+            self.assertIn('OFFSET 0', candidate.sql)
+            self.assertTrue(candidate.matches(self.db, self.installed))
+            _bounded_query(candidate.sql)
+            before = self.db.execute(sql, [pattern])
+            description, rows = before.description, before.fetchall()
+            after = self.db.execute(candidate.sql, [pattern])
+            self.assertEqual(description, after.description)
+            self.assertEqual(rows, after.fetchall())
+        for other in (sql + ' LIMIT 1', sql.replace('JOIN', 'LEFT JOIN'),
+                      sql.replace('p.text ILIKE ?', 'p.text ILIKE ? OR h.level=1'),
+                      sql.replace('html_heading', 'html_section'),
+                      sql.replace('p.text ILIKE ?', 'random()>0.5'),
+                      'WITH prose AS (SELECT NULL AS content_id, NULL AS text) ' + sql):
+            self.assertIsNone(prose_heading_scope(other, ['%robot%']), other)
+        self.assertIsNone(prose_heading_scope(sql, [None]))
+
     def setUp(self):
         self.db = duckdb.connect()
         self.addCleanup(self.db.close)
@@ -46,7 +69,7 @@ class ContentScopeTests(unittest.TestCase):
         context = VisitBatchContext((), (), (), {k: v[1] for k, v in parsed.items()},
                                     {k: v[0] for k, v in parsed.items()}, {}, frozenset(parsed))
         for name, project in [(spec.name, spec.rows) for spec in PROJECTIONS
-                              if spec.name not in {"vocabulary", "term_stat"}]:
+                              if spec.name not in {"term", "content_posting", "node_posting"}]:
             self.db.register('projection_rows', project(context))
             self.db.execute(f'INSERT INTO material.{name} SELECT * FROM projection_rows')
             self.db.unregister('projection_rows')
@@ -260,17 +283,14 @@ class ContentScopeTests(unittest.TestCase):
                 executable = _bounded_query(scoped.sql)
                 raw = self.db.execute('EXPLAIN (FORMAT JSON) ' + executable).fetchone()[-1]
                 self.assertEqual(shared_html_inputs(raw, key_cte=scoped.key_cte),
-                                 ('html_elements',) if not disabled else ())
+                                 ())
                 self.assertEqual(self.db.execute(executable).fetchall(), expected)
                 profile = json.loads(self.db.execute('EXPLAIN (ANALYZE, FORMAT JSON) ' + executable).fetchone()[-1])
                 nodes = list(walk(profile))
                 shared = [n for n in nodes if str(n.get('extra_info', {}).get('CTE Name', '')).startswith('__common_subplan_')]
-                if not disabled:
-                    # Known native regression: constructs both documents' headings
-                    # before consumers restrict to the requested document.
-                    self.assertEqual([n['children'][0]['operator_cardinality'] for n in shared], [6])
-                else:
-                    self.assertFalse(shared)
+                # The unified node layout no longer produces the old shared
+                # element-table producer for this fixture.
+                self.assertFalse(shared)
                 windows = [n['operator_cardinality'] for n in nodes if n.get('operator_name') == 'WINDOW']
                 self.assertEqual(windows, [3])  # Complete selected-document partition.
         self.db.execute("SET disabled_optimizers=''")

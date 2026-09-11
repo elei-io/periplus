@@ -289,3 +289,11 @@ receive no success receipt or acknowledgement and consume no processing-failure
 budget. Redelivery uses the remaining claim lifetime capped at 30 seconds plus
 jitter, allowing early releases to become useful without occupying a writer lane.
 Uncertain writes retain their original claims and fail-stop bounds.
+
+Prose, content-term counts and node-term counts share one lazy search-text result per
+content in the visit-batch context. Dictionary preparation populates this result before
+dependent projections consume it. The cache ends with that preparation context; it is
+not a durable cache or a cross-retry guarantee. Element attributes/direct text are written
+on materialized nodes, and public elements are projected from those nodes. A complete
+rebuild activates the new dictionary, both posting tables and unified DOM together;
+normal post-activation finalization removes obsolete material tables.

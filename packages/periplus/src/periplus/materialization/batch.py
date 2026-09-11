@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -80,6 +81,7 @@ def prepare_batch(
     batch: MaterializationBatch,
     *,
     active_generation: bool = False,
+    assert_writable: Callable[[], None] | None = None,
 ) -> PreparedBatch | BatchResult:
     applied = _applied_result(catalogue, batch.id)
     if applied is not None:
@@ -113,6 +115,8 @@ def prepare_batch(
         for spec in PROJECTIONS if spec.dictionary_key is not None
     }
     with step("dictionary_reservation"), write_claims({"generation": [str(run.id)]}):
+        if assert_writable is not None:
+            assert_writable()
         if active_generation and not _is_active_generation(catalogue, run.id):
             return BatchResult(0, 0, 0, 0, 0, 0, 0, superseded=True)
         with catalogue.remote_transaction():
@@ -172,6 +176,7 @@ def commit_prepared_batch(
     prepared: PreparedBatch,
     *,
     active_generation: bool = False,
+    assert_writable: Callable[[], None] | None = None,
 ) -> BatchResult:
     """Replace deterministic batch identities, then acknowledge in Postgres.
 
@@ -187,6 +192,8 @@ def commit_prepared_batch(
                 "observation": prepared.retained_visit_ids,
                 "content": prepared.retained_content_hashes,
             }))
+        if assert_writable is not None:
+            assert_writable()
         if active_generation and not _is_active_generation(catalogue, run.id):
             return _result(prepared, commit_started, superseded=True)
         if _is_applied(catalogue, batch.id):

@@ -1,5 +1,18 @@
 # Query optimization bench
 
+The disposable vocabulary/term-stat materialization experiment is documented in
+[`docs/query-investigations/vocabulary-materialization/`](../../docs/query-investigations/vocabulary-materialization/README.md).
+It builds only a temporary local lake and uses this bench's paired measurement
+runner; it does not install production projections.
+The proposed public `term` surface and real local HTML experiment are documented
+in [term-surface.md](../../docs/query-investigations/vocabulary-materialization/term-surface.md).
+The controlled literal-versus-term extraction growth test and join-planning
+diagnostics are in [extraction-pruning.md](../../docs/query-investigations/vocabulary-materialization/extraction-pruning.md).
+The experimental API rewrite and its benchmark results are documented in
+[query-api-barrier.md](../../docs/query-investigations/vocabulary-materialization/query-api-barrier.md).
+The 10/100/1,000 fixed-match growth, row-group and set-filter cutoff tests are in
+[multikey-extraction.md](../../docs/query-investigations/vocabulary-materialization/multikey-extraction.md).
+
 The process and decision matrix live in [QUERY_OPTIMIZATION.md](../../docs/QUERY_OPTIMIZATION.md).
 This directory is the workload home. The runner is
 `packages/periplus/src/periplus/query/benchmarking.py`; it runs standard DuckDB
@@ -197,3 +210,16 @@ is recorded as failure, never equality. For private incident SQL, create the cas
 under ignored `.artifacts/` with a matching case.toml and pass `--case-root`; remove
 it after the investigation. Public-service activation and limits still require
 separate QueryService validation.
+
+## Unified node layout experiment
+
+Run from packages/periplus:
+
+```sh
+uv run python ../../benchmarks/query/experiments/node_layout.py --documents 500 --report ../../.artifacts/query-benchmarks/node-layout.json
+```
+
+Use `--input-dir` for a retained UTF-8 HTML corpus; without it, input is explicitly
+synthetic. The disposable lake compares old separate element/node storage with the
+unified node table using the shared measurement runner in both orders.
+See [the investigation](../../docs/query-investigations/node-layout/README.md).

@@ -7,49 +7,16 @@ from periplus.materialization.document_projection import VisitBatchContext, tabl
 from periplus.materialization.dom.nodes import NodeRow
 from periplus.materialization.registry import ProjectionColumn, ProjectionSpec
 
-_HTML = "http://www.w3.org/1999/xhtml"
-_EXCLUDED = frozenset({"script", "style", "template", "noscript"})
-# Source-tag boundaries, independent of CSS display or visibility.
-_BLOCKS = frozenset({
-    "address", "article", "aside", "blockquote", "br", "caption", "dd", "details",
-    "dialog", "div", "dl", "dt", "fieldset", "figcaption", "figure", "footer",
-    "form", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hgroup", "hr",
-    "li", "main", "menu", "nav", "ol", "p", "pre", "section", "summary",
-    "table", "tbody", "td", "tfoot", "th", "thead", "tr", "ul",
-})
+from periplus.materialization.search_text import body_parts
 
 
 def _body_text(nodes: tuple[NodeRow, ...]) -> str:
-    body = next((n for n in nodes if n.node_type == "element"
-                 and n.namespace == _HTML and n.name == "body"), None)
-    if body is None:
-        return ""
-    parts: list[str] = []
-    ends: list[int] = []
-    skip_until = body.node_index + 1
-    for node in nodes:
-        if node.node_index < skip_until:
-            continue
-        if node.node_index >= body.subtree_end_index:
-            break
-        while ends and ends[-1] <= node.node_index:
-            parts.append(" ")
-            ends.pop()
-        if node.node_type == "element":
-            if node.name in _EXCLUDED:
-                skip_until = node.subtree_end_index
-                continue
-            if node.namespace == _HTML and node.name in _BLOCKS:
-                parts.append(" ")
-                ends.append(node.subtree_end_index)
-        elif node.node_type == "text":
-            parts.append(node.value or "")
-    return " ".join("".join(parts).split())
+    return " ".join("".join(text for text, _ in body_parts(nodes)).split())
 
 
 def project(context: VisitBatchContext) -> pa.Table:
     return table_from_rows(PROJECTION.arrow_schema, (
-        (content_id, _body_text(context.parsed_nodes_by_content[content_id]))
+        (content_id, context.search_text(content_id).prose)
         for content_id in sorted(context.content_output_hashes)
     ))
 
