@@ -12,6 +12,7 @@ import pyarrow as pa
 from periplus.ingestion.objects.document import ExactDocumentRepository
 from periplus.ingestion.objects.html import RawHtmlRepository
 from periplus.materialization.metrics import step
+from periplus.materialization.search_text import SearchText, build_search_text
 from periplus.materialization.dom import (
     ElementRow,
 )
@@ -48,6 +49,13 @@ class VisitBatchContext:
     observations_by_content: dict[str, tuple[DocumentObservation, ...]]
     content_output_hashes: frozenset[str]
     dictionary_ids: dict[str, dict[str, int]] = field(default_factory=dict)
+    search_text_by_content: dict[str, SearchText] = field(default_factory=dict)
+
+    def search_text(self, content_id: str) -> SearchText:
+        if content_id not in self.search_text_by_content:
+            with step("search_text"):
+                self.search_text_by_content[content_id] = build_search_text(self.parsed_nodes_by_content[content_id])
+        return self.search_text_by_content[content_id]
 
 
 def build_visit_batch_context(

@@ -317,16 +317,16 @@ class RetentionTests(unittest.TestCase):
             if table != 'html_nodes':
                 connection.execute(f'CREATE TABLE material.{table} AS SELECT * FROM material.html_nodes WHERE false')
             connection.execute(f'INSERT INTO material.{table} (content_sha256, node_index, subtree_end_index, sibling_index, node_type, depth) VALUES (?, 0, 1, 0, ?, 0)', ['a'*64, 'document'])
-        connection.execute("INSERT INTO material.vocabulary VALUES ('monkeys', 1)")
-        connection.execute("INSERT INTO material.term_stat VALUES (1, ?, 2)", ['a'*64])
+        connection.execute("INSERT INTO material.term VALUES ('monkeys', 1)")
+        connection.execute("INSERT INTO material.content_posting VALUES (1, ?, 2)", ['a'*64])
         candidates = self.candidates()
         self.retention.purge_observation(candidates[0], now=self.now)
-        self.assertEqual(connection.execute('SELECT count(*) FROM material.term_stat').fetchone()[0], 1)
+        self.assertEqual(connection.execute('SELECT count(*) FROM material.content_posting').fetchone()[0], 1)
         for table in tables:
             self.assertEqual(connection.execute(f'SELECT count(*) FROM material.{table}').fetchone()[0], 1)
         self.retention.purge_observation(candidates[1], now=self.now)
-        self.assertEqual(connection.execute('SELECT count(*) FROM material.term_stat').fetchone()[0], 0)
-        self.assertEqual(connection.execute('SELECT * FROM material.vocabulary').fetchall(), [('monkeys', 1)])
+        self.assertEqual(connection.execute('SELECT count(*) FROM material.content_posting').fetchone()[0], 0)
+        self.assertEqual(connection.execute('SELECT * FROM material.term').fetchall(), [('monkeys', 1)])
         for table in tables:
             self.assertEqual(connection.execute(f'SELECT count(*) FROM material.{table}').fetchone()[0], 0)
 

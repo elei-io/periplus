@@ -51,14 +51,13 @@ class QueryServiceTests(unittest.TestCase):
         )
         d.execute("UPDATE ingest.visits SET document_id = '00000000-0000-0000-0000-000000000001' WHERE requested_url = 'https://example.com/inline'")
         d.execute("INSERT INTO ingest.documents (document_id, visit_id, detected_media_type, content_sha256) SELECT document_id, visit_id, 'text/html', 'helper-fixture' FROM ingest.visits WHERE document_id IS NOT NULL")
-        d.execute("INSERT INTO material.html_elements (content_sha256, element_index, subtree_end_index, depth, text_direct) VALUES ('helper-fixture',0,2,0,'start'),('helper-fixture',1,2,1,'nested')")
         d.execute("UPDATE ingest.visits SET document_id = uuid() WHERE document_id IS NULL")
         d.execute("INSERT INTO ingest.documents (document_id, visit_id, detected_media_type, content_sha256) SELECT document_id, visit_id, 'text/html', visit_id::VARCHAR FROM ingest.visits WHERE requested_url <> 'https://example.com/inline'")
         d.execute("INSERT INTO material.html_nodes (content_sha256, node_index, subtree_end_index, node_type, value, depth) VALUES ('helper-fixture',0,4,'element',NULL,0),('helper-fixture',1,2,'text','start',1),('helper-fixture',2,3,'text','nested',1),('helper-fixture',3,4,'text','end',1)")
-        d.execute("UPDATE material.html_elements SET tag = 'title', namespace = 'HTML' WHERE content_sha256 = 'helper-fixture' AND element_index = 0")
+        d.execute("UPDATE material.html_nodes SET name = 'title', namespace = 'http://www.w3.org/1999/xhtml', text_direct = 'start' WHERE content_sha256 = 'helper-fixture' AND node_index = 0")
         d.execute("INSERT INTO material.prose VALUES ('helper-fixture', 'robot careers')")
-        d.execute("INSERT INTO material.vocabulary VALUES ('robot', 1), ('robotics', 2), ('unused', 3)")
-        d.execute("INSERT INTO material.term_stat VALUES (1, 'helper-fixture', 2), (2, 'helper-fixture', 1)")
+        d.execute("INSERT INTO material.term VALUES ('robot', 1), ('robotics', 2), ('unused', 3)")
+        d.execute("INSERT INTO material.content_posting VALUES (1, 'helper-fixture', 2), (2, 'helper-fixture', 1)")
         d.close()
         self.service = QueryService(self.config)
         self.addCleanup(self.service.close)
@@ -115,7 +114,7 @@ class QueryServiceTests(unittest.TestCase):
         self.service.close()
         writer = DuckLakeConnectionFactory(self.config).connect(read_only=False)
         writer.execute("UPDATE periplus.ingest.visits SET effective_url=requested_url")
-        writer.execute("INSERT INTO periplus.material.html_elements (content_sha256, element_index, subtree_end_index, tag, namespace) VALUES ('helper-fixture',4,6,'h1','HTML')")
+        writer.execute("INSERT INTO periplus.material.html_nodes (content_sha256, node_index, subtree_end_index, name, namespace, node_type) VALUES ('helper-fixture',4,6,'h1','http://www.w3.org/1999/xhtml','element')")
         writer.execute("INSERT INTO periplus.material.html_nodes (content_sha256,node_index,subtree_end_index,node_type,value) VALUES ('helper-fixture',5,6,'text','Heading')")
         writer.close()
         stable = QueryService(self.config)
@@ -255,11 +254,7 @@ class QueryServiceTests(unittest.TestCase):
         writer = DuckLakeConnectionFactory(self.config).connect()
         try:
             writer.execute('USE periplus')
-            writer.execute('DELETE FROM material.html_elements')
             writer.execute('DELETE FROM material.html_nodes')
-            writer.execute("""INSERT INTO material.html_elements
-                (content_sha256, element_index, subtree_end_index, tag, namespace) VALUES
-                ('helper-fixture',1,3,'h1','HTML'), ('helper-fixture',3,5,'h2','HTML')""")
             writer.execute("""INSERT INTO material.html_nodes
                 (content_sha256,node_index,subtree_end_index,node_type,value,depth) VALUES
                 ('helper-fixture',0,5,'document',NULL,0),
@@ -267,6 +262,7 @@ class QueryServiceTests(unittest.TestCase):
                 ('helper-fixture',2,3,'text','Heading',2),
                 ('helper-fixture',3,5,'element',NULL,1),
                 ('helper-fixture',4,5,'text','Child',2)""")
+            writer.execute("UPDATE material.html_nodes SET name=CASE node_index WHEN 1 THEN 'h1' ELSE 'h2' END, namespace='http://www.w3.org/1999/xhtml' WHERE node_type='element'")
         finally:
             writer.close()
         self.service.connection = self.service._connect()

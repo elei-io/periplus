@@ -20,7 +20,7 @@ class ProjectionAdditionTests(unittest.TestCase):
                 old = (Path(__file__).resolve().parents[3] / 'docs/query-investigations/jsonld-layout/baseline.sql').read_text()
                 c.execute(old)
                 c.execute('DROP TABLE material.html_jsonld')
-                c.execute("INSERT INTO material.html_elements VALUES ('a',3,NULL,4,0,0,'script','HTML',MAP {'type':'application/ld+json'},'{\"name\":\"kept\"}')")
+                c.execute("INSERT INTO material.html_nodes (content_sha256,node_index,parent_index,subtree_end_index,depth,sibling_index,name,namespace,attributes,text_direct,node_type) VALUES ('a',3,NULL,4,0,0,'script','http://www.w3.org/1999/xhtml',MAP {'type':'application/ld+json'},'{\"name\":\"kept\"}','element')")
                 before = c.execute('SELECT * FROM public_v1.html_jsonld').fetchall()
                 self.assertEqual(len(before), 1)
                 for _ in range(2):

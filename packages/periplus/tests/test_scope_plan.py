@@ -18,8 +18,8 @@ class ScopePlanTests(unittest.TestCase):
         return json.dumps([keys, common])
 
     def test_only_the_shared_producer_is_inspected(self):
-        plan = self.plan(node('DUCKLAKE_SCAN', {'Table': 'html_elements'}))
-        self.assertEqual(shared_html_inputs(plan, key_cte='selected_keys'), ('html_elements',))
+        plan = self.plan(node('DUCKLAKE_SCAN', {'Table': 'html_nodes'}))
+        self.assertEqual(shared_html_inputs(plan, key_cte='selected_keys'), ('html_nodes',))
         # A consumer key restriction does not constrain CTE construction.
         self.assertIsNone(shared_html_inputs(plan, key_cte='different_keys'))
 
@@ -28,7 +28,7 @@ class ScopePlanTests(unittest.TestCase):
             node('HASH_JOIN', {}, node('DUCKLAKE_SCAN', {'Table': 'html_nodes'}),
                  node('CTE_SCAN', {'CTE Index': '1'})),
             node('DUCKLAKE_SCAN', {'Table': 'html_nodes', 'Filters': "content_sha256='a'"}),
-            node('SEQ_SCAN', {'Table': 'memory.material.html_elements', 'Dynamic Filters': 'content_id=a'}),
+            node('SEQ_SCAN', {'Table': 'memory.material.html_nodes', 'Dynamic Filters': 'content_id=a'}),
             node('DUCKLAKE_SCAN', {'Table': 'visits'}),
         ]
         for producer in producers:

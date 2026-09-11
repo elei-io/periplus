@@ -945,3 +945,24 @@ broad selections are accepted, but correctness and resource limits are unchanged
 both gains and the broad synthetic regression. Stable execution is unchanged;
 compiler v8 identifies this revision in both modes. No persistent tables, global
 DuckDB optimizer settings, service limits or deployment topology are changed.
+
+### Locating term matches in HTML
+
+`term_node(content_id, text, node_index, frequency)` locates ICU occurrences on
+contributing body text nodes. Join through `html_node.parent_index` to inspect the
+containing element. Specify the text-node kind when joining the unified node table:
+
+```sql
+SELECT e.tag, count(*) AS matching_nodes
+FROM term_node t
+JOIN html_node n USING (content_id, node_index)
+JOIN html_element e ON e.content_id = n.content_id AND e.node_index = n.parent_index
+WHERE t.text = 'monkey' AND n.node_type = 'text'
+GROUP BY e.tag;
+```
+
+The explicit kind is logically redundant for valid postings but avoids an expensive
+unrestricted self-join plan in the measured layout. It does not guarantee file pruning.
+A word split across inline elements matches all contributing text nodes; node frequencies
+count intersecting occurrences and must not be summed as document frequency. Use `term`
+for document frequencies. Parent elements are structural context, not visibility evidence.

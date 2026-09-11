@@ -22,6 +22,7 @@ from periplus.query.http import _public_metadata, metadata
 EXPECTED_PUBLIC_RELATIONS = {
     ("public_v1", "prose"),
     ("public_v1", "term"),
+    ("public_v1", "term_node"),
     ("public_v1", "capture"),
     ("public_v1", "link"),
     ("public_v1", "html_element"),
@@ -182,11 +183,11 @@ class PublicCatalogueTests(unittest.TestCase):
                     'utf-8', 'content-a', 100, 'objects/a', 'identity', 100
                 );
 
-            INSERT INTO material.html_elements VALUES
-                ('content-a', 0, NULL, 2, 0, 0, 'html', 'HTML',
-                 MAP {}, ''),
-                ('content-a', 1, 0, 2, 1, 0, 'a', 'HTML',
-                 MAP {'href': '/next'}, 'Next');
+            INSERT INTO material.html_nodes (content_sha256,node_index,parent_index,subtree_end_index,depth,sibling_index,name,namespace,attributes,text_direct,node_type) VALUES
+                ('content-a', 0, NULL, 2, 0, 0, 'html', 'http://www.w3.org/1999/xhtml',
+                 MAP {}, '', 'element'),
+                ('content-a', 1, 0, 2, 1, 0, 'a', 'http://www.w3.org/1999/xhtml',
+                 MAP {'href': '/next'}, 'Next', 'element');
 
             INSERT INTO material.link_occurrences VALUES (
                 '30000000-0000-0000-0000-000000000001',

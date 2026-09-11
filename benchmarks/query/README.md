@@ -197,3 +197,16 @@ is recorded as failure, never equality. For private incident SQL, create the cas
 under ignored `.artifacts/` with a matching case.toml and pass `--case-root`; remove
 it after the investigation. Public-service activation and limits still require
 separate QueryService validation.
+
+## Unified node layout experiment
+
+Run from packages/periplus:
+
+```sh
+uv run python ../../benchmarks/query/experiments/node_layout.py --documents 500 --report ../../.artifacts/query-benchmarks/node-layout.json
+```
+
+Use `--input-dir` for a retained UTF-8 HTML corpus; without it, input is explicitly
+synthetic. The disposable lake compares old separate element/node storage with the
+unified node table using the shared measurement runner in both orders.
+See [the investigation](../../docs/query-investigations/node-layout/README.md).

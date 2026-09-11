@@ -2,16 +2,15 @@
 import pyarrow as pa
 
 from periplus.materialization.document_projection import VisitBatchContext, table_from_rows
-from periplus.materialization.projections.prose import _body_text
 from periplus.materialization.registry import ProjectionColumn, ProjectionSpec
-from periplus.materialization.tokenization import term_counts, validate_tokenizer
+from periplus.materialization.tokenization import validate_tokenizer
 
 validate_tokenizer()
 
 
 def content_terms(context: VisitBatchContext):
     for content_id in sorted(context.content_output_hashes):
-        yield content_id, term_counts(_body_text(context.parsed_nodes_by_content[content_id]))
+        yield content_id, context.search_text(content_id).content_counts
 
 
 def project(context: VisitBatchContext) -> pa.Table:
@@ -20,15 +19,15 @@ def project(context: VisitBatchContext) -> pa.Table:
 
 
 PROJECTION = ProjectionSpec(
-    name='vocabulary', ownership_grain='generation',
-    columns=(ProjectionColumn('term', pa.string(), 'VARCHAR', 'Normalized ICU search term.', False),
+    name='term', ownership_grain='generation',
+    columns=(ProjectionColumn('text', pa.string(), 'VARCHAR', 'Normalized ICU search term.', False),
              ProjectionColumn('term_id', pa.int64(), 'BIGINT', 'Generation-local dictionary identity.', False)),
-    partitioning=(), sort_order=('term ASC',), projector=project,
+    partitioning=(), sort_order=('text ASC',), projector=project,
     description='Shared append-only term dictionary; unused entries are retained until a full rebuild.',
-    identity_columns=('term',), dictionary_key='term', dictionary_id='term_id',
-    implementation_dependencies=('periplus.materialization.tokenization',),
+    identity_columns=('text',), dictionary_key='text', dictionary_id='term_id',
+    implementation_dependencies=('periplus.materialization.tokenization', 'periplus.materialization.search_text'),
     validation_queries=(
-        'SELECT count(*) - count(DISTINCT term_id) FROM material.vocabulary',
-        'SELECT count(*) FROM material.vocabulary WHERE term_id <= 0 OR term_id IS NULL OR term IS NULL',
+        'SELECT count(*) - count(DISTINCT term_id) FROM material.term',
+        'SELECT count(*) FROM material.term WHERE term_id <= 0 OR term_id IS NULL OR text IS NULL',
     ),
 )

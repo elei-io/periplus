@@ -15,7 +15,6 @@ Periplus must:
 2. Verify every visible document object is readable and content-correct.
 3. Rebuild the registered semantic projections:
    - `material.html_nodes`
-   - `material.html_elements`
    - `material.link_occurrences`
 4. Append only immutable final files and activate complete registry generations atomically.
 5. Recover from retries, restarts, catch-up ingestion, and unreadable material files without
@@ -37,7 +36,7 @@ projection registry. Each arrow below is currently implemented by one self-conta
 ```text
 ingest.visits
     -> optional immutable HTML document
-    -> material.html_elements
+    -> material.html_nodes
     -> material.link_occurrences
 ```
 

@@ -13,7 +13,7 @@ class _PlanNode(BaseModel):
 
 
 _PLAN = TypeAdapter(list[_PlanNode])
-_HTML_TABLES = {'html_nodes', 'html_elements'}
+_HTML_TABLES = {'html_nodes'}
 
 
 def shared_html_inputs(plan_json: str, *, key_cte: str) -> tuple[str, ...] | None:
