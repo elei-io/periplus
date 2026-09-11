@@ -158,3 +158,29 @@ final service suite, including the added shared-benchmark regression, passed all
 empty/full domains, aliases, parameters and join direction. Service tests cover
 no discovery during prep/stable, definition mismatch, invalid regex recovery,
 overflow, deadline/admission, and a writer commit between the two phases.
+
+## Decision after increasing query capacity
+
+The owner authorized a 4 GiB DuckDB budget for both query APIs. Homelab commit
+`a0cd092c` deployed 4 GiB managed memory, 4 GiB Kubernetes memory requests and
+6 GiB container limits for each fixed single query replica. Both deployments
+became ready and Flux reported successful Helm release v45. This supersedes the
+capacity decision pending above; it does not deploy this optimizer branch.
+
+At the new limits, ordinary stable execution completes and is faster than this
+candidate. A disposable production reader running actual QueryService code
+measured both mode orders, each request with its own transaction:
+
+| Order | Stable milliseconds | Candidate milliseconds |
+| --- | --- | --- |
+| Candidate then stable | 3444 | 4263, 4138, 4377 |
+| Stable then candidate | 3448, 2308, 2350 | 5722, 4213, 4071 |
+
+All returned 1,533 rows without truncation. These are observational timings on a
+changing corpus, not a same-snapshot baseline/candidate equivalence claim. The
+independent reference passed at snapshot 247904 with 130,408 captures and 1,481
+matching prose rows. Timing snapshots span 247920–248117. The new capacity makes
+stable viable without this rule; these runs do not establish an optimization gain
+under the new deployment settings. Do not promote PR #57 on this evidence. Retain
+the investigation for future constrained-memory work instead of adding execution
+complexity to the current baseline.
