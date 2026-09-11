@@ -99,7 +99,7 @@ class MaterializationRegistryTests(unittest.TestCase):
         self.assertEqual(len(REGISTRY_DIGEST), 64)
         self.assertTrue(
             all(
-                spec.ownership_grain in {"content", "visit"}
+                spec.ownership_grain in {"content", "visit", "generation"}
                 for spec in PROJECTIONS
             )
         )
@@ -1186,6 +1186,7 @@ class MaterializationParquetTests(unittest.TestCase):
             repository,
             run,
             batch,
+            active_generation=False,
         )
         self.assertEqual(commit_prepared_batch.call_count, 2)
         self.assertTrue(

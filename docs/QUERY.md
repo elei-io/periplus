@@ -130,6 +130,20 @@ Public query transports allow 130 seconds; the Python SDK defaults to 140 second
 impose shorter deadlines, including bounded agent runs and crawler selections. These do not
 increase the server's limits. Administrative SQL retains its separate fixed result limits.
 
+### Term discovery
+
+`public_v1.term(content_id, text, frequency)` is a portable view over the private
+generation vocabulary and content frequencies. Exact and pattern predicates on
+`text` select terms; join the resulting `content_id` to prose, captures or HTML
+relations. The public manifest supplies schema descriptions to query metadata and
+shell discovery. Internal IDs are not public.
+
+This is a schema/catalogue addition exposing the term materialization. No compiler
+rewrite is added or promoted. Existing prose-only optimizations retain their scope.
+Correct SQL remains available in both execution modes, but native multi-key filtering
+and overlapping files under appends still limit scan pruning. See
+[SCHEMA.md](SCHEMA.md#public_v1term) for normalization and examples.
+
 ### Content-first prose discovery
 
 `public_v1.prose` materializes normalized body text once per unique HTML content.

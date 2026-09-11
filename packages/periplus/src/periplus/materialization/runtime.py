@@ -607,7 +607,8 @@ def _commit_retained_batch(catalogue, html_repository, run, batch, *, active_gen
     def commit():
         nonlocal prepared
         if prepared is None:
-            prepared = prepare_batch(catalogue, html_repository, run, batch)
+            prepared = prepare_batch(catalogue, html_repository, run, batch,
+                                     active_generation=active_generation)
         if isinstance(prepared, BatchResult):
             return prepared
         try:

@@ -32,6 +32,12 @@ PUBLIC_OBJECTS = (
         ("content_id", "SHA-256 identity of captured HTML bytes; one row per unique content."),
         ("text", "Body text with collapsed whitespace and block separators; excludes script, style, template and noscript subtrees; no CSS visibility inference."),
     ), "Materialized searchable HTML body text, retaining navigation and footer text.", ("material.prose",)),
+    _view("term", (
+        ("content_id", "SHA-256 identity of captured HTML bytes; one row per normalized term and content."),
+        ("text", "ICU term from body prose, case-folded and NFC-normalized; includes numbers; no stemming or stopword removal."),
+        ("frequency", "Number of occurrences of this normalized term in the content's body prose."),
+    ), "Normalized terms and their frequencies in HTML body prose; no phrase order or relevance ranking.",
+       ("material.vocabulary", "material.term_stat")),
     _view("capture", (
         ("capture_id", "Acquisition identity with retained content."),
         ("requested_url", "Normalized requested URL."),
