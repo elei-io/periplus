@@ -67,14 +67,14 @@ Use `aclose()` when managing an async client's lifetime explicitly.
 
 ## Installation and verification
 
-Install the current public-v1 client from this checkout:
+Install the public-v1 client from PyPI:
 
 ```sh
-python -m pip install ./packages/periplus-python-sdk
+python -m pip install "periplus-python-sdk>=0.3.0"
 ```
 
-The published 0.2.0 package predates the current public-v1 contract; use the
-checkout until a matching SDK release is published.
+Version 0.3.0 supports the current public-v1 contract. For production, configure
+`PERIPLUS_PUBLIC_URL=https://periplus.dev`; no API token is required.
 Run the installed package against an available public app:
 
 ```sh
@@ -85,11 +85,11 @@ PERIPLUS_PUBLIC_URL=http://localhost:8080 python packages/periplus-python-sdk/ex
 
 Repository CI publishes immutable releases from tags named
 `periplus-python-sdk-v<version>`. The tag must exactly match the static version
-in `pyproject.toml`; for example, version `0.2.0` is released with:
+in `pyproject.toml`; for example, version `0.3.0` is released with:
 
 ```sh
-git tag periplus-python-sdk-v0.2.0
-git push origin periplus-python-sdk-v0.2.0
+git tag periplus-python-sdk-v0.3.0
+git push origin periplus-python-sdk-v0.3.0
 ```
 
 PyPI publishing uses Trusted Publishing rather than a stored API token. The
@@ -99,7 +99,7 @@ that GitHub environment with required reviewers before the first release.
 
 ## Public v1
 
-Install the updated SDK from this checkout with `python -m pip install ./packages/periplus-python-sdk` from the repository root. The previously published 0.2.0 release predates this contract. `prepare` and `execute` accept keyword-only `schema_version="public_v1"` (the default); responses preserve `schema_version` separately from `source_snapshot`. Unavailable versions are rejected by the server.
+Install the updated SDK from PyPI with `python -m pip install "periplus-python-sdk>=0.3.0"`. The previously published 0.2.0 release predates this contract. `prepare` and `execute` accept keyword-only `schema_version="public_v1"` (the default); responses preserve `schema_version` separately from `source_snapshot`. Unavailable versions are rejected by the server.
 
 ## License
 
