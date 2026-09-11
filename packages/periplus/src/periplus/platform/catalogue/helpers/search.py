@@ -9,7 +9,7 @@ SEARCH = CatalogueObject(
     columns=("content_id", "title", "url", "snippet", "score"),
     arguments_sql="'missing-content'",
     parameters=(("query", "VARCHAR"),),
-    comment="Find up to 100 relevant unique contents, with a representative capture URL.",
+    comment="Find up to 100 matching unique contents, with a representative capture URL.",
     column_comments=(
         ("content_id", "Retained HTML content identity; one result per content."),
         ("title", "First parsed HTML title in document order; NULL when absent."),
@@ -19,20 +19,20 @@ SEARCH = CatalogueObject(
         ),
         (
             "snippet",
-            "At most 240 characters from a matching field, with normalized whitespace; may begin or end mid-word.",
+            "At most 240 characters from matching body prose, with normalized whitespace; may begin or end mid-word.",
         ),
         (
             "score",
-            "Relative relevance within this query; higher ranks first. Ranking may evolve.",
+            "Initial body-only matches all score 1; ranking may evolve.",
         ),
     ),
     requires_relations=frozenset({"material.prose", "material.html_nodes"}),
     notes=(
-        "Initial matching is literal substring search across body prose, HTML titles and meta name=description content. No wildcard syntax: percent, underscore, quotes and backslashes are literal. No stemming, token AND, semantic search or JSON-LD field selection.",
-        "Query and fields collapse ASCII whitespace runs to one space, trim spaces, normalize NFC and use Unicode lowercasing. This is not full case folding or accent removal. NULL, empty and whitespace-only queries return no rows. Queries longer than 256 characters raise an error.",
-        "Initial scores use the strongest matching field: title 6, description 3, body 1. Repeated declarations and captures do not increase the score. Snippets use the strongest matching field, then source node order to break ties; start up to 60 characters before the match.",
+        "Initial matching is literal substring search in body prose only. Titles and meta descriptions do not contribute matches; titles are fetched only for display after selecting results. No wildcard syntax: percent, underscore, quotes and backslashes are literal. No stemming, token AND, semantic search or JSON-LD field selection.",
+        "The query collapses ASCII whitespace runs and trims spaces. Body prose already has normalized whitespace. Both normalize NFC and use Unicode lowercasing. This is not full case folding or accent removal. NULL, empty and whitespace-only queries return no rows. Queries longer than 256 characters raise an error.",
+        "Initial scores are 1 for every match; repeated occurrences and captures do not increase the score. Snippets come from body prose, starting up to 60 characters before the first match.",
         "Results are ordered by score descending, then content_id ascending and limited to 100 before caller joins. Use an outer ORDER BY to retain ordering in composed SQL. Scores and relevance policy may evolve.",
-        "Body coverage uses internal prose and excludes script/style/template/noscript. This discovery scope cannot safely accelerate arbitrary HTML text predicates. Search currently scans fields; its result cap does not bound scan cost.",
+        "Body coverage uses internal prose and excludes script/style/template/noscript. This discovery scope cannot safely accelerate arbitrary HTML text predicates. Search currently scans body prose; its result cap does not bound scan cost.",
     ),
     errors=("search query must be at most 256 characters",),
     examples=(

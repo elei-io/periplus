@@ -60,10 +60,11 @@ class SearchContractTests(unittest.TestCase):
             "SELECT * FROM public_v1.search('  MoNkEy  ')"
         ).fetchall()
         self.assertEqual(
-            [(r[0], r[4]) for r in rows], [("a", 6.0), ("b", 3.0), ("c", 1.0)]
+            [(r[0], r[4]) for r in rows], [("a", 1.0), ("c", 1.0)]
         )
         self.assertEqual(rows[0][2], "https://new-a")
-        self.assertIn("MONKEY", rows[0][3])
+        self.assertEqual(rows[0][1], "MONKEY zoo")
+        self.assertIn("monkey", rows[0][3])
         for q in ("%", "_", "cafe\u0301", "日本語", "monkey café"):
             self.assertEqual(
                 self.db.execute(
@@ -77,6 +78,10 @@ class SearchContractTests(unittest.TestCase):
             " \t\n ",
             "secretmonkey",
             "stylemonkey",
+            "Whitespace",
+            "zebra",
+            "description",
+            "MONKEY zoo",
             "%monkey%",
             "' OR true --",
         ):
@@ -128,7 +133,7 @@ class SearchContractTests(unittest.TestCase):
         )
         self.assertEqual(
             self.db.execute("SELECT snippet FROM public_v1.search('zebra')").fetchone(),
-            ("zebra zzz",),
+            None,
         )
         self.assertEqual(
             self.db.execute(
@@ -154,5 +159,5 @@ class SearchContractTests(unittest.TestCase):
             "SELECT content_id FROM public_v1.search('monkey')"
         ).fetchall()
         self.assertEqual(len(rows), 100)
-        self.assertEqual(rows[:3], [("a",), ("b",), ("c",)])
-        self.assertEqual(rows[3:], [(f"z{i:03}",) for i in range(97)])
+        self.assertEqual(rows[:2], [("a",), ("c",)])
+        self.assertEqual(rows[2:], [(f"z{i:03}",) for i in range(98)])

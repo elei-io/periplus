@@ -159,19 +159,19 @@ from the newest capture (captured_at descending, NULL last; capture_id descendin
 breaks ties), with requested URL as fallback. Title is the first HTML title in
 source order, or NULL. Duplicate captures do not multiply results.
 
-The initial policy matches a literal substring in body prose, HTML title text or
-meta name=description content. Query and fields collapse ASCII whitespace, trim,
-normalize NFC, and lowercase; no full case folding, accent removal or stemming.
-`%`, `_`, quotes and backslashes are literal, not wildcard/query syntax. Empty,
-NULL and whitespace-only queries return no results. More than 256 query characters
-raises an error. JSON-LD is not searched.
+The initial policy matches literal substrings in body prose only. Titles and meta
+descriptions do not contribute matches; titles are fetched for display after the
+result set is selected. The query collapses ASCII whitespace and trims spaces;
+body prose already has normalized whitespace. Both normalize NFC and lowercase,
+with no full case folding, accent removal or stemming. `%`, `_`, quotes and
+backslashes are literal. Empty, NULL and whitespace-only queries return no results.
+More than 256 query characters raises an error. JSON-LD is not searched.
 
-Initial relevance is the strongest matching field: title 6, description 3, body 1.
-Repeated fields do not boost scores. Snippets contain at most 240 characters from
-the strongest matching field, starting up to 60 characters before the match;
-source node order breaks ties. Results sort by score descending, then
-content_id ascending, before the 100-row cap. Use an outer ORDER BY when composing
-SQL. Matching, ranking and snippets may evolve under Periplus ownership.
+Initial scores are 1 for every match. Repeated occurrences do not boost scores.
+Snippets contain at most 240 characters from body prose, starting up to 60 characters
+before the first match. Results sort by score descending, then content_id ascending,
+before the 100-row cap. Use an outer ORDER BY when composing SQL. Matching, ranking
+and snippets may evolve under Periplus ownership.
 
 ```sql
 SELECT * FROM search('monkeys in the zoo') ORDER BY score DESC, content_id;

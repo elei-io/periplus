@@ -299,7 +299,8 @@ with Client("https://periplus.dev") as client:
 ```
 
 Search returns up to 100 unique contents with title, representative URL, snippet
-and score. It initially matches literal substrings; percent and underscore are
+and score. It initially matches literal substrings in body prose only; titles are display-only
+and initial scores are all 1. Percent and underscore are
 literal inside the search argument. Element predicates use ordinary SQL wildcard
 semantics and complete parsed descendant text with preserved whitespace.
 Prose, vocabulary and postings remain internal.

@@ -63,3 +63,19 @@ case behavior, literal wildcard characters, empty/missing values, script/style/t
 coverage, capture deduplication, ranking ties and output bounds. Existing compiler
 families are retained only when their public inputs still exist. Retired prose
 compiler experiments are removed from normal execution and case discovery.
+
+## Approved body-only release
+
+Matching now uses internal body prose only. Title and meta-description text never
+produce hits. All initial scores are 1, ordered by content identity; titles are
+fetched only for the selected contents and remain display metadata. Snippets come
+from the first body match. This avoids a corpus-wide node scan for discovery.
+The physical registry remains unchanged and no rebuild is needed.
+
+On production snapshot 346888, two threads / 4 GiB, `search('robot')` returned
+100 rows in 34.24 seconds initially and 25.74 seconds warm. Peak profiled buffer
+memory was 3.44 GB. The prose scan read 11 files; selected-title extraction read
+79 node files. This passes the live 120-second deadline and the case's 60-second
+warm target. It remains a scan-based initial implementation, not a billion-capture
+inverted-index performance claim. The earlier metadata-inclusive release blocker
+is resolved by the explicitly approved body-only coverage.

@@ -136,7 +136,7 @@ increase the server's limits. Administrative SQL retains its separate fixed resu
 
 ### Page discovery and structured text
 
-Use `search('query')` for ranked page discovery, and `html_element.text` or
+Use `search('query')` for body-text page discovery, and `html_element.text` or
 `html_node.text` for deterministic structural predicates. Search owns matching,
 ranking, snippets and a 100-content result cap; see [the full contract](SCHEMA.md#public_v1searchquery).
 Internal prose and postings are not public SQL relations. Their body-only index

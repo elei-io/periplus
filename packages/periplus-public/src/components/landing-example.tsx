@@ -23,15 +23,15 @@ export function LandingExample() {
       </Card>)}
     </div>
     <Card className="landing-query-panel">
-      <CardHeader><CardTitle><h3>Discover pages about artificial intelligence</h3></CardTitle><CardDescription>Find up to 100 ranked contents with a title, representative URL, and matching snippet.</CardDescription></CardHeader>
+      <CardHeader><CardTitle><h3>Discover pages about artificial intelligence</h3></CardTitle><CardDescription>Find up to 100 matching contents with a title, representative URL, and matching snippet.</CardDescription></CardHeader>
       <CardContent className="flex min-w-0 flex-col gap-4">
         <SqlExample sql={landingSql} />
         <Table>
           <TableCaption>Illustrative results · fictional pages</TableCaption>
           <TableHeader><TableRow><TableHead>title</TableHead><TableHead>url</TableHead><TableHead>snippet</TableHead><TableHead>score</TableHead></TableRow></TableHeader>
           <TableBody>{[
-            ["Artificial intelligence research", "https://research.example.com/ai", "Artificial intelligence research", 6],
-            ["Our investments", "https://ventures.example.com/portfolio", "Investing in artificial intelligence companies", 3],
+            ["Artificial intelligence research", "https://research.example.com/ai", "Artificial intelligence research", 1],
+            ["Our investments", "https://ventures.example.com/portfolio", "Investing in artificial intelligence companies", 1],
             ["Latest news", "https://computing.example.com/news", "Our team studies artificial intelligence applications", 1],
           ].map(([title, url, snippet, score]) => <TableRow key={url}><TableCell>{title}</TableCell><TableCell>{url}</TableCell><TableCell>{snippet}</TableCell><TableCell>{score}</TableCell></TableRow>)}</TableBody>
         </Table>

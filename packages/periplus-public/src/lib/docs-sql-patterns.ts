@@ -1,7 +1,7 @@
 export const docsSqlPatterns = [
   {
     "title": "Discover pages by text",
-    "description": "Up to 100 ranked unique contents, with a representative capture URL. A page match does not imply that every element matches.",
+    "description": "Up to 100 matching unique contents, with a representative capture URL. A page match does not imply that every element matches.",
     "sql": "SELECT * FROM search('robot') ORDER BY score DESC, content_id;"
   },
   {
