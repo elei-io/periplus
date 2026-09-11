@@ -1007,3 +1007,12 @@ Migration `20260911_0016` adds input budgets to the existing policy without chan
 result budgets or rate windows. Roll out core, gateway and SDK together. Ingress must allow
 the configured body size, streaming without response buffering, and 610-second transport
 ceiling. Assistant and crawler clients may retain shorter caller deadlines.
+
+Experimental mode also considers `prose_heading_input_barrier_v1` before bounded
+selected-content extraction. It accepts only a two-table prose/heading inner join,
+a content-ID equality, and one qualified prose-text equality/LIKE/ILIKE predicate
+with string parameters. Unsupported shapes retain the existing optimizer path.
+It materializes the selected prose and puts an OFFSET 0 boundary above scoped DOM
+inputs. Installed-view guards and the original bind run before rewriting; Stable
+is unchanged. Local research and regression cases are retained under
+`benchmarks/query/experiments/` and the vocabulary-materialization investigation.
