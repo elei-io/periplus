@@ -36,7 +36,7 @@ def attempt_records(identity: UUID, attempt_evidence: tuple[AcquisitionAttemptEv
                 else None
             ),
             failure_message=(
-                attempt.failure_message or attempt.failure_code
+                (attempt.failure_message or attempt.failure_code or "")[:2048] or None
                 if attempt.outcome in {"retry", "failed"}
                 else None
             ),
