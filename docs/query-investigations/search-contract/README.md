@@ -79,3 +79,43 @@ memory was 3.44 GB. The prose scan read 11 files; selected-title extraction read
 warm target. It remains a scan-based initial implementation, not a billion-capture
 inverted-index performance claim. The earlier metadata-inclusive release blocker
 is resolved by the explicitly approved body-only coverage.
+
+## Nested matches prototype
+
+The revised desired result is `content_id, matches, score`, where `matches` is a
+list of `{snippet, node_indexes}` objects. The five-column public macro above is
+not the release target. PR #62 remains draft and has not been deployed.
+
+`benchmarks/query/experiments/search_matches.py` prototypes this result without
+changing the physical registry or installing a public function. It discovers up
+to 100 contents by literal normalized body substring, then reads each selected
+content's existing nodes with a bound content key. It reconstructs body prose using
+the existing `body_parts` semantics and requires equality with stored prose.
+ICU NFC normalization segments retain text-node owners, including combining marks
+split across nodes. Lowercase mappings come from DuckDB and are verified against
+its whole-string normalization, keeping discovery and localization identical.
+
+Each content returns up to three distinct snippet/node pairs from non-overlapping
+occurrences, in source order. Snippets are at most 240 characters and may clip a
+long match. Node indexes describe the matched text, not all surrounding context,
+and are not an exhaustive list of every occurrence in the content. Normalization
+segments that combine characters across nodes retain all contributing node owners.
+The score remains 1 for initial literal matches. Titles and capture details are
+left to caller joins.
+
+The prototype uses the shared benchmark deadline and bounded row collector, with
+additional explicit 100,000-node and 500,000-body-character per-content limits.
+Budget failures and prose mismatches fail explicitly, never return guessed nodes.
+These are prototype guards, not yet a public API limit contract. Candidate bodies
+and each node fetch also use the shared 32 MiB result collection bound.
+
+On production snapshot 346888 (two threads / 4 GiB), the 10-content `robot` pilot
+read 50,433 nodes and returned 15 snippet/node pairs. Discovery took 25.29 seconds;
+total time was 26.59 seconds. End-to-end prototype timings include SQL, transfer
+and Python mapping; they are not measurements of an integrated query-API function.
+
+The 100-content scan-based pilot returned 161 snippet/node pairs, reading 523,178
+nodes. Discovery took 32.88 seconds; total time was 47.76 seconds. The subsequent
+[vocabulary-first experiment](../vocabulary-search/README.md) returned exactly the
+same nested results in 10.64 seconds, with candidate discovery taking 1.263 seconds.
+The revised nested result remains an experiment, not an installed public macro.
