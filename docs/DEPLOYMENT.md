@@ -514,3 +514,27 @@ can reach 16 MiB and query duration 600 seconds; ingress must allow these body s
 610-second streaming responses without buffering. Result row/byte budgets apply to both
 JSON and streams. The SDK defaults to a 620-second HTTP timeout. Process memory, spill and
 concurrency remain deployment-owned; larger configured output budgets do not raise them.
+
+
+## Parallel materialization preparation
+
+`PERIPLUS_MATERIALIZER_PARSER_PROCESSES` (Helm `materializer.parserProcesses`,
+1–8, default 1) controls spawned parser processes **per materializer lane**.
+Size `concurrency × parserProcesses` against the pod CPU quota, leaving room for
+object decoding and the parent writer. A two-CPU pod with one lane should start
+with two parser processes; four processes do not create four CPUs.
+
+Each document is parsed once and all discovered projections share that context.
+At most eight read/parse jobs and 16 MiB of declared source bytes are in flight.
+Larger documents run alone, up to a hard 128 MiB source limit; mismatched object
+sizes fail the batch. These are source-byte bounds, not a guarantee about expanded
+DOM memory. A document may produce at most 256 MiB of temporary Arrow files;
+the batch reserves at most 8 GiB including pending results. Exceeding a limit
+fails visibly without publishing partial content. Parser-local JSON validation
+uses one DuckDB thread, 128 MiB and no spill.
+
+Arrow intermediates use the pod's temporary filesystem and are deleted after
+preparation, including exceptions. The parent reserves dictionary IDs and writes
+one registry-sorted/partitioned Parquet file set per batch. Generation claims,
+content ownership, atomic registration and durable receipts are unchanged.
+This execution change does not alter the registry digest or require a migration.

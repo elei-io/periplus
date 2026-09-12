@@ -2,22 +2,23 @@
 
 from __future__ import annotations
 
-import logging
 import time
 from collections.abc import Callable
 from contextlib import ExitStack
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID, uuid4
 
 import pyarrow as pa
 
 from periplus.ingestion.objects.html import RawHtmlRepository
+from periplus.materialization import state
 from periplus.materialization.document_projection import (
     DocumentObservation,
     DocumentProjectionSource,
-    build_visit_batch_context,
 )
+from periplus.materialization.metrics import step
+from periplus.materialization.preparation import prepare_projections
 from periplus.materialization.registry import (
     BY_NAME,
     PROJECTIONS,
@@ -25,16 +26,14 @@ from periplus.materialization.registry import (
 from periplus.materialization.sql import sql_string, sql_string_list
 from periplus.materialization.store import MaterializationBatch, MaterializationRun
 from periplus.platform.catalogue import Catalogue
+from periplus.platform.catalogue.exceptions import CatalogueOutcomePending
 from periplus.platform.catalogue.schema import expected_columns
 from periplus.platform.catalogue.storage import (
     portable_registration_path,
     storage_protocol,
 )
-from periplus.urls import normalize_url
 from periplus.retention.identities import retired_ids, write_claims
-from periplus.materialization import state
-from periplus.materialization.metrics import step
-from periplus.platform.catalogue.exceptions import CatalogueOutcomePending
+from periplus.urls import normalize_url
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,72 +100,68 @@ def prepare_batch(
             visits,
             normalized_visits,
         )
-    context = build_visit_batch_context(
+    with prepare_projections(
         html_repository,
         sources,
         visits=tuple(visits),
         documents=documents,
         content_output_hashes=owned_hashes,
-    )
-    # Reserve shared keys before encoding files. These append-only reservations
-    # may outlive a failed batch; IDs are never recycled within a generation.
-    dictionary_inputs = {
-        spec.name: spec.rows(context)
-        for spec in PROJECTIONS if spec.dictionary_key is not None
-    }
-    with step("dictionary_reservation"), write_claims({"generation": [str(run.id)]}):
-        if assert_writable is not None:
-            assert_writable()
-        if active_generation and not _is_active_generation(catalogue, run.id):
-            return BatchResult(0, 0, 0, 0, 0, 0, 0, superseded=True)
-        with catalogue.remote_transaction():
-            dictionary_ids = {
-                name: _reserve_dictionary(catalogue, run, name, rows)
-                for name, rows in dictionary_inputs.items()
-            }
-    context = replace(context, dictionary_ids=dictionary_ids)
-    source_bytes = sum(source.content_bytes for source in sources)
-    project_seconds = time.perf_counter() - project_started
-    parquet_seconds = 0.0
-    output_rows = 0
-    files: dict[str, tuple[PreparedFile, ...]] = {}
-    file_set_id = uuid4().hex
-    for spec in PROJECTIONS:
-        if spec.dictionary_key is not None:
-            files[spec.name] = ()
-            continue
-        project_started = time.perf_counter()
-        with step("projection_rows"):
-            output = spec.rows(context)
-        project_seconds += time.perf_counter() - project_started
-        output_rows += output.num_rows
-        parquet_started = time.perf_counter()
-        files[spec.name] = _write_partitioned_parquet(
-            catalogue,
-            output,
-            run_id=run.id,
-            batch_id=batch.id,
-            file_set_id=file_set_id,
-            table_name=spec.name,
+    ) as projections:
+        # Reserve shared keys before encoding final Parquet. These append-only reservations
+        # may outlive a failed batch; IDs are never recycled within a generation.
+        dictionary_inputs = projections.dictionary_inputs()
+        with step("dictionary_reservation"), write_claims({"generation": [str(run.id)]}):
+            if assert_writable is not None:
+                assert_writable()
+            if active_generation and not _is_active_generation(catalogue, run.id):
+                return BatchResult(0, 0, 0, 0, 0, 0, 0, superseded=True)
+            with catalogue.remote_transaction():
+                dictionary_ids = {
+                    name: _reserve_dictionary(catalogue, run, name, rows)
+                    for name, rows in dictionary_inputs.items()
+                }
+        source_bytes = sum(source.content_bytes for source in sources)
+        project_seconds = time.perf_counter() - project_started
+        parquet_seconds = 0.0
+        output_rows = 0
+        files: dict[str, tuple[PreparedFile, ...]] = {}
+        file_set_id = uuid4().hex
+        for spec in PROJECTIONS:
+            if spec.dictionary_key is not None:
+                files[spec.name] = ()
+                continue
+            project_started = time.perf_counter()
+            with step("projection_rows"):
+                output = projections.rows(spec, dictionary_ids)
+            project_seconds += time.perf_counter() - project_started
+            output_rows += output.num_rows
+            parquet_started = time.perf_counter()
+            files[spec.name] = _write_partitioned_parquet(
+                catalogue,
+                output,
+                run_id=run.id,
+                batch_id=batch.id,
+                file_set_id=file_set_id,
+                table_name=spec.name,
+            )
+            parquet_seconds += time.perf_counter() - parquet_started
+            del output
+        return PreparedBatch(
+            retained_visit_ids=tuple(str(row[0]) for row in visits),
+            retained_content_hashes=tuple(source.content_sha256 for source in sources),
+            owned_content_hashes=tuple(sorted(owned_hashes)),
+            source_items=len(visits),
+            source_bytes=source_bytes,
+            output_rows=output_rows,
+            output_bytes=sum(
+                file.size
+                for relation_files in files.values()
+                for file in relation_files
+            ),
+            project_seconds=project_seconds,
+            parquet_seconds=parquet_seconds,
+            files=files,
         )
-        parquet_seconds += time.perf_counter() - parquet_started
-        del output
-    return PreparedBatch(
-        retained_visit_ids=tuple(str(row[0]) for row in visits),
-        retained_content_hashes=tuple(source.content_sha256 for source in sources),
-        owned_content_hashes=tuple(sorted(owned_hashes)),
-        source_items=len(visits),
-        source_bytes=source_bytes,
-        output_rows=output_rows,
-        output_bytes=sum(
-            file.size
-            for relation_files in files.values()
-            for file in relation_files
-        ),
-        project_seconds=project_seconds,
-        parquet_seconds=parquet_seconds,
-        files=files,
-    )
 
 
 def commit_prepared_batch(

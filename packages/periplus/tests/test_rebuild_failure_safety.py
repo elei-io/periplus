@@ -153,7 +153,7 @@ class WriteGuardTests(unittest.TestCase):
         with patch('periplus.materialization.batch._applied_result', return_value=None), \
              patch('periplus.materialization.batch._visit_rows', return_value=[]), \
              patch('periplus.materialization.batch._document_sources', return_value=((), (), ())), \
-             patch('periplus.materialization.batch.build_visit_batch_context'), \
+             patch('periplus.materialization.batch.prepare_projections'), \
              patch('periplus.materialization.batch.PROJECTIONS', ()), \
              patch('periplus.materialization.batch.write_claims', claim):
             with self.assertRaises(MaterializationRunStopped):
