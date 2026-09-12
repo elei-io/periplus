@@ -20,7 +20,7 @@ from periplus.materialization.batch import (
     prepare_batch,
 )
 from periplus.materialization import metrics
-from periplus.materialization.validation import validation_statements
+from periplus.materialization.validation import at_snapshot, validation_statements
 from periplus.platform.telemetry import event
 from periplus.materialization.contracts import (
     LiveBatchWork,
@@ -827,8 +827,7 @@ def _activate_or_catch_up(
 
 def _finalize_activation(run: MaterializationRun) -> None:
     with catalogue_from_env(threads=1, memory_limit="2GB") as catalogue:
-        with catalogue.remote_transaction():
-            _verify_active_generation(catalogue, run)
+        _verify_active_generation(catalogue, run)
         catalogue.finalize_materialization_activation(
             (spec.relation for spec in PROJECTIONS),
             activation_id=run.id.hex,
@@ -933,6 +932,9 @@ def _verify_active_generation(catalogue, run: MaterializationRun) -> None:
     if current is None or current.id != run.id or current.registry_digest != REGISTRY_DIGEST:
         raise RuntimeError("active generation state does not match this registry")
     validate_public_catalogue(catalogue)
+    snapshot = catalogue.latest_snapshot()
+    if snapshot is None:
+        raise RuntimeError("active generation has no lake snapshot")
     for spec in PROJECTIONS:
         identity = ", ".join(spec.identity_columns)
         query = (
@@ -940,13 +942,13 @@ def _verify_active_generation(catalogue, run: MaterializationRun) -> None:
             f"({identity})) FROM {spec.relation.qualified}"
         )
         event("materialization_validation_started", operation=spec.name, code="identity")
-        duplicates = int(catalogue.trusted_remote_rows(query)[0][0])
+        duplicates = int(catalogue.trusted_remote_rows(at_snapshot(query, snapshot))[0][0])
         event("materialization_validation_finished", operation=spec.name, code="identity", rows=duplicates)
         if duplicates:
             raise RuntimeError(
                 f"{spec.name} contains {duplicates} duplicate identities"
             )
-        with validation_statements(catalogue, spec) as statements:
+        with validation_statements(catalogue, spec, snapshot=snapshot) as statements:
             for query_index, partition, statement in statements:
                 started = monotonic()
                 fields = dict(operation=spec.name, code=f"validation_{query_index}", attempt=partition)

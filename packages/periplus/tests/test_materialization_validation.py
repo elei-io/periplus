@@ -50,3 +50,24 @@ class PartitionedValidationTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 with validation_statements(None, replace(spec, validation_queries=(sql,))):
                     self.fail('unsafe partitioning accepted')
+
+class SnapshotValidationTests(unittest.TestCase):
+    def test_pins_both_sides_and_preserves_aliases(self):
+        from sqlglot import exp, parse_one
+        from periplus.materialization.validation import at_snapshot
+        sql = "SELECT count(*) FROM material.link_occurrences p LEFT JOIN ingest.visits v USING (visit_id)"
+        pinned = parse_one(at_snapshot(sql, 123), read='duckdb')
+        tables = list(pinned.find_all(exp.Table))
+        self.assertEqual([t.alias for t in tables], ['p','v'])
+        self.assertEqual([t.args['when'].expression.this for t in tables], ['123','123'])
+
+    def test_staging_copy_is_pinned_before_reading_files(self):
+        from periplus.materialization.validation import validation_statements
+        spec = next(p for p in PROJECTIONS if p.name == 'posting')
+        recorded = []
+        catalogue = SimpleNamespace(trusted_remote_execute=recorded.append)
+        with validation_statements(catalogue, spec, snapshot=123) as statements:
+            sqls = list(statements)
+        self.assertEqual(len(recorded), 2)
+        self.assertTrue(all('AT (VERSION => 123)' in sql for sql in recorded))
+        self.assertTrue(all('AT (VERSION => 123)' in sql for index, _, sql in sqls if index < 2))

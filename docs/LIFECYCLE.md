@@ -96,7 +96,10 @@ URI. Materialization code does not branch by storage backend.
    Readiness is unknown while activation is in progress.
 6. Retired tables remain until completion is durably recorded and post-activation checks pass.
 
-Post-activation checks share one read snapshot. Expanding reference checks first
+Post-activation checks pin physical reads with `AT (VERSION => snapshot)` and let
+each query finish its own transaction. They must not hold one metadata transaction
+across the complete validation, which can exceed the fixed remote transaction
+timeout. Expanding reference checks first
 copy only their required columns into 64 temporary content-hash partitions, then
 run the original predicates on matching partitions. Equal content identities stay
 together, so missing references and duplicates remain detectable. This avoids a
