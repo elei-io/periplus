@@ -58,7 +58,7 @@ class SnapshotValidationTests(unittest.TestCase):
         sql = "SELECT count(*) FROM material.link_occurrences p LEFT JOIN ingest.visits v USING (visit_id)"
         pinned = parse_one(at_snapshot(sql, 123), read='duckdb')
         tables = list(pinned.find_all(exp.Table))
-        self.assertEqual([t.alias for t in tables], ['p','v'])
+        self.assertEqual([t.alias for t in pinned.find_all(exp.Subquery)], ['p','v'])
         self.assertEqual([t.args['when'].expression.this for t in tables], ['123','123'])
 
     def test_staging_copy_is_pinned_before_reading_files(self):
@@ -71,3 +71,40 @@ class SnapshotValidationTests(unittest.TestCase):
         self.assertEqual(len(recorded), 2)
         self.assertTrue(all('AT (VERSION => 123)' in sql for sql in recorded))
         self.assertTrue(all('AT (VERSION => 123)' in sql for index, _, sql in sqls if index < 2))
+
+    def test_every_registry_validation_parses_in_duckdb(self):
+        from periplus.materialization.validation import at_snapshot
+        for spec in PROJECTIONS:
+            for sql in spec.validation_queries:
+                with self.subTest(projection=spec.name, sql=sql):
+                    duckdb.extract_statements(at_snapshot(sql, 123))
+
+    def test_registry_checks_execute_against_a_pinned_ducklake_snapshot(self):
+        import pyarrow as pa
+        with duckdb.connect() as db, TemporaryDirectory() as root:
+            try:
+                db.execute('LOAD ducklake')
+            except duckdb.Error:
+                self.skipTest('DuckLake extension is not installed')
+            db.execute(f"ATTACH 'ducklake:{root}/metadata.duckdb' AS lake (DATA_PATH '{root}/files')")
+            db.execute('USE lake')
+            db.execute('CREATE SCHEMA material')
+            db.execute('CREATE SCHEMA ingest')
+            db.execute('CREATE TABLE ingest.visits(visit_id VARCHAR, finished_at TIMESTAMPTZ)')
+            db.execute('CREATE TABLE ingest.documents(document_id VARCHAR, visit_id VARCHAR, content_sha256 VARCHAR)')
+            for spec in PROJECTIONS:
+                db.register('empty_rows', pa.Table.from_pylist([], schema=spec.arrow_schema))
+                db.execute(f'CREATE TABLE material.{spec.name} AS SELECT * FROM empty_rows')
+                db.unregister('empty_rows')
+            db.execute("INSERT INTO material.html_nodes(content_sha256,node_index,node_type) VALUES ('a',99,'text')")
+            db.execute("INSERT INTO material.posting VALUES ('word','a',1,[0],[[99]])")
+            snapshot = db.execute("SELECT max(snapshot_id) FROM ducklake_snapshots('lake')").fetchone()[0]
+            db.execute('DELETE FROM material.html_nodes')
+            posting = next(p for p in PROJECTIONS if p.name == 'posting')
+            self.assertEqual(db.execute(posting.validation_queries[-1]).fetchone()[0], 1)
+            catalogue = SimpleNamespace(trusted_remote_execute=db.execute)
+            for spec in PROJECTIONS:
+                with validation_statements(catalogue, spec, snapshot=snapshot, partitions=3) as statements:
+                    for index, partition, sql in statements:
+                        with self.subTest(projection=spec.name, query=index, partition=partition):
+                            self.assertEqual(db.execute(sql).fetchone()[0], 0)

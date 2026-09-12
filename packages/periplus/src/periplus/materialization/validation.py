@@ -18,11 +18,19 @@ def at_snapshot(sql: str, snapshot: int | None) -> str:
     if snapshot < 0:
         raise ValueError("snapshot must be nonnegative")
     tree = parse_one(sql, read="duckdb")
-    for table in tree.find_all(exp.Table):
+    for table in list(tree.find_all(exp.Table)):
         if table.db in {"material", "ingest"}:
-            table.set("when", exp.HistoricalData(
+            pinned = table.copy()
+            pinned.set("alias", None)
+            pinned.set("when", exp.HistoricalData(
                 this="AT", kind="VERSION", expression=exp.Literal.number(snapshot)
             ))
+            # DuckDB does not accept SQLGlot's AT (...) AS alias ordering.
+            # Alias the derived relation, keeping the versioned scan inside it.
+            replacement = exp.select("*").from_(pinned).subquery(alias=table.alias_or_name)
+            if table.args.get("alias"):
+                replacement.set("alias", table.args["alias"].copy())
+            table.replace(replacement)
     return tree.sql(dialect="duckdb")
 
 
