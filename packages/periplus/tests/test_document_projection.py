@@ -17,11 +17,6 @@ from periplus.materialization.document_projection import (
 from periplus.materialization.registry import PROJECTIONS, BY_NAME
 
 
-def dictionary_context(context):
-    context.dictionary_ids["term"] = {row["text"]: i for i, row in
-        enumerate(BY_NAME["term"].rows(context).to_pylist(), 1)}
-    return context
-
 
 
 class DocumentProjectionTests(unittest.TestCase):
@@ -81,12 +76,12 @@ class DocumentProjectionTests(unittest.TestCase):
         )
         repository.read.assert_called_once_with("objects/abc")
         outputs = {
-            spec.name: spec.rows(dictionary_context(context))
+            spec.name: spec.rows(context)
             for spec in PROJECTIONS
         }
         self.assertEqual(set(outputs), {spec.name for spec in PROJECTIONS})
         for spec in PROJECTIONS:
-            self.assertEqual(outputs[spec.name].schema, spec.input_schema)
+            self.assertEqual(outputs[spec.name].schema, spec.arrow_schema)
 
     def test_skips_every_unowned_content_projection(self) -> None:
         repository = MagicMock()
@@ -131,7 +126,7 @@ class DocumentProjectionTests(unittest.TestCase):
             content_output_hashes=frozenset(),
         )
         outputs = {
-            spec.name: spec.rows(dictionary_context(context))
+            spec.name: spec.rows(context)
             for spec in PROJECTIONS
         }
         for spec in PROJECTIONS:
@@ -299,11 +294,11 @@ class DocumentProjectionTests(unittest.TestCase):
         )
 
         for spec in PROJECTIONS:
-            expected = spec.rows(dictionary_context(complete)).to_pylist()
+            expected = spec.rows(complete).to_pylist()
             actual = [
                 row
                 for batch_context in incremental
-                for row in spec.rows(dictionary_context(batch_context)).to_pylist()
+                for row in spec.rows(batch_context).to_pylist()
             ]
             key = lambda row: tuple(
                 str(row[column])

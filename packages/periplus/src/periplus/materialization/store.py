@@ -196,6 +196,14 @@ class MaterializationRunStore:
                 return _run(record), ()
             if record.generation_tables:
                 raise RuntimeError("rebuild generations were already planned")
+            seen: set[str] = set()
+            for snapshot, visit_ids in batches:
+                if snapshot != record.source_snapshot:
+                    raise ValueError("initial batches must use the pinned source snapshot")
+                for visit_id in visit_ids:
+                    if visit_id in seen:
+                        raise ValueError("initial rebuild batches must have disjoint visits")
+                    seen.add(visit_id)
             records = [
                 MaterializationBatchRecord(
                     run_id=run_id,

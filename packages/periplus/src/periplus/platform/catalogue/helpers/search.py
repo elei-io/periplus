@@ -25,7 +25,7 @@ SEARCH = CatalogueObject(
         ),
     ),
     requires_relations=frozenset(
-        {"material.term", "material.posting", "material.html_nodes"}
+        {"material.posting", "material.html_nodes"}
     ),
     notes=(
         "Executed by the Periplus query API; direct DuckDB execution raises an error. The catalogue macro exposes the typed signature for discovery and DESCRIBE. Ordinary HTML SQL remains portable.",

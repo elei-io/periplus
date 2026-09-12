@@ -90,7 +90,8 @@ class MaterializationTimingTests(unittest.TestCase):
              patch('periplus.materialization.batch.write_claims', claim), \
              patch('periplus.materialization.batch._is_applied', return_value=False), \
              patch('periplus.materialization.batch.PROJECTIONS', ()), \
-             patch('periplus.materialization.batch.state.record_applied'):
+             patch('periplus.materialization.batch.state.record_applied'), \
+             patch('periplus.materialization.batch.state.begin_rebuild_write', return_value=False):
             commit_prepared_batch(catalogue, run, batch, prepared)
         self.assertEqual(order, [
             'start:commit_claim_acquire', 'claim acquired', 'end:commit_claim_acquire',

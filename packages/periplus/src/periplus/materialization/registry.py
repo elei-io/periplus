@@ -21,7 +21,7 @@ from periplus.platform.catalogue.physical.base import (
 )
 from periplus.platform.catalogue.schema_types import ColumnDef, MapType
 
-OwnershipGrain = Literal["content", "visit", "generation"]
+OwnershipGrain = Literal["content", "visit"]
 PartitionKind = Literal["bucket", "day", "month", "year"]
 Projector = Callable[[VisitBatchContext], pa.Table]
 
@@ -97,16 +97,7 @@ class ProjectionSpec:
     identity_columns: tuple[str, ...]
     validation_queries: tuple[str, ...] = ()
     content_presence_predicate: str | None = None
-    dictionary_key: str | None = None
-    dictionary_id: str | None = None
-    dictionary_dependencies: tuple[str, ...] = ()
     implementation_dependencies: tuple[str, ...] = ()
-
-    @property
-    def input_schema(self) -> pa.Schema:
-        """Dictionary projectors supply natural keys; admission assigns IDs."""
-        return pa.schema([column.arrow_field for column in self.columns
-                          if column.name != self.dictionary_id])
 
     @property
     def relation(self) -> RelationName:
@@ -138,10 +129,10 @@ class ProjectionSpec:
 
     def rows(self, context: VisitBatchContext) -> pa.Table:
         output = self.projector(context)
-        if output.schema != self.input_schema:
+        if output.schema != self.arrow_schema:
             raise ValueError(
                 f"{self.name} projector returned {output.schema}, "
-                f"expected {self.input_schema}"
+                f"expected {self.arrow_schema}"
             )
         return output
 
@@ -177,11 +168,6 @@ def discover_projections(
     names = [projection.name for projection in discovered]
     if len(names) != len(set(names)):
         raise ValueError("materialization projection names must be unique")
-    by_name = {spec.name: spec for spec in discovered}
-    for spec in discovered:
-        for dependency in spec.dictionary_dependencies:
-            if dependency not in by_name or by_name[dependency].dictionary_key is None:
-                raise ValueError(f'{spec.name} requires dictionary {dependency}')
     content_projections = [
         projection
         for projection in discovered
@@ -200,24 +186,13 @@ def discover_projections(
 
 
 def _validate_projection(spec: ProjectionSpec) -> None:
-    if spec.ownership_grain not in ('content', 'visit', 'generation'):
+    if spec.ownership_grain not in ('content', 'visit'):
         raise ValueError(f'invalid ownership grain for {spec.name}')
     if not spec.name or not spec.name.isidentifier() or spec.name.startswith("_"):
         raise ValueError(f"invalid projection name {spec.name!r}")
     if not spec.columns:
         raise ValueError(f"{spec.name} must declare at least one column")
     names = tuple(column.name for column in spec.columns)
-    if spec.ownership_grain == 'generation':
-        if (spec.dictionary_key not in names or spec.dictionary_id not in names
-                or spec.dictionary_key == spec.dictionary_id or len(names) != 2
-                or spec.dictionary_dependencies):
-            raise ValueError('generation projections must declare a two-column dictionary')
-        types = spec.physical_columns
-        if (str(types[spec.dictionary_key].data_type) != 'VARCHAR'
-                or str(types[spec.dictionary_id].data_type) != 'BIGINT'):
-            raise ValueError('dictionary keys and IDs must be VARCHAR and BIGINT')
-    elif spec.dictionary_key is not None or spec.dictionary_id is not None:
-        raise ValueError('dictionary allocation requires generation ownership')
     if len(names) != len(set(names)):
         raise ValueError(f"{spec.name} has duplicate columns")
     for transform in spec.partitioning:
@@ -297,9 +272,6 @@ def registry_digest(
             "identity_columns": spec.identity_columns,
             "validation_queries": spec.validation_queries,
             "content_presence_predicate": spec.content_presence_predicate,
-            "dictionary_key": spec.dictionary_key,
-            "dictionary_id": spec.dictionary_id,
-            "dictionary_dependencies": spec.dictionary_dependencies,
             "implementation_dependencies": {
                 name: hashlib.sha256(inspect.getsource(importlib.import_module(name)).encode()).hexdigest()
                 for name in spec.implementation_dependencies

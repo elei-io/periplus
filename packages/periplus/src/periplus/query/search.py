@@ -123,18 +123,7 @@ def discover(db, query: SearchQuery, check: Callable[[], None]) -> list[dict]:
     if not query.terms:
         return []
     unique = tuple(dict.fromkeys(query.terms))
-    vocabulary = _rows(
-        db,
-        "SELECT text,term_id FROM material.term WHERE text IN ("
-        + ",".join(_literal(t) for t in unique)
-        + ")",
-        maximum=32,
-        check=check,
-    )
-    ids = dict(vocabulary)
-    if len(ids) != len(unique):
-        return []
-    literals = ",".join(str(int(ids[t])) for t in unique)
+    literals = ",".join(_literal(t) for t in unique)
     if query.phrase:
         aliases = {term: f"p{i}" for i, term in enumerate(unique)}
         first = aliases[query.terms[0]]
@@ -146,16 +135,16 @@ def discover(db, query: SearchQuery, check: Callable[[], None]) -> list[dict]:
             or "true"
         )
         starts = f"list_filter({first}.positions, x -> {conditions})"
-        source = f"(SELECT content_sha256,positions FROM material.posting WHERE term_id={int(ids[unique[0]])}) p0"
+        source = f"(SELECT content_sha256,positions FROM material.posting WHERE text={_literal(unique[0])}) p0"
         for term in unique[1:]:
-            source += f" JOIN (SELECT content_sha256,positions FROM material.posting WHERE term_id={int(ids[term])}) {aliases[term]} USING(content_sha256)"
+            source += f" JOIN (SELECT content_sha256,positions FROM material.posting WHERE text={_literal(term)}) {aliases[term]} USING(content_sha256)"
         candidate = f"""WITH hits AS (SELECT p0.content_sha256 AS content_id,{starts} starts FROM {source})
             SELECT content_id,len(starts)::DOUBLE score,list_slice(starts,1,3) starts FROM hits
             WHERE len(starts)>0 AND EXISTS(SELECT 1 FROM public_v1.capture c WHERE c.content_id=hits.content_id)
             ORDER BY score DESC,content_id LIMIT 100"""
     else:
         candidate = f"""SELECT p.content_sha256 AS content_id,sum(frequency)::DOUBLE score,NULL::BIGINT[] starts
-            FROM material.posting p WHERE term_id IN ({literals})
+            FROM material.posting p WHERE text IN ({literals})
             AND EXISTS(SELECT 1 FROM public_v1.capture c WHERE c.content_id=p.content_sha256)
             GROUP BY p.content_sha256 HAVING count(*)={len(unique)} ORDER BY score DESC,content_id LIMIT 100"""
     candidates = _rows(db, candidate, check=check)
@@ -170,7 +159,7 @@ def discover(db, query: SearchQuery, check: Callable[[], None]) -> list[dict]:
             for offset, term in enumerate(query.terms):
                 pieces.append(f"""SELECT s AS occurrence, unnest(node_indexes[list_position(positions,s+{offset})]) AS node_index
                     FROM material.posting,unnest({wanted}::BIGINT[]) a(s)
-                    WHERE content_sha256={_literal(content_id)} AND term_id={int(ids[term])}""")
+                    WHERE content_sha256={_literal(content_id)} AND text={_literal(term)}""")
             groups_sql = (
                 "SELECT occurrence,list(DISTINCT node_index ORDER BY node_index) FROM ("
                 + " UNION ALL ".join(pieces)
@@ -179,7 +168,7 @@ def discover(db, query: SearchQuery, check: Callable[[], None]) -> list[dict]:
         else:
             groups_sql = f"""SELECT position,list(DISTINCT node_index ORDER BY node_index) FROM (
                 SELECT unnest(list_slice(positions,1,3)) AS position,unnest(list_slice(node_indexes,1,3)) owners
-                FROM material.posting WHERE content_sha256={_literal(content_id)} AND term_id IN ({literals})
+                FROM material.posting WHERE content_sha256={_literal(content_id)} AND text IN ({literals})
                 ) p,unnest(owners) n(node_index) GROUP BY position ORDER BY position LIMIT 3"""
         groups = _rows(db, groups_sql, maximum=3, check=check)
         matches = []

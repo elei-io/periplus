@@ -95,10 +95,6 @@ class NodeLayoutTests(unittest.TestCase):
             "periplus.materialization.document_projection.build_search_text",
             wraps=build_search_text,
         ) as build:
-            terms = BY_NAME["term"].rows(context).to_pylist()
-            context.dictionary_ids["term"] = {
-                r["text"]: i for i, r in enumerate(terms, 1)
-            }
             rows = BY_NAME["posting"].rows(context).to_pylist()
             BY_NAME["posting"].rows(context)
             self.assertEqual(build.call_count, 1)

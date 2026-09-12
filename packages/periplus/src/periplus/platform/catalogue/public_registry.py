@@ -27,6 +27,16 @@ _TREE_COLUMNS = (
     ("depth", "Number of parent edges from the document root; root is zero."),
 )
 
+INTERNAL_OBJECTS = (
+    CatalogueObject(
+        kind="view", name="term", schema="material", exposed=False,
+        resource="views/term.sql", columns=("text",),
+        comment="Internal distinct ICU vocabulary derived from current postings; computed on demand.",
+        column_comments=(("text", "Normalized ICU term."),),
+        requires_relations=frozenset({"material.posting"}),
+    ),
+)
+
 PUBLIC_OBJECTS = (
     _view("capture", (
         ("capture_id", "Acquisition identity with retained content."),

@@ -34,13 +34,6 @@ class SearchContractTests(unittest.TestCase):
             {},
             frozenset(parsed),
         )
-        terms = BY_NAME["term"].rows(context).to_pylist()
-        context.dictionary_ids["term"] = {r["text"]: i for i, r in enumerate(terms, 1)}
-        self.db.execute("CREATE TABLE material.term(text VARCHAR,term_id BIGINT)")
-        self.db.executemany(
-            "INSERT INTO material.term VALUES (?,?)",
-            list(context.dictionary_ids["term"].items()),
-        )
         for name in ["html_nodes", "posting"]:
             self.db.register("rows", BY_NAME[name].rows(context))
             self.db.execute(f"CREATE TABLE material.{name} AS SELECT * FROM rows")
@@ -163,14 +156,13 @@ class SearchContractTests(unittest.TestCase):
         )
 
     def test_phrase_filter_precedes_result_cap(self):
-        ids = dict(self.db.execute("SELECT text,term_id FROM material.term").fetchall())
         for i in range(103):
             key = f"z{i:03}"
             matches = i >= 101
             self.db.execute("INSERT INTO public_v1.capture VALUES (?)", [key])
             self.db.execute(
                 "INSERT INTO material.posting VALUES (?,?,1,[0],[[0]]),(?,?,1,?,[[0]])",
-                [ids["monkey"], key, ids["zoo"], key, [1 if matches else 2]],
+                ["monkey", key, "zoo", key, [1 if matches else 2]],
             )
             self.db.execute(
                 "INSERT INTO material.html_nodes(content_sha256,node_index,node_type,value) VALUES (?,0,'text',?)",
