@@ -19,7 +19,7 @@ class PartitionedValidationTests(unittest.TestCase):
             db.execute('CREATE TABLE material.posting(text VARCHAR, content_sha256 VARCHAR, frequency BIGINT, positions BIGINT[], node_indexes INTEGER[][])')
             db.execute('CREATE TABLE material.html_nodes(content_sha256 VARCHAR, node_index INTEGER, node_type VARCHAR)')
             db.execute("INSERT INTO material.html_nodes VALUES ('a',1,'text'),('b',2,'text'),('a',3,'element')")
-            db.execute("INSERT INTO material.posting VALUES ('one','a',2,[0,1],[[1],[3]]),('two','b',2,[0,1],[[2],[99]]),('three','a',1,[2],[[1]]),('bad','c',1,[0],[[]]),('null','a',1,[0],[NULL])")
+            db.execute("INSERT INTO material.posting VALUES ('one','a',2,[0,1],[[1],[3]]),('two','b',2,[0,1],[[2],[99]]),('three','a',1,[2],[[1]]),('bad','c',1,[0],[[]]),('null','a',1,[0],[NULL]),('descending','a',2,[2,1],[[1],[1]]),('repeated','a',2,[1,1],[[1],[1]]),('null_position','a',1,[NULL],[[1]])")
             catalogue = SimpleNamespace(trusted_remote_execute=db.execute)
             expected = [db.execute(sql).fetchone()[0] for sql in spec.validation_queries]
             with patch('periplus.materialization.validation.TemporaryDirectory', side_effect=lambda **kwargs: TemporaryDirectory(dir=root, **kwargs)):
@@ -70,7 +70,7 @@ class SnapshotValidationTests(unittest.TestCase):
             sqls = list(statements)
         self.assertEqual(len(recorded), 2)
         self.assertTrue(all('AT (VERSION => 123)' in sql for sql in recorded))
-        self.assertTrue(all('AT (VERSION => 123)' in sql for index, _, sql in sqls if index < 2))
+        self.assertTrue(all('AT (VERSION => 123)' in sql for index, _, sql in sqls if index == 0))
 
     def test_every_registry_validation_parses_in_duckdb(self):
         from periplus.materialization.validation import at_snapshot
@@ -108,3 +108,11 @@ class SnapshotValidationTests(unittest.TestCase):
                     for index, partition, sql in statements:
                         with self.subTest(projection=spec.name, query=index, partition=partition):
                             self.assertEqual(db.execute(sql).fetchone()[0], 0)
+
+    def test_position_sort_check_uses_partitions(self):
+        spec = next(p for p in PROJECTIONS if p.name == 'posting')
+        recorded = []
+        with validation_statements(SimpleNamespace(trusted_remote_execute=recorded.append), spec, partitions=7) as statements:
+            checks = list(statements)
+        self.assertEqual(sum(index == 1 for index, _, _ in checks), 7)
+        self.assertTrue(any('"positions"' in sql for sql in recorded))
