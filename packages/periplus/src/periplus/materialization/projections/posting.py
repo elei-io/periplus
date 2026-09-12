@@ -14,7 +14,7 @@ def project(context: VisitBatchContext) -> pa.Table:
         PROJECTION.arrow_schema,
         (
             (
-                context.dictionary_ids["term"][term],
+                term,
                 content_id,
                 len(items),
                 [item.position for item in items],
@@ -33,7 +33,7 @@ PROJECTION = ProjectionSpec(
     ownership_grain="content",
     columns=(
         ProjectionColumn(
-            "term_id", pa.int64(), "BIGINT", "Generation term identity.", False
+            "text", pa.string(), "VARCHAR", "Normalized ICU term.", False
         ),
         ProjectionColumn(
             "content_sha256",
@@ -65,18 +65,16 @@ PROJECTION = ProjectionSpec(
         ),
     ),
     partitioning=(),
-    sort_order=("term_id ASC", "content_sha256 ASC"),
+    sort_order=("text ASC", "content_sha256 ASC"),
     projector=project,
     description="Complete parsed-text positional index; excludes attributes and comments.",
-    identity_columns=("content_sha256", "term_id"),
-    dictionary_dependencies=("term",),
+    identity_columns=("content_sha256", "text"),
     implementation_dependencies=(
         "periplus.materialization.search_text",
         "periplus.materialization.tokenization",
     ),
     validation_queries=(
         "SELECT count(*) FROM material.posting WHERE frequency <= 0 OR frequency IS NULL OR positions IS NULL OR node_indexes IS NULL OR frequency <> len(positions) OR frequency <> len(node_indexes)",
-        "SELECT count(*) FROM material.posting p ANTI JOIN material.term t USING (term_id)",
         "SELECT count(*) FROM material.posting WHERE positions <> list_sort(list_distinct(positions)) OR list_min(positions) < 0",
         "SELECT count(*) FROM (SELECT unnest(node_indexes) AS owners FROM material.posting) WHERE owners IS NULL OR len(owners)=0 OR owners <> list_sort(list_distinct(owners))",
         "SELECT count(*) FROM (SELECT content_sha256, unnest(flatten(node_indexes)) node_index FROM material.posting) p ANTI JOIN (SELECT content_sha256,node_index FROM material.html_nodes WHERE node_type='text') n USING(content_sha256,node_index)",

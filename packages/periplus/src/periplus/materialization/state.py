@@ -5,7 +5,7 @@ from uuid import UUID
 
 from sqlalchemy import delete, select
 
-from periplus.materialization.models import MaterializationAppliedBatchRecord, MaterializationStateRecord, MaterializationRunRecord
+from periplus.materialization.models import MaterializationAppliedBatchRecord, MaterializationStateRecord, MaterializationRunRecord, MaterializationBatchRecord
 from periplus.platform.postgres.session import session_scope
 from periplus.retention.identities import _insert
 
@@ -74,6 +74,31 @@ def record_applied(run_id: UUID, batch_id: UUID, snapshot: int, result) -> None:
             output_rows=result.output_rows, output_bytes=result.output_bytes,
             committed_at=datetime.now(UTC),
         ).on_conflict_do_nothing(index_elements=['batch_id']))
+
+
+def begin_rebuild_write(run, batch) -> bool:
+    """Durably mark intent under the caller's generation claim before lake I/O.
+
+    Only a first publication in the original, disjoint snapshot plan can append.
+    An uncertain commit of this transaction aborts the caller before lake I/O;
+    a replay sees the intent and conservatively replaces derived identities.
+    """
+    with session_scope() as session:
+        record = session.get(MaterializationBatchRecord, batch.id, with_for_update=True)
+        current = session.get(MaterializationRunRecord, run.id)
+        if (record is None or current is None or record.run_id != run.id
+                or current.status != 'running'
+                or current.registry_digest != run.registry_digest
+                or current.generation_tables != run.generation_tables
+                or record.snapshot != current.source_snapshot
+                or record.snapshot != batch.snapshot
+                or tuple(record.visit_ids) != batch.visit_ids
+                or current.covered_snapshot != current.source_snapshot):
+            return False
+        first = record.write_intent_at is None
+        if first:
+            record.write_intent_at = datetime.now(UTC)
+        return first
 
 
 def readable_generation() -> ActiveGeneration | None:

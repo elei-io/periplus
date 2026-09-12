@@ -534,7 +534,7 @@ fails visibly without publishing partial content. Parser-local JSON validation
 uses one DuckDB thread, 128 MiB and no spill.
 
 Arrow intermediates use the pod's temporary filesystem and are deleted after
-preparation, including exceptions. The parent reserves dictionary IDs and writes
+preparation, including exceptions. The parent writes
 one registry-sorted/partitioned Parquet file set per batch. Generation claims,
 content ownership, atomic registration and durable receipts are unchanged.
 The Lexbor adapter uses the pinned 64-bit Selectolax 0.4.11 / Lexbor 3.1.0 native
@@ -543,7 +543,12 @@ platform and a coherent rebuild. Parser source is included in the registry diges
 all DOM identities and postings activate together. No control-Postgres migration
 is required. The HTML5lib dependency supplies only deterministic byte decoding.
 
-Dictionary-claim contention retains Arrow preparation for at most 120 seconds
-within the same lane and storage budget. The retained-preparation byte gauge,
-`dictionary_claim_wait` step duration and `dictionary_claim` retry counter expose
-storage and contention separately from parsing.
+### Text-key postings and first-publication intent
+
+Apply migration `20260912_0017` before rolling new workers. It adds a nullable
+write-intent timestamp to the existing batch control record and marks existing
+batches as potentially written. It is compatible with the old workers; only new
+clean generations can take the append shortcut. Keep automatic deployment paused
+and preserve the old reader image until the complete text-key generation activates.
+No shared dictionary reservation remains. The internal vocabulary is a distinct view,
+not a separate materialization. Search requires the matching query-service release.

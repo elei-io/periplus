@@ -1,4 +1,4 @@
-"""Real DuckLake dictionary admission, replay, and content publication."""
+"""Real DuckLake text-key publication, replay, and content publication."""
 from contextlib import ExitStack
 from datetime import UTC, datetime
 from pathlib import Path
@@ -52,11 +52,11 @@ class TermMaterializationTests(unittest.TestCase):
         return self.catalogue.trusted_remote_rows(sql)
 
     def dictionary(self):
-        return dict(self.rows('SELECT text, term_id FROM material.term'))
+        return {row[0] for row in self.rows('SELECT text FROM material.term')}
 
     def terms(self):
         return self.rows('SELECT text, content_sha256, frequency FROM material.posting '
-                         'JOIN material.term USING (term_id) ORDER BY text, content_sha256')
+                         'ORDER BY text, content_sha256')
 
     def expire_claims(self):
         # Simulate the safe expiry after an injected uncertain outcome.
@@ -67,7 +67,7 @@ class TermMaterializationTests(unittest.TestCase):
         self.html = '<p>mon<strong>key</strong> monkey</p>'
         prepared = self.prepare()
         commit_prepared_batch(self.catalogue, self.run, self.batch, prepared)
-        sql = "SELECT t.text,p.frequency,p.positions,p.node_indexes FROM material.posting p JOIN material.term t USING(term_id) ORDER BY t.text"
+        sql = "SELECT text,frequency,positions,node_indexes FROM material.posting ORDER BY text"
         initial = self.rows(sql)
         self.assertEqual([(t,f) for t,f,_,_ in initial], [('monkey',2)])
         self.assertEqual([len(x) for x in initial[0][3]], [2,1])
@@ -80,51 +80,24 @@ class TermMaterializationTests(unittest.TestCase):
         commit_prepared_batch(self.catalogue,self.run,self.batch,prepared)
         self.assertEqual([(t,f) for t,f,_,_ in self.rows(sql)], [('different',1)])
 
-    def test_reservation_survives_failed_encoding_and_replay_reuses_ids(self):
-        with patch('periplus.materialization.batch._write_partitioned_parquet',
-                   side_effect=RuntimeError('encoding failed')):
+    def test_preparation_does_not_write_dictionary_and_new_terms_publish_atomically(self):
+        with patch('periplus.materialization.batch._write_partitioned_parquet', side_effect=RuntimeError('encoding failed')):
             with self.assertRaisesRegex(RuntimeError, 'encoding failed'):
                 self.prepare()
-        reserved = self.dictionary()
-        self.assertTrue(reserved)
-        self.assertEqual(self.terms(), [])
+        self.assertEqual(self.dictionary(), set())
         prepared = self.prepare()
-        self.assertEqual(self.dictionary(), reserved)
-        self.assertEqual(prepared.files['term'], ())
+        self.assertEqual(self.dictionary(), set())
         commit_prepared_batch(self.catalogue, self.run, self.batch, prepared)
-        counts = {term: frequency for term, _, frequency in self.terms()}
-        self.assertEqual(counts['monkeys'], 2)
-        self.assertEqual(counts['strasse'], 2)
-        self.assertEqual(counts['café'], 2)
-        self.assertTrue(self.prepare().already_applied)
-
-    def test_overlapping_batches_append_keys_and_replace_content_counts(self):
-        first = self.prepare()
-        commit_prepared_batch(self.catalogue, self.run, self.batch, first)
-        original = self.dictionary()
+        self.assertIn('monkeys', self.dictionary())
         self.batch = SimpleNamespace(id=uuid4(), snapshot=self.batch.snapshot, visit_ids=())
-        # Exercise deterministic content replacement with a changed fixture.
-        self.html = '<body>monkeys newterm newterm</body>'
-        second = self.prepare()
-        self.assertEqual({k: self.dictionary()[k] for k in original}, original)
-        self.assertGreater(self.dictionary()['newterm'], max(original.values()))
-        commit_prepared_batch(self.catalogue, self.run, self.batch, second)
-        self.assertEqual([(t, f) for t, _, f in self.terms()], [('monkeys', 1), ('newterm', 2)])
-        self.assertEqual(len(self.dictionary()), len(original) + 1)
+        self.html = '<body>newterm newterm</body>'
+        prepared = self.prepare()
+        self.assertNotIn('newterm', self.dictionary())
+        commit_prepared_batch(self.catalogue, self.run, self.batch, prepared)
+        self.assertEqual(self.dictionary(), {'newterm'})
+        self.assertEqual([(t, f) for t, _, f in self.terms()], [('newterm', 2)])
 
-    def test_failed_dictionary_transaction_leaves_no_partial_admission(self):
-        original = self.catalogue.trusted_remote_rows
-        def fail_lookup(sql):
-            if 'SEMI JOIN _periplus_dictionary_' in sql:
-                raise duckdb.TransactionException('lookup failed')
-            return original(sql)
-        with patch.object(self.catalogue, 'trusted_remote_rows', side_effect=fail_lookup):
-            with self.assertRaisesRegex(duckdb.TransactionException, 'lookup failed'):
-                self.prepare()
-        self.assertEqual(self.dictionary(), {})
-        self.assertTrue(self.prepare().files['posting'])
-
-    def test_failed_registration_rolls_back_all_content_but_preserves_reservations(self):
+    def test_failed_registration_rolls_back_all_content_and_vocabulary(self):
         prepared = self.prepare()
         original = self.catalogue.trusted_remote_execute
         def fail_registration(sql):
@@ -134,7 +107,7 @@ class TermMaterializationTests(unittest.TestCase):
         with patch.object(self.catalogue, 'trusted_remote_execute', side_effect=fail_registration):
             with self.assertRaisesRegex(duckdb.TransactionException, 'registration failed'):
                 commit_prepared_batch(self.catalogue, self.run, self.batch, prepared)
-        self.assertTrue(self.dictionary())
+        self.assertFalse(self.dictionary())
         self.assertEqual(self.terms(), [])
         self.assertEqual(self.rows('SELECT count(*) FROM material.html_nodes'), [(0,)])
         commit_prepared_batch(self.catalogue, self.run, self.batch, prepared)
@@ -157,9 +130,9 @@ class TermMaterializationTests(unittest.TestCase):
         publish_generation(other, self.catalogue.latest_snapshot())
         result = self.prepare(active_generation=True)
         self.assertTrue(result.superseded)
-        self.assertEqual(self.dictionary(), {})
+        self.assertEqual(self.dictionary(), set())
 
-    def test_hidden_generation_has_independent_ids_and_equal_logical_terms(self):
+    def test_hidden_generation_has_equal_logical_terms(self):
         prepared = self.prepare()
         commit_prepared_batch(self.catalogue, self.run, self.batch, prepared)
         expected = self.terms()
@@ -170,15 +143,11 @@ class TermMaterializationTests(unittest.TestCase):
             self.catalogue.create_materialization_generation(spec.relation, hidden[spec.name])
         self.run = SimpleNamespace(id=generation_id, generation_tables=hidden)
         self.batch = SimpleNamespace(id=uuid4(), snapshot=self.batch.snapshot, visit_ids=())
-        # An unused reservation deliberately shifts IDs in the hidden generation.
-        self.catalogue.trusted_remote_execute(f"INSERT INTO material.{hidden['term']} VALUES ('unused', 1)")
         prepared = self.prepare()
         commit_prepared_batch(self.catalogue, self.run, self.batch, prepared)
         actual = self.rows(f"SELECT text, content_sha256, frequency FROM material.{hidden['posting']} "
-                           f"JOIN material.{hidden['term']} USING (term_id) ORDER BY text, content_sha256")
+                           "ORDER BY text, content_sha256")
         self.assertEqual(actual, expected)
-        self.assertNotEqual(self.rows(f"SELECT term_id FROM material.{hidden['term']} WHERE text='monkeys'"),
-                            self.rows('SELECT term_id FROM material.term WHERE text=\'monkeys\''))
 
     def test_tokenizer_version_mismatch_fails_closed(self):
         from periplus.materialization.tokenization import term_tokens

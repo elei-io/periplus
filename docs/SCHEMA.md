@@ -84,14 +84,16 @@ replay, rebuild and atomic activation with the other fixed projections.
 
 ### `material.term` and `material.posting`
 
-Private vocabulary: `term(text VARCHAR, term_id BIGINT)`, sorted by text. Numeric
-IDs are reserved append-only within each generation and may change on rebuild.
+Private vocabulary: `term(text VARCHAR)` is an internal distinct view over
+`posting.text`, computed on demand. New terms become visible in the same snapshot
+as their postings. Full vocabulary enumeration scans the text column; it is not
+on the search path. No dictionary allocation or membership lookup occurs during preparation.
 
-There is one positional relation, sorted by `(term_id, content_sha256)` without
+There is one positional relation, sorted by `(text, content_sha256)` without
 partition fan-out:
 
 ```text
-posting(term_id BIGINT, content_sha256 VARCHAR, frequency BIGINT,
+posting(text VARCHAR, content_sha256 VARCHAR, frequency BIGINT,
         positions BIGINT[], node_indexes INTEGER[][])
 ```
 

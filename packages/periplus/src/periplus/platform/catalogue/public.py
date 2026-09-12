@@ -74,8 +74,10 @@ def install_public_catalogue(
 ) -> None:
     """Atomically replace the complete registry-derived public contract."""
 
-    declared = known_public_objects()
-    installed = installed_public_objects(catalogue)
+    from periplus.platform.catalogue.public_registry import INTERNAL_OBJECTS
+
+    declared = known_public_objects() + INTERNAL_OBJECTS
+    installed = installed_public_objects(catalogue) + INTERNAL_OBJECTS
     for item in declared:
         if item.kind == "view":
             _validated_view_comments(item)
@@ -111,6 +113,17 @@ def install_public_catalogue(
                     f"{_quote_identifier(item.name)}"
                 )
         for item in installed:
+            if item.schema == "material" and item.kind == "view":
+                # A clean materialization release can replace a former stored
+                # projection with a derived internal catalogue view atomically.
+                tables = catalogue.trusted_remote_rows(
+                    "SELECT table_name FROM duckdb_tables() WHERE schema_name='material' "
+                    f"AND table_name={_quote_literal(item.name)}"
+                )
+                if tables:
+                    catalogue.trusted_remote_execute(
+                        f"DROP TABLE material.{_quote_identifier(item.name)}"
+                    )
             sql = root.joinpath(
                 item.schema,
                 item.resource,
@@ -208,8 +221,10 @@ def validate_public_catalogue(catalogue: CatalogueConnection) -> None:
     """Fail when the installed public catalogue differs from discovery."""
 
     errors: list[str] = []
-    declared = known_public_objects()
-    installed = installed_public_objects(catalogue)
+    from periplus.platform.catalogue.public_registry import INTERNAL_OBJECTS
+
+    declared = known_public_objects() + INTERNAL_OBJECTS
+    installed = installed_public_objects(catalogue) + INTERNAL_OBJECTS
     _validate_unique_objects(declared)
     for schema in PUBLIC_SCHEMAS:
         expected_views = {

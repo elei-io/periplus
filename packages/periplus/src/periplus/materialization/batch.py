@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import random
 import time
-from collections.abc import Callable, Iterator
-from contextlib import ExitStack, contextmanager
+from collections.abc import Callable
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -13,7 +12,7 @@ from uuid import UUID, uuid4
 import pyarrow as pa
 
 from periplus.ingestion.objects.html import RawHtmlRepository
-from periplus.materialization import metrics, state
+from periplus.materialization import state
 from periplus.materialization.document_projection import (
     DocumentObservation,
     DocumentProjectionSource,
@@ -33,7 +32,7 @@ from periplus.platform.catalogue.storage import (
     portable_registration_path,
     storage_protocol,
 )
-from periplus.retention.identities import WriteClaimUnavailable, retired_ids, write_claims
+from periplus.retention.identities import retired_ids, write_claims
 from periplus.urls import normalize_url
 
 
@@ -72,6 +71,7 @@ class PreparedBatch:
     retained_visit_ids: tuple[str, ...] = ()
     retained_content_hashes: tuple[str, ...] = ()
     owned_content_hashes: tuple[str, ...] = ()
+    stable_content_ownership: bool = False
 
 
 def prepare_batch(
@@ -87,6 +87,10 @@ def prepare_batch(
     if applied is not None:
         return applied
 
+    if assert_writable is not None:
+        assert_writable()
+    if active_generation and not _is_active_generation(catalogue, run.id):
+        return BatchResult(0, 0, 0, 0, 0, 0, 0, superseded=True)
     project_started = time.perf_counter()
     with step("source_lookup"):
         visits = _visit_rows(catalogue, batch)
@@ -94,12 +98,14 @@ def prepare_batch(
             str(visit_id): (normalize_url(str(raw_url)), observed_at)
             for visit_id, _document_id, raw_url, observed_at in visits
         }
+        stable_owners: set[str] = set()
         sources, owned_hashes, documents = _document_sources(
             catalogue,
             run,
             batch,
             visits,
             normalized_visits,
+            stable_owners=stable_owners,
         )
     with prepare_projections(
         html_repository,
@@ -108,24 +114,6 @@ def prepare_batch(
         documents=documents,
         content_output_hashes=owned_hashes,
     ) as projections:
-        # Reserve shared keys before encoding final Parquet. These append-only reservations
-        # may outlive a failed batch; IDs are never recycled within a generation.
-        dictionary_inputs = projections.dictionary_inputs()
-        with step("dictionary_reservation"), _dictionary_claim(
-            catalogue, run, active_generation=active_generation,
-            assert_writable=assert_writable, retained_bytes=projections.size_bytes,
-        ) as current:
-            if not current:
-                return BatchResult(0, 0, 0, 0, 0, 0, 0, superseded=True)
-            if assert_writable is not None:
-                assert_writable()
-            if active_generation and not _is_active_generation(catalogue, run.id):
-                return BatchResult(0, 0, 0, 0, 0, 0, 0, superseded=True)
-            with catalogue.remote_transaction():
-                dictionary_ids = {
-                    name: _reserve_dictionary(catalogue, run, name, rows)
-                    for name, rows in dictionary_inputs.items()
-                }
         source_bytes = sum(source.content_bytes for source in sources)
         project_seconds = time.perf_counter() - project_started
         parquet_seconds = 0.0
@@ -133,12 +121,9 @@ def prepare_batch(
         files: dict[str, tuple[PreparedFile, ...]] = {}
         file_set_id = uuid4().hex
         for spec in PROJECTIONS:
-            if spec.dictionary_key is not None:
-                files[spec.name] = ()
-                continue
             project_started = time.perf_counter()
             with step("projection_rows"):
-                output = projections.rows(spec, dictionary_ids)
+                output = projections.rows(spec)
             project_seconds += time.perf_counter() - project_started
             output_rows += output.num_rows
             parquet_started = time.perf_counter()
@@ -153,6 +138,7 @@ def prepare_batch(
             parquet_seconds += time.perf_counter() - parquet_started
             del output
         return PreparedBatch(
+            stable_content_ownership=set(owned_hashes).issubset(stable_owners),
             retained_visit_ids=tuple(str(row[0]) for row in visits),
             retained_content_hashes=tuple(source.content_sha256 for source in sources),
             owned_content_hashes=tuple(sorted(owned_hashes)),
@@ -170,44 +156,6 @@ def prepare_batch(
         )
 
 
-@contextmanager
-def _dictionary_claim(
-    catalogue: Catalogue,
-    run: MaterializationRun,
-    *,
-    active_generation: bool,
-    assert_writable: Callable[[], None] | None,
-    retained_bytes: int,
-) -> Iterator[bool]:
-    """Retry known acquisition rejection while the caller retains bounded Arrow files.
-
-    Only __enter__ rejection is retryable here. Transaction/body/release errors
-    propagate to the existing catalogue outcome handling unchanged.
-    """
-    deadline = time.monotonic() + 120.0
-    attempts = 0
-    with metrics.retained_preparation(retained_bytes), ExitStack() as claim:
-        with step("dictionary_claim_wait"):
-            while True:
-                if attempts and assert_writable is not None:
-                    assert_writable()
-                if active_generation and not _is_active_generation(catalogue, run.id):
-                    yield False
-                    return
-                try:
-                    claim.enter_context(write_claims({"generation": [str(run.id)]}, wait_seconds=0))
-                    break
-                except WriteClaimUnavailable:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise
-                    metrics.retry("dictionary_claim")
-                    attempts += 1
-                    backoff = min(2.0, 0.1 * 2 ** min(attempts, 5))
-                    time.sleep(min(remaining, random.uniform(0.1, backoff)))
-        yield True
-
-
 def commit_prepared_batch(
     catalogue: Catalogue,
     run: MaterializationRun,
@@ -217,7 +165,7 @@ def commit_prepared_batch(
     active_generation: bool = False,
     assert_writable: Callable[[], None] | None = None,
 ) -> BatchResult:
-    """Replace deterministic batch identities, then acknowledge in Postgres.
+    """Append proven first writes or replace identities, then acknowledge in Postgres.
 
     A crash between the two commits is safe: replay replaces the same rows in
     one lake transaction. No lake bookkeeping table is needed for deduplication.
@@ -237,14 +185,17 @@ def commit_prepared_batch(
             return _result(prepared, commit_started, superseded=True)
         if _is_applied(catalogue, batch.id):
             return _result(prepared, commit_started, already_applied=True)
+        first_write = (
+            not active_generation
+            and state.begin_rebuild_write(run, batch)
+            and prepared.stable_content_ownership
+        )
         with step("lake_transaction"), catalogue.remote_transaction():
             for spec in PROJECTIONS:
-                if spec.ownership_grain == "generation":
-                    continue
                 identities = (prepared.owned_content_hashes if spec.ownership_grain == "content"
                               else prepared.retained_visit_ids)
                 column = "content_sha256" if spec.ownership_grain == "content" else "visit_id"
-                if identities:
+                if identities and not first_write:
                     catalogue.trusted_remote_execute(
                         f"DELETE FROM material.{_quote_identifier(run.generation_tables[spec.name])} "
                         f"WHERE {column} IN ({sql_string_list(set(identities))})")
@@ -263,6 +214,7 @@ def commit_prepared_batch(
             raise CatalogueOutcomePending('lake batch committed; Postgres receipt must be retried') from exc
     from periplus.platform.telemetry import event
     event("materialization_batch_committed", operation_id=str(batch.id),
+          publication_mode="append" if first_write else "replace",
           rows=result.output_rows, bytes=result.output_bytes,
           elapsed_ms=(result.project_seconds + result.parquet_seconds + result.commit_seconds)*1000)
     return result
@@ -329,6 +281,8 @@ def _document_sources(
     batch: MaterializationBatch,
     visit_rows: list[tuple],
     normalized_visits: dict[str, tuple[str, object]],
+    *,
+    stable_owners: set[str] | None = None,
 ) -> tuple[
     tuple[DocumentProjectionSource, ...],
     frozenset[str],
@@ -399,6 +353,8 @@ def _document_sources(
                 next_remaining.add(str(content_hash))
             else:
                 owners.append((content_hash, document_id))
+                if stable_owners is not None and not excluded_owners:
+                    stable_owners.add(str(content_hash))
         excluded_owners.update(excluded)
         remaining = next_remaining
     if remaining:
@@ -423,44 +379,6 @@ def _document_sources(
         tuple(tuple(item) for item in documents),
     )
 
-
-
-def _reserve_dictionary(
-    catalogue: Catalogue,
-    run: MaterializationRun,
-    name: str,
-    rows: pa.Table,
-) -> dict[str, int]:
-    """Called inside the generation claim and lake transaction.
-
-    Allocation has no external sequence: rollback, retries and overlapping
-    batches all reuse the committed dictionary. The claim serializes MAX + N.
-    """
-    if not rows.num_rows:
-        return {}
-    spec = BY_NAME[name]
-    key = _quote_identifier(spec.dictionary_key)
-    identity = _quote_identifier(spec.dictionary_id)
-    target = f"material.{_quote_identifier(run.generation_tables[name])}"
-    registration = f"_periplus_dictionary_{name}"
-    connection = catalogue.trusted_connection
-    connection.register(registration, rows)
-    try:
-        catalogue.trusted_remote_execute(f"""
-            INSERT INTO {target} ({key}, {identity})
-            SELECT missing.{key},
-                   (SELECT coalesce(max({identity}), 0) FROM {target})
-                       + row_number() OVER (ORDER BY missing.{key})
-            FROM (SELECT DISTINCT {key} FROM {registration}
-                  EXCEPT SELECT {key} FROM {target}) missing
-            ORDER BY missing.{key}
-        """)
-        return {str(term): int(term_id) for term, term_id in catalogue.trusted_remote_rows(f"""
-            SELECT d.{key}, d.{identity} FROM {target} d
-            SEMI JOIN {registration} r ON d.{key} = r.{key}
-        """)}
-    finally:
-        connection.unregister(registration)
 
 
 def _write_partitioned_parquet(

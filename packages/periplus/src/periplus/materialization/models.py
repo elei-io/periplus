@@ -116,6 +116,9 @@ class MaterializationBatchRecord(Base):
     visit_ids: Mapped[list[str]] = mapped_column(json_type)
     status: Mapped[str] = mapped_column(Text, default="queued", index=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
+    write_intent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     source_items: Mapped[int] = mapped_column(BigInteger, default=0)
     source_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     output_rows: Mapped[int] = mapped_column(BigInteger, default=0)

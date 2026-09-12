@@ -135,27 +135,13 @@ class WriteGuardTests(unittest.TestCase):
         catalogue.remote_transaction.assert_not_called()
         catalogue.trusted_remote_execute.assert_not_called()
 
-    def test_dictionary_reservation_rechecks_after_preparation(self):
+    def test_stopped_run_rejects_before_preparation(self):
         from periplus.materialization.batch import prepare_batch
         catalogue = MagicMock()
-        run = SimpleNamespace(id=uuid4())
-        held = []
-        @contextmanager
-        def claim(_, **kwargs):
-            held.append(True)
-            try:
-                yield
-            finally:
-                held.pop()
-        def stopped():
-            self.assertTrue(held)
-            raise MaterializationRunStopped('failed during parsing')
         with patch('periplus.materialization.batch._applied_result', return_value=None), \
-             patch('periplus.materialization.batch._visit_rows', return_value=[]), \
-             patch('periplus.materialization.batch._document_sources', return_value=((), (), ())), \
-             patch('periplus.materialization.batch.prepare_projections'), \
-             patch('periplus.materialization.batch.PROJECTIONS', ()), \
-             patch('periplus.materialization.batch.write_claims', claim):
+             patch('periplus.materialization.batch.prepare_projections') as prepare:
             with self.assertRaises(MaterializationRunStopped):
-                prepare_batch(catalogue, MagicMock(), run, MagicMock(), assert_writable=stopped)
+                prepare_batch(catalogue, MagicMock(), SimpleNamespace(id=uuid4()), MagicMock(),
+                    assert_writable=MagicMock(side_effect=MaterializationRunStopped('stopped')))
+            prepare.assert_not_called()
         catalogue.remote_transaction.assert_not_called()

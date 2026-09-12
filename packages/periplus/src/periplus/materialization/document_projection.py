@@ -48,7 +48,6 @@ class VisitBatchContext:
     parsed_nodes_by_content: dict[str, tuple[NodeRow, ...]]
     observations_by_content: dict[str, tuple[DocumentObservation, ...]]
     content_output_hashes: frozenset[str]
-    dictionary_ids: dict[str, dict[str, int]] = field(default_factory=dict)
     search_text_by_content: dict[str, SearchText] = field(default_factory=dict)
 
     def search_text(self, content_id: str) -> SearchText:

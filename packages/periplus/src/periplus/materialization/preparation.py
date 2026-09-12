@@ -17,7 +17,6 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pyarrow as pa
-import pyarrow.compute as pc
 
 from periplus.ingestion.objects.document import ExactDocumentRepository
 from periplus.ingestion.objects.html import RawHtmlRepository
@@ -27,7 +26,7 @@ from periplus.materialization.document_projection import (
 )
 from periplus.materialization.dom.nodes import parse_document
 from periplus.materialization.metrics import preparation_attempt, step
-from periplus.materialization.registry import BY_NAME, PROJECTIONS, ProjectionSpec
+from periplus.materialization.registry import PROJECTIONS, ProjectionSpec
 from periplus.platform.config.environment import get_int
 
 # These bound in-flight source bytes, not the expanded DOM or Arrow allocation.
@@ -46,46 +45,9 @@ class ProjectionFiles:
     def size_bytes(self) -> int:
         return sum(path.stat().st_size for directory in self.directories for path in directory.glob("*.arrow"))
 
-    def dictionary_inputs(self) -> dict[str, pa.Table]:
-        result = {}
-        for spec in PROJECTIONS:
-            if spec.dictionary_key is None:
-                continue
-            keys: set[str] = set()
-            for directory in self.directories:
-                table = _read(directory, spec.name)
-                keys.update(table[spec.dictionary_key].to_pylist())
-            result[spec.name] = pa.table(
-                {spec.dictionary_key: sorted(keys)}, schema=spec.input_schema
-            )
-        return result
-
-    def rows(
-        self, spec: ProjectionSpec, dictionaries: dict[str, dict[str, int]]
-    ) -> pa.Table:
-        tables = []
-        for directory in self.directories:
-            table = _read(directory, spec.name)
-            for dependency in spec.dictionary_dependencies:
-                dictionary = BY_NAME[dependency]
-                keys = _read(directory, dependency)[
-                    dictionary.dictionary_key
-                ].to_pylist()
-                ids = pa.array(
-                    [dictionaries[dependency][key] for key in keys], type=pa.int64()
-                )
-                column = table.schema.get_field_index(dictionary.dictionary_id)
-                table = table.set_column(
-                    column,
-                    table.schema.field(column),
-                    pc.take(ids, table.column(column)),
-                )
-            tables.append(table)
-        return (
-            pa.concat_tables(tables)
-            if tables
-            else pa.Table.from_batches([], schema=spec.input_schema)
-        )
+    def rows(self, spec: ProjectionSpec) -> pa.Table:
+        tables = [_read(directory, spec.name) for directory in self.directories]
+        return pa.concat_tables(tables) if tables else pa.Table.from_batches([], schema=spec.arrow_schema)
 
 
 def _read(directory: Path, name: str) -> pa.Table:
@@ -105,24 +67,9 @@ def _initialize_parser() -> None:
 
 def _project(context: VisitBatchContext, directory: Path) -> int:
     directory.mkdir()
-    dictionaries = {}
-    outputs = {}
-    for spec in PROJECTIONS:
-        if spec.dictionary_key is not None:
-            output = spec.rows(context)
-            outputs[spec.name] = output
-            dictionaries[spec.name] = {
-                key: index
-                for index, key in enumerate(output[spec.dictionary_key].to_pylist())
-            }
-    context = replace(context, dictionary_ids=dictionaries)
     size = 0
     for spec in PROJECTIONS:
-        output = (
-            outputs[spec.name]
-            if spec.dictionary_key is not None
-            else spec.rows(context)
-        )
+        output = spec.rows(context)
         if size + output.nbytes > DOCUMENT_OUTPUT_BYTES:
             raise ValueError("document projection exceeds 256 MiB Arrow output budget")
         path = directory / f"{spec.name}.arrow"

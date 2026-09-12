@@ -7,7 +7,7 @@ Fixtures are private local evidence, never committed.
 
 The benchmark creates a fresh local DuckLake, seeds actual visit/attempt/document
 evidence, and calls production `prepare_batch`, `commit_prepared_batch`, and
-active-generation validation. Control claims, dictionary coordination, and
+active-generation validation. Control claims, durable write intent, and
 receipts use a disposable schema in **local Postgres**; its URL must use localhost.
 No production connection is used. Only the preparation context is replaced in
 `--mode sequential` to reproduce the prior batch-wide parser implementation.
@@ -81,8 +81,24 @@ identities are intentionally not an equality target. Other relation counts remai
 The full native adapter's measured pipeline gain is 24%, not the prototype's
 parser-only 7× gain. These are local results, not a whole-rebuild forecast.
 
-Add `--dictionary-contention` to hold a real control-Postgres generation claim for
+The previous numeric-key experiment held a real control-Postgres generation claim for
 two seconds at the first dictionary reservation. A 500-document run passed with
 six rejected acquisitions, **one preparation**, zero retained bytes after return,
 and all six fingerprints identical to the uncontended run. Its 30.18 s total
 includes the deliberately induced wait and is not a throughput comparison.
+
+The current runner uses text-key postings and persists first-write intent before
+publication. The dictionary-contention mode was removed with dictionary allocation.
+Historical numeric-key measurements above remain comparison evidence only.
+
+## Text-key first-publication validation
+
+On the same retained 500 documents, text-key publication produced 840,034 postings
+and exactly the same DOM, links, JSON-LD and readiness fingerprints as the numeric
+Lexbor run. Translating the old IDs through its dictionary gave identical complete
+posting rows, including all positions and node owners (bidirectional EXCEPT ALL).
+The new local run took 24.88 s overall, with 0.155 s publication and 1.03 GB sampled
+process-tree RSS. Tests were running concurrently, so this is a correctness and
+resource observation, not a controlled speedup claim. Old numeric reference was
+26.46 s overall and 0.450 s publication. PostgreSQL migration validation confirmed
+existing batches receive intent timestamps and newly inserted batches do not.

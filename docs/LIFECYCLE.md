@@ -45,33 +45,22 @@ sources, and parses each body once. The batch containing the minimum retained HT
 `document_id` for each content hash owns its DOM output. The decision is deterministic
 for that snapshot, including replay; every observation emits its own link occurrences.
 
-Registry callbacks produce Arrow tables. Generation-owned dictionaries declare a natural
-VARCHAR key and generated BIGINT identity. Their projector supplies distinct natural keys.
-Before encoding dependent projections, preparation takes the existing generation claim and
-reserves missing keys in one DuckLake transaction. It assigns IDs above the committed maximum
-and reads the batch's mapping back. This phase is serialized; parsing and Parquet encoding stay
-outside the claim. Live preparation verifies that its generation is still active before reserving
-into canonical tables. A superseded batch cannot populate the replacement generation.
-
-Reservations are append-only within a generation. A failed preparation may leave unused terms,
-and content retirement removes frequencies without pruning vocabulary. IDs are never reused.
-A full rebuild makes a fresh dictionary; internal IDs may differ while terms and frequencies
-remain identical. Dictionary rows are not part of content replacement or batch file registration.
-No dictionary cursor, sequence table, second service, or compatibility path is added.
-
-Known dictionary-claim acquisition rejection retains the prepared Arrow files and
-dictionary inputs for at most 120 seconds. Retries use jittered backoff capped at
-two seconds and recheck run/generation validity before continuing. Reservations
-still recheck validity under the acquired claim. Transaction and claim-release
-exceptions are not retried by this loop; uncertain outcomes retain their existing
-catalogue recovery semantics. Success, cancellation, supersession and failure all
-leave the preparation context and clean its temporary files. Retention occupies
-the existing bounded worker lane and its existing 8 GiB Arrow budget.
+Registry callbacks produce Arrow tables with normalized ICU text as the posting key.
+Preparation needs no shared dictionary allocation, membership lookup or lake transaction.
+The internal `material.term(text)` view derives distinct terms from current postings;
+search reads postings directly, so vocabulary enumeration is outside its hot path.
+Temporary Arrow files remain bounded by the existing document and batch budgets.
 
 Generic lifecycle code writes partitioned,
 sorted immutable Parquet outside the commit claim. Under exact generation, observation
 and content claims in Postgres, one lake transaction replaces the batch's visit-owned
-and content-owned identities and registers its files. It then records completion in
+and content-owned identities and registers its files. Clean, fixed-snapshot initial
+batches with original minimum-document ownership can omit replacement on their first
+publication. Under the existing claim, a short control transaction durably records
+`materialization_batches.write_intent_at` before lake I/O. An existing intent without
+a completion receipt always uses replacement. Initial plans reject overlapping visit
+IDs; catch-up, live batches and retirement-reassigned owners retain replacement.
+Intent transaction failures abort before lake I/O, including uncertain outcomes. It then records completion in
 Postgres `materialization_applied_batches`, and only then ACKs delivery. A missing receipt
 after a successful lake commit causes the same identity replacement, so replay cannot
 append duplicates. A durable receipt makes redelivery a no-op. Preparation remains
@@ -247,12 +236,12 @@ no query results or crawl history are added to control Postgres.
 The Grafana dashboard's **Materialization time by operation (all attempts)** panel
 uses `periplus_materialization_step_duration_seconds`. Its bounded `step` and
 `outcome` labels distinguish source lookup, HTML read/decode, HTML parsing,
-projection row construction, dictionary reservation (including its claim wait and transaction),
+projection row construction,
 Parquet encoding/upload, file-size lookup,
 commit-claim acquisition, the lake transaction, and the Postgres receipt write.
 Every completed operation attempt is observed, including exceptions and retries.
 An in-progress operation or a process killed before observation is not included.
-Batch output row/byte totals describe registered projection files and exclude shared dictionary reservations.
+Batch output row/byte totals describe registered projection files.
 These metrics do not persist in batch receipts; Prometheus retention controls history.
 
 The panel sums worker wall seconds per second across replicas, not CPU seconds
@@ -299,10 +288,8 @@ budget. Redelivery uses the remaining claim lifetime capped at 30 seconds plus
 jitter, allowing early releases to become useful without occupying a writer lane.
 Uncertain writes retain their original claims and fail-stop bounds.
 
-Vocabulary and positional postings share one lazy text-index result per
-content in the visit-batch context. Dictionary preparation populates this result before
-dependent projections consume it. The cache ends with that preparation context; it is
-not a durable cache or a cross-retry guarantee. Element attributes/direct text are written
-on materialized nodes, and public elements are projected from those nodes. A complete
-rebuild activates the new dictionary, the positional posting table and unified DOM together;
-normal post-activation finalization removes obsolete material tables.
+Positional postings use one lazy text-index result per content in the visit-batch
+context. The cache ends with preparation. Element attributes/direct text are stored
+on nodes; public elements are projected from those nodes. A complete rebuild activates
+text-key postings and DOM together, and replaces the stored dictionary with the internal
+vocabulary view. Normal finalization removes obsolete material tables.

@@ -77,36 +77,15 @@ class ParallelPreparationTests(unittest.TestCase):
         self.visits.append((str(uuid4()), None, "https://example.com/failed", self.now))
         kwargs = self.arguments(frozenset({owned, self.sources[-1].content_sha256}))
         old = build_visit_batch_context(self.repository, tuple(self.sources), **kwargs)
-        dictionary_inputs = {
-            s.name: s.rows(old) for s in PROJECTIONS if s.dictionary_key is not None
-        }
-        # Non-contiguous, non-local dictionary IDs catch accidental local-ID publication.
-        ids = {
-            s.name: {
-                key: i * 13 + 71
-                for i, key in enumerate(
-                    dictionary_inputs[s.name][s.dictionary_key].to_pylist()
-                )
-            }
-            for s in PROJECTIONS
-            if s.dictionary_key is not None
-        }
-        old = replace(old, dictionary_ids=ids)
         with prepare_projections(
             self.repository, tuple(self.sources), processes=2, **kwargs
         ) as prepared:
             directories = prepared.directories
-            for name, expected in dictionary_inputs.items():
-                self.assertTrue(
-                    prepared.dictionary_inputs()[name].equals(expected), name
-                )
             for spec in PROJECTIONS:
-                if spec.dictionary_key is not None:
-                    continue
                 expected = spec.rows(old).sort_by(
                     [(key, "ascending") for key in spec.identity_columns]
                 )
-                actual = prepared.rows(spec, ids).sort_by(
+                actual = prepared.rows(spec).sort_by(
                     [(key, "ascending") for key in spec.identity_columns]
                 )
                 self.assertTrue(
@@ -122,11 +101,7 @@ class ParallelPreparationTests(unittest.TestCase):
             self.repository, (), processes=2, **self.arguments()
         ) as prepared:
             for spec in PROJECTIONS:
-                if spec.dictionary_key is None:
-                    self.assertEqual(
-                        prepared.rows(spec, {}).num_rows,
-                        int(spec.name == "visit_readiness"),
-                    )
+                self.assertEqual(prepared.rows(spec).num_rows, int(spec.name == "visit_readiness"))
 
     def test_size_mismatch_and_unreadable_objects_fail_before_publication(self):
         self.document("monkey")
@@ -152,7 +127,7 @@ class ParallelPreparationTests(unittest.TestCase):
                 self.repository, tuple(self.sources), processes=2, **self.arguments()
             ) as prepared,
         ):
-            self.assertEqual(prepared.dictionary_inputs()["term"].num_rows, 1)
+            self.assertEqual(prepared.rows(next(s for s in PROJECTIONS if s.name == "posting")).num_rows, 1)
         with (
             self.assertRaisesRegex(ValueError, "128 MiB"),
             prepare_projections(

@@ -13,7 +13,6 @@ import shutil
 import threading
 import time
 from contextlib import contextmanager
-from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -35,6 +34,7 @@ from periplus.materialization.document_projection import build_visit_batch_conte
 from periplus.materialization.models import (
     MaterializationAppliedBatchRecord,
     MaterializationRunRecord,
+    MaterializationBatchRecord,
     MaterializationStateRecord,
 )
 from periplus.materialization.registry import PROJECTIONS, REGISTRY_DIGEST
@@ -57,51 +57,6 @@ from periplus.retention.models import (
     RetentionObjectRecord,
     RetiredEvidenceRecord,
 )
-from periplus.retention.identities import write_claims
-
-
-@contextmanager
-def dictionary_contention(enabled):
-    """Hold a real control-Postgres generation claim after preparation completes."""
-    if not enabled:
-        yield
-        return
-    held = threading.Event()
-    release = threading.Event()
-    threads = []
-    errors = []
-
-    def holder(keys):
-        try:
-            with write_claims(keys):
-                held.set()
-                release.wait(2)
-        except BaseException as error:
-            errors.append(error)
-            held.set()
-
-    @contextmanager
-    def contend(keys, **kwargs):
-        if not threads:
-            thread = threading.Thread(target=holder, args=(keys,))
-            threads.append(thread)
-            thread.start()
-            if not held.wait(10):
-                raise TimeoutError("benchmark claim holder did not start")
-            if errors:
-                raise errors[0]
-        with write_claims(keys, **kwargs):
-            yield
-
-    try:
-        with patch("periplus.materialization.batch.write_claims", contend):
-            yield
-    finally:
-        release.set()
-        for thread in threads:
-            thread.join()
-        if errors:
-            raise errors[0]
 
 
 @contextmanager
@@ -111,15 +66,8 @@ def sequential(repository, sources, **kwargs):
     class Baseline:
         size_bytes = 0  # This baseline holds the context in memory, without Arrow spool files.
 
-        def dictionary_inputs(self):
-            return {
-                spec.name: spec.rows(context)
-                for spec in PROJECTIONS
-                if spec.dictionary_key is not None
-            }
-
-        def rows(self, spec, dictionaries):
-            return spec.rows(replace(context, dictionary_ids=dictionaries))
+        def rows(self, spec):
+            return spec.rows(context)
 
     yield Baseline()
 
@@ -139,6 +87,7 @@ def local_control(url):
             MaterializationStateRecord,
             MaterializationAppliedBatchRecord,
             MaterializationRunRecord,
+    MaterializationBatchRecord,
             LakeWriteClaimRecord,
             RetiredEvidenceRecord,
             RetentionObjectRecord,
@@ -223,7 +172,6 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--mode", choices=["sequential", "parallel"], required=True)
     parser.add_argument("--count", type=int, default=500)
-    parser.add_argument("--dictionary-contention", action="store_true")
     parser.add_argument(
         "--control-url",
         default="postgresql://periplus:periplus@127.0.0.1:55432/periplus_test",
@@ -253,6 +201,15 @@ def main():
         batch = SimpleNamespace(
             id=uuid4(), snapshot=catalogue.latest_snapshot(), visit_ids=visit_ids
         )
+        run.source_snapshot = batch.snapshot
+        with session.session_scope() as control:
+            control.add(MaterializationRunRecord(id=run.id, status='running',
+                source_snapshot=batch.snapshot, covered_snapshot=batch.snapshot,
+                generation_tables=run.generation_tables, registry_digest=run.registry_digest,
+                batch_size=args.count))
+            control.flush()
+            control.add(MaterializationBatchRecord(id=batch.id,run_id=run.id,ordinal=0,
+                snapshot=batch.snapshot,visit_ids=list(visit_ids)))
         peak = [0]
         stop = threading.Event()
         parent = psutil.Process()
@@ -277,8 +234,7 @@ def main():
                 ):
                     prepared = prepare_batch(catalogue, repository, run, batch)
             else:
-                with dictionary_contention(args.dictionary_contention):
-                    prepared = prepare_batch(catalogue, repository, run, batch)
+                prepared = prepare_batch(catalogue, repository, run, batch)
             preparation = time.perf_counter() - started
             committed = commit_prepared_batch(catalogue, run, batch, prepared)
             validation_started = time.perf_counter()
@@ -328,13 +284,7 @@ def main():
             "rows": counts,
             "registry_digest": REGISTRY_DIGEST,
             "preparation_attempts": REGISTRY.get_sample_value("periplus_materialization_preparation_attempts_total"),
-            "dictionary_claim_retries": REGISTRY.get_sample_value("periplus_materialization_retries_total", {"reason": "dictionary_claim"}) or 0,
-            "retained_bytes_after": REGISTRY.get_sample_value("periplus_materialization_retained_preparation_bytes"),
         }
-        if args.dictionary_contention:
-            assert result["preparation_attempts"] == 1, result
-            assert result["dictionary_claim_retries"] >= 1, result
-            assert result["retained_bytes_after"] == 0, result
         (args.output / "result.json").write_text(json.dumps(result, indent=2) + "\n")
         print(json.dumps(result), flush=True)
 
