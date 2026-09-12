@@ -36,7 +36,7 @@ class TermMaterializationTests(unittest.TestCase):
             generation_tables={spec.name: spec.name for spec in PROJECTIONS})
         self.batch = SimpleNamespace(id=uuid4(), snapshot=self.catalogue.latest_snapshot(), visit_ids=())
         self.html = '<body>Monkeys monkeys in the zoo. Straße STRASSE café café 日本語 中文</body>'
-        self.repository = SimpleNamespace(store=None, read=lambda key: self.html)
+        self.repository = SimpleNamespace(store=None, read=lambda key: self.html, iter_bytes=lambda key: iter([self.html.encode()]))
         source = DocumentProjectionSource('a'*64, 'objects/a', 'zstd', len(self.html), ())
         stack = self.enterContext(ExitStack())
         stack.enter_context(patch('periplus.materialization.batch._visit_rows', return_value=[]))
@@ -44,7 +44,9 @@ class TermMaterializationTests(unittest.TestCase):
                                   return_value=((source,), frozenset({'a'*64}), ())))
 
     def prepare(self, **kwargs):
-        return prepare_batch(self.catalogue, self.repository, self.run, self.batch, **kwargs)
+        source = DocumentProjectionSource('a'*64, 'objects/a', 'zstd', len(self.html.encode()), ())
+        with patch('periplus.materialization.batch._document_sources', return_value=((source,), frozenset({'a'*64}), ())):
+            return prepare_batch(self.catalogue, self.repository, self.run, self.batch, **kwargs)
 
     def rows(self, sql):
         return self.catalogue.trusted_remote_rows(sql)

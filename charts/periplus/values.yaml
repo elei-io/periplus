@@ -240,6 +240,8 @@ materializer:
     maxTempDirectorySize: 512MB
   replicas: 2
   concurrency: 2
+  # Spawned parser processes per materializer lane; size against the pod CPU quota.
+  parserProcesses: 1
   resources:
     requests:
       cpu: 500m

@@ -134,6 +134,7 @@
     "materializer": {
       "type": "object",
       "properties": {
+        "parserProcesses": { "type": "integer", "minimum": 1, "maximum": 8 },
         "resources": {
           "type": "object",
           "properties": {

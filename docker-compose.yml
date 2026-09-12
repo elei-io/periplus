@@ -347,6 +347,7 @@ services:
           *periplus-repository-environment,
         ]
       PERIPLUS_MATERIALIZER_CONCURRENCY: ${PERIPLUS_MATERIALIZER_CONCURRENCY:-2}
+      PERIPLUS_MATERIALIZER_PARSER_PROCESSES: ${PERIPLUS_MATERIALIZER_PARSER_PROCESSES:-1}
     depends_on:
       periplus-setup:
         condition: service_completed_successfully

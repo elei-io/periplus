@@ -61,6 +61,10 @@ spec:
           env:
             {{- include "periplus.coreEnv" $root | nindent 12 }}
             {{- include "periplus.duckdbEnv" $settings.duckdb | nindent 12 }}
+            {{- if eq $worker.name "materializer" }}
+            - name: PERIPLUS_MATERIALIZER_PARSER_PROCESSES
+              value: {{ $root.Values.materializer.parserProcesses | quote }}
+            {{- end }}
             {{- if eq $worker.name "crawler" }}
             - name: PERIPLUS_QUERY_URL
               value: http://{{ include "periplus.fullname" $root }}-query:{{ $root.Values.query.service.port }}
