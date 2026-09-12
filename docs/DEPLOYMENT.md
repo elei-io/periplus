@@ -493,21 +493,6 @@ worker readiness and ingestion progress. Helm/Flux readiness alone does not prov
 that backlog is shrinking or that user queries work.
 
 
-## Native term tokenizer
-
-The backend requires PyICU 2.16.2 linked against ICU 77.1 (Unicode 16.0).
-The runtime image and backend CI use `docker/periplus/install-icu.sh` to build the
-same upstream ICU release with its SHA-512 checksum verified. The script needs
-a Debian-compatible build environment, a C++ toolchain, curl and pkg-config;
-it installs into `/usr/local` and refreshes the linker cache. Local development
-must provide that same native version before `uv sync`.
-
-The materialization registry validates these versions at import and includes
-the tokenizer implementation in its generation digest. A different native ICU
-must fail startup instead of producing mixed tokenization inside one generation.
-An intentional tokenizer update changes the pin and requires a complete rebuild.
-
-
 Notebook streaming uses the existing query service and public gateway. Apply Alembic
 `20260911_0016` before rolling out the core, gateway and SDK contract. Admin request budgets
 can reach 16 MiB and query duration 600 seconds; ingress must allow these body sizes and
@@ -528,7 +513,7 @@ Each document is parsed once and all discovered projections share that context.
 At most eight read/parse jobs and 16 MiB of declared source bytes are in flight.
 Larger documents run alone, up to a hard 128 MiB source limit; mismatched object
 sizes fail the batch. These are source-byte bounds, not a guarantee about expanded
-DOM memory. A document may produce at most 256 MiB of temporary Arrow files;
+DOM memory. A document may produce at most 1 GiB of temporary Arrow files;
 the batch reserves at most 8 GiB including pending results. Exceeding a limit
 fails visibly without publishing partial content. Parser-local JSON validation
 uses one DuckDB thread, 128 MiB and no spill.
@@ -540,15 +525,14 @@ content ownership, atomic registration and durable receipts are unchanged.
 The Lexbor adapter uses the pinned 64-bit Selectolax 0.4.11 / Lexbor 3.1.0 native
 ABI. Dependency upgrades require native completeness tests on the deployment
 platform and a coherent rebuild. Parser source is included in the registry digest;
-all DOM identities and postings activate together. No control-Postgres migration
+all element identities and dependent projections activate together. No control-Postgres migration
 is required. The HTML5lib dependency supplies only deterministic byte decoding.
 
-### Text-key postings and first-publication intent
+### Canonical element release
 
-Apply migration `20260912_0017` before rolling new workers. It adds a nullable
-write-intent timestamp to the existing batch control record and marks existing
-batches as potentially written. It is compatible with the old workers; only new
-clean generations can take the append shortcut. Keep automatic deployment paused
-and preserve the old reader image until the complete text-key generation activates.
-No shared dictionary reservation remains. The internal vocabulary is a distinct view,
-not a separate materialization. Search requires the matching query-service release.
+`material.html_elements` stores exact descendant and direct text. Nodes, postings,
+vocabulary and search macros are removed. No additional control migration is needed;
+20260912_0017 remains the durable first-publication intent contract. Deploy all roles
+coherently and trigger a clean registry rebuild. The old active material generation
+remains until atomic activation; normal finalization retires its physical tables.
+See [ELEMENT_LAYOUT.md](ELEMENT_LAYOUT.md). Keep crawler pause unchanged.

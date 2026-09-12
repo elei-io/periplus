@@ -9,12 +9,6 @@ class _QueryDuckDB(DuckDB):
     # SQLGlot's shared keyword table treats ?:: as a distinct operator. DuckDB
     # treats it as an anonymous parameter followed by a cast. Correct lexical
     # recognition only; the original SQL and parameters still execute unchanged.
-    class Parser(DuckDB.Parser):
-        # SEARCH is a one-argument Periplus table macro, not SQLGlot's
-        # unrelated two-argument string SEARCH expression. Execute original SQL.
-        FUNCTIONS = {**DuckDB.Parser.FUNCTIONS,
-                     "SEARCH": lambda args: exp.Anonymous(this="search", expressions=args)}
-
     class Tokenizer(DuckDB.Tokenizer):
         KEYWORDS = {key: value for key, value in DuckDB.Tokenizer.KEYWORDS.items() if key != "?::"}
 

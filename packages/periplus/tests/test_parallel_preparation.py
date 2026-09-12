@@ -127,7 +127,7 @@ class ParallelPreparationTests(unittest.TestCase):
                 self.repository, tuple(self.sources), processes=2, **self.arguments()
             ) as prepared,
         ):
-            self.assertEqual(prepared.rows(next(s for s in PROJECTIONS if s.name == "posting")).num_rows, 1)
+            self.assertEqual(prepared.rows(next(s for s in PROJECTIONS if s.name == "html_elements")).num_rows, 4)
         with (
             self.assertRaisesRegex(ValueError, "128 MiB"),
             prepare_projections(

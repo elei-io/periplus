@@ -74,16 +74,7 @@ WITH rows AS NOT MATERIALIZED (
 )
 SELECT c.content_id, c.table_node_index, c.row_node_index, c.node_index,
        c.row_index, p.position.column_index AS column_index, c.row_span, c.column_span, c.is_header,
-       coalesce(string_agg(n.value, '' ORDER BY n.node_index)
-           FILTER (WHERE nested.node_index IS NULL), '') AS text
+       material.element_text_excluding(c.content_id, c.node_index, ['table']) AS text
 FROM positioned p
-JOIN source_cells c ON c.content_id = p.content_id AND c.table_node_index = p.table_node_index
- AND c.node_index = p.position.node_index
-LEFT JOIN public_v1.html_node n ON n.content_id = c.content_id
- AND n.node_index > c.node_index AND n.node_index < c.subtree_end_index AND n.node_type = 'text'
-LEFT JOIN public_v1.html_element nested ON nested.content_id = c.content_id
- AND nested.tag = 'table' AND nested.namespace = 'http://www.w3.org/1999/xhtml'
- AND nested.node_index > c.node_index AND n.node_index > nested.node_index
- AND n.node_index < nested.subtree_end_index
-GROUP BY c.content_id, c.table_node_index, c.row_node_index, c.node_index,
-         c.row_index, p.position.column_index, c.row_span, c.column_span, c.is_header;
+JOIN source_cells c ON c.content_id=p.content_id AND c.table_node_index=p.table_node_index
+ AND c.node_index=p.position.node_index;

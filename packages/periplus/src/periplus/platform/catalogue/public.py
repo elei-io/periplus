@@ -9,7 +9,7 @@ from typing import Literal, Protocol
 
 from periplus.platform.catalogue.exceptions import CatalogueSchemaError
 
-PUBLIC_CATALOGUE_VERSION = "1.0.0"
+PUBLIC_CATALOGUE_VERSION = "2.0.0"
 PUBLIC_SCHEMA = "public_v1"
 PUBLIC_SCHEMAS = (PUBLIC_SCHEMA,)
 RETIRED_PUBLIC_SCHEMAS = ("dom", "web", "content")
@@ -76,8 +76,8 @@ def install_public_catalogue(
 
     from periplus.platform.catalogue.public_registry import INTERNAL_OBJECTS
 
-    declared = known_public_objects() + INTERNAL_OBJECTS
-    installed = installed_public_objects(catalogue) + INTERNAL_OBJECTS
+    declared = INTERNAL_OBJECTS + known_public_objects()
+    installed = INTERNAL_OBJECTS + installed_public_objects(catalogue)
     for item in declared:
         if item.kind == "view":
             _validated_view_comments(item)
@@ -90,7 +90,7 @@ def install_public_catalogue(
             catalogue.trusted_remote_execute(
                 f"DROP SCHEMA IF EXISTS {schema} CASCADE"
             )
-        for schema in PUBLIC_SCHEMAS:
+        for schema in (*PUBLIC_SCHEMAS, "material"):
             catalogue.trusted_remote_execute(
                 f"CREATE SCHEMA IF NOT EXISTS {schema}"
             )
@@ -223,8 +223,8 @@ def validate_public_catalogue(catalogue: CatalogueConnection) -> None:
     errors: list[str] = []
     from periplus.platform.catalogue.public_registry import INTERNAL_OBJECTS
 
-    declared = known_public_objects() + INTERNAL_OBJECTS
-    installed = installed_public_objects(catalogue) + INTERNAL_OBJECTS
+    declared = INTERNAL_OBJECTS + known_public_objects()
+    installed = INTERNAL_OBJECTS + installed_public_objects(catalogue)
     _validate_unique_objects(declared)
     for schema in PUBLIC_SCHEMAS:
         expected_views = {

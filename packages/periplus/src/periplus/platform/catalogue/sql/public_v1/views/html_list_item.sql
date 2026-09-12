@@ -17,13 +17,5 @@ WITH items AS (
     FROM items
 )
 SELECT i.content_id, i.node_index, i.list_node_index, i.item_index, i.ordinal,
-       coalesce(string_agg(n.value, '' ORDER BY n.node_index)
-           FILTER (WHERE nested.node_index IS NULL), '') AS text
-FROM numbered i
-LEFT JOIN public_v1.html_node n ON n.content_id = i.content_id
- AND n.node_index > i.node_index AND n.node_index < i.subtree_end_index AND n.node_type = 'text'
-LEFT JOIN public_v1.html_element nested ON nested.content_id = i.content_id
- AND nested.tag IN ('ul','ol') AND nested.namespace = 'http://www.w3.org/1999/xhtml'
- AND nested.node_index > i.node_index AND n.node_index > nested.node_index
- AND n.node_index < nested.subtree_end_index
-GROUP BY i.content_id, i.node_index, i.list_node_index, i.item_index, i.ordinal;
+       material.element_text_excluding(i.content_id, i.node_index, ['ul','ol']) AS text
+FROM numbered i;

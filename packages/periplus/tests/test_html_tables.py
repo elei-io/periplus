@@ -10,28 +10,14 @@ from periplus.materialization.dom.nodes import parse_document
 
 class HtmlTableTests(unittest.TestCase):
     def setUp(self):
-        self.db = duckdb.connect()
+        from element_fixture import catalogue
+        self.catalogue = catalogue()
+        self.db = self.catalogue.connection
         self.addCleanup(self.db.close)
-        self.db.execute('CREATE SCHEMA public_v1')
-        self.db.execute('''CREATE TABLE public_v1.html_node (
-            content_id VARCHAR, node_index INTEGER, parent_index INTEGER,
-            subtree_end_index INTEGER, sibling_index INTEGER, node_type VARCHAR,
-            name VARCHAR, namespace VARCHAR, value VARCHAR, depth INTEGER)''')
-        self.db.execute('''CREATE TABLE public_v1.html_element (
-            content_id VARCHAR, node_index INTEGER, parent_index INTEGER,
-            subtree_end_index INTEGER, sibling_index INTEGER, tag VARCHAR,
-            namespace VARCHAR, attributes MAP(VARCHAR, VARCHAR), text_direct VARCHAR)''')
-        root = files('periplus.platform.catalogue').joinpath('sql/public_v1/views')
-        for name in ('html_table', 'html_table_cell'):
-            self.db.execute(root.joinpath(name + '.sql').read_text())
 
     def load(self, html, content='fixture'):
-        nodes, elements = parse_document(html)
-        self.db.executemany('INSERT INTO public_v1.html_node VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                            [(content, *astuple(n)) for n in nodes])
-        self.db.executemany('INSERT INTO public_v1.html_element VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                            [(content, e.element_index, e.parent_index, e.subtree_end_index,
-                              e.child_index, e.tag, e.namespace_uri, e.attributes, e.text_direct) for e in elements])
+        from element_fixture import seed
+        nodes, elements = seed(self.db, html, content)
         return elements
 
     def cells(self):

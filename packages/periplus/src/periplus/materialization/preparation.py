@@ -33,7 +33,7 @@ from periplus.platform.config.environment import get_int
 # Oversized documents run alone; documents beyond the hard limit fail explicitly.
 PREFETCH_BYTES = 16 * 1024**2
 DOCUMENT_BYTES = 128 * 1024**2
-DOCUMENT_OUTPUT_BYTES = 256 * 1024**2
+DOCUMENT_OUTPUT_BYTES = 1024**3
 BATCH_OUTPUT_BYTES = 8 * 1024**3
 
 
@@ -71,7 +71,7 @@ def _project(context: VisitBatchContext, directory: Path) -> int:
     for spec in PROJECTIONS:
         output = spec.rows(context)
         if size + output.nbytes > DOCUMENT_OUTPUT_BYTES:
-            raise ValueError("document projection exceeds 256 MiB Arrow output budget")
+            raise ValueError("document projection exceeds 1 GiB Arrow output budget")
         path = directory / f"{spec.name}.arrow"
         with (
             pa.OSFile(str(path), "wb") as sink,
@@ -80,7 +80,7 @@ def _project(context: VisitBatchContext, directory: Path) -> int:
             writer.write_table(output)
         size += path.stat().st_size
         if size > DOCUMENT_OUTPUT_BYTES:
-            raise ValueError("document projection exceeds 256 MiB Arrow output budget")
+            raise ValueError("document projection exceeds 1 GiB Arrow output budget")
         del output
     return size
 

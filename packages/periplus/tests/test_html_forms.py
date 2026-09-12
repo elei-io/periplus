@@ -10,26 +10,14 @@ from periplus.materialization.dom.nodes import parse_document
 
 class HtmlFormTests(unittest.TestCase):
     def setUp(self):
-        self.db = duckdb.connect()
+        from element_fixture import catalogue
+        self.catalogue = catalogue()
+        self.db = self.catalogue.connection
         self.addCleanup(self.db.close)
-        self.db.execute('CREATE SCHEMA public_v1')
-        self.db.execute('''CREATE TABLE public_v1.html_node (
-            content_id VARCHAR, node_index INTEGER, parent_index INTEGER,
-            subtree_end_index INTEGER, sibling_index INTEGER, node_type VARCHAR,
-            name VARCHAR, namespace VARCHAR, value VARCHAR, depth INTEGER)''')
-        self.db.execute('''CREATE TABLE public_v1.html_element (
-            content_id VARCHAR, node_index INTEGER, parent_index INTEGER,
-            subtree_end_index INTEGER, tag VARCHAR, namespace VARCHAR,
-            attributes MAP(VARCHAR, VARCHAR))''')
-        for name in ('html_form','html_form_control','html_select_option'):
-            self.db.execute(files('periplus.platform.catalogue').joinpath('sql/public_v1/views/'+name+'.sql').read_text())
 
     def load(self, html, content='fixture'):
-        nodes, elements = parse_document(html)
-        self.db.executemany('INSERT INTO public_v1.html_node VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                           [(content, *astuple(n)) for n in nodes])
-        self.db.executemany('INSERT INTO public_v1.html_element VALUES (?, ?, ?, ?, ?, ?, ?)',
-                           [(content,e.element_index,e.parent_index,e.subtree_end_index,e.tag,e.namespace_uri,e.attributes) for e in elements])
+        from element_fixture import seed
+        nodes, elements = seed(self.db, html, content)
         return elements
 
     def test_form_attributes_and_explicit_ownership(self):

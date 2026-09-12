@@ -21,20 +21,16 @@ def _view(name, columns, comment, requires=(), *, content_local=False):
 _TREE_COLUMNS = (
     ("content_id", "SHA-256 identity of captured bytes."),
     ("node_index", "Zero-based depth-first node position, scoped to the catalogue snapshot."),
-    ("parent_index", "Parent node position; null for the document root."),
+    ("parent_index", "Nearest parent element position; null for the document element."),
     ("subtree_end_index", "Exclusive end of this node's subtree."),
-    ("sibling_index", "Zero-based position among all sibling nodes."),
-    ("depth", "Number of parent edges from the document root; root is zero."),
+    ("sibling_index", "Zero-based position among projected element siblings."),
+    ("depth", "Element-parent depth; document element is zero."),
 )
 
 INTERNAL_OBJECTS = (
-    CatalogueObject(
-        kind="view", name="term", schema="material", exposed=False,
-        resource="views/term.sql", columns=("text",),
-        comment="Internal distinct ICU vocabulary derived from current postings; computed on demand.",
-        column_comments=(("text", "Normalized ICU term."),),
-        requires_relations=frozenset({"material.posting"}),
-    ),
+    CatalogueObject(kind="macro", name="element_text_excluding", schema="material", exposed=False,
+        resource="helpers/element_text_excluding.sql", columns=(),
+        requires_relations=frozenset({"material.html_elements"})),
 )
 
 PUBLIC_OBJECTS = (
@@ -49,20 +45,13 @@ PUBLIC_OBJECTS = (
         ("encoding", "Detected character encoding when meaningful."),
         ("request_ids", "Sorted unique coverage request IDs supplied with this capture; empty until membership evidence arrives."),
     ), "Acquisitions with retained HTML, including retained HTML HTTP error responses."),
-    _view("html_node", (*_TREE_COLUMNS,
-        ("node_type", "document, document_fragment, doctype, element, text, comment or processing_instruction."),
-        ("name", "Local element/doctype name or processing instruction target."),
-        ("namespace", "Namespace URI when applicable."),
-        ("value", "Text, comment or processing instruction content."),
-        ("text", "Parsed value for text nodes; NULL for every other node kind. No normalization."),
-    ), "Complete HTML5 parsed document nodes.", ("material.html_nodes",), content_local=True),
     _view("html_element", (*_TREE_COLUMNS,
         ("tag", "Local element tag name."),
         ("namespace", "Namespace URI when applicable."),
         ("attributes", "Attribute map; namespaced keys use {namespace-uri}local-name."),
         ("text_direct", "Immediate child text concatenated in order, without normalization."),
-        ("text", "All descendant text nodes concatenated in document order; empty when absent. Preserves whitespace, includes script/style/title text, inserts no separators, ignores comments and CSS visibility."),
-    ), "HTML elements sharing identity and positions with html_node.", ("material.html_nodes",), content_local=True),
+        ("text", "All descendant text nodes concatenated in document order; empty when absent. Preserves whitespace, includes template fragments and script/style/title text, inserts no separators, ignores comments and CSS visibility."),
+    ), "Parsed HTML elements with materialized complete text.", ("material.html_elements",), content_local=True),
     _view("html_form", (
         ("content_id", "SHA-256 identity of captured bytes."),
         ("node_index", "Source form node position."),
@@ -72,7 +61,7 @@ PUBLIC_OBJECTS = (
         ("method", "Declared method, without normalization or defaults."),
         ("enctype", "Declared enctype attribute."),
         ("target", "Declared target attribute."),
-    ), "HTML form elements with declared attributes.", ("material.html_nodes",), content_local=True),
+    ), "HTML form elements with declared attributes.", ("material.html_elements",), content_local=True),
     _view("html_form_control", (
         ("content_id", "SHA-256 identity of captured bytes."),
         ("node_index", "Source native form-control node position."),
@@ -86,7 +75,7 @@ PUBLIC_OBJECTS = (
         ("readonly", "Whether the readonly attribute is present."),
         ("multiple", "Whether the multiple attribute is present."),
     ), "Native HTML form controls, including controls without a form owner.",
-        ("material.html_nodes"), content_local=True),
+        ("material.html_elements"), content_local=True),
     _view("html_select_option", (
         ("content_id", "SHA-256 identity of captured bytes."),
         ("node_index", "Source option node position."),
@@ -97,14 +86,14 @@ PUBLIC_OBJECTS = (
         ("selected", "Whether the selected attribute is present; not live selectedness."),
         ("disabled", "Whether disabled is present on this option; not inherited state."),
     ), "HTML options owned by select elements, including optgroup descendants.",
-        ("material.html_nodes"), content_local=True),
+        ("material.html_elements"), content_local=True),
     _view("html_list", (
         ("content_id", "SHA-256 identity of captured bytes."),
         ("node_index", "Source ul or ol node position."),
         ("ordered", "True for ol."),
         ("start_number", "Effective ordered-list starting number; null for ul."),
         ("reversed", "True when an ol has the reversed attribute."),
-    ), "HTML ordered and unordered lists, including empty lists.", ("material.html_nodes",), content_local=True),
+    ), "HTML ordered and unordered lists, including empty lists.", ("material.html_elements",), content_local=True),
     _view("html_list_item", (
         ("content_id", "SHA-256 identity of captured bytes."),
         ("node_index", "Source li node position."),
@@ -113,7 +102,7 @@ PUBLIC_OBJECTS = (
         ("ordinal", "Effective ordered-list number after start, reversed and value; null for ul."),
         ("text", "Ordered descendant text excluding nested ul/ol lists; empty for an empty item."),
     ), "Direct HTML list items with source identity and effective numbering.",
-        ("material.html_nodes")),
+        ("material.html_elements")),
     _view("html_jsonld", (
         ("content_id", "SHA-256 identity of captured bytes."),
         ("node_index", "Source application/ld+json script node position."),
@@ -131,7 +120,7 @@ PUBLIC_OBJECTS = (
         ("width", "Declared width as a source string, not a measured dimension."),
         ("height", "Declared height as a source string, not a measured dimension."),
     ), "HTML img elements with original parsed attributes, including images without src.",
-        ("material.html_nodes",), content_local=True),
+        ("material.html_elements",), content_local=True),
     _view("html_metadata", (
         ("content_id", "SHA-256 identity of captured bytes."),
         ("node_index", "Source metadata element node position."),
@@ -139,7 +128,7 @@ PUBLIC_OBJECTS = (
         ("name", "Declared metadata name or relation token; title, charset and lang use fixed names."),
         ("value", "Parsed declared value without normalization; null when the value attribute is absent."),
     ), "Explicit HTML metadata declarations, preserving source nodes and repeated declarations.",
-        ("material.html_nodes",), content_local=True),
+        ("material.html_elements",), content_local=True),
     _view("html_section", (
         ("content_id", "SHA-256 identity of captured bytes."),
         ("heading_node_index", "Heading that starts this passage."),
@@ -147,27 +136,27 @@ PUBLIC_OBJECTS = (
         ("start_node_index", "Inclusive passage start immediately after the heading subtree."),
         ("end_node_index", "Exclusive end at the next heading of equal/higher rank, or document end."),
     ), "Heading-delimited source passages; inferred ranges, not semantic or CSS sections.",
-        ("material.html_nodes"), content_local=True),
+        ("material.html_elements"), content_local=True),
     _view("html_code", (
         ("content_id", "SHA-256 identity of captured bytes."),
         ("node_index", "Source code element node position."),
         ("block", "True when the code element has an HTML pre ancestor; not CSS display state."),
         ("text", "Ordered descendant text preserving whitespace and line breaks; empty for empty code."),
     ), "HTML code elements with source identity and complete descendant text.",
-        ("material.html_nodes"), content_local=True),
+        ("material.html_elements"), content_local=True),
     _view("html_heading", (
         ("content_id", "SHA-256 identity of captured bytes."),
         ("node_index", "Source h1 through h6 node position."),
         ("level", "Declared HTML heading level, from 1 through 6."),
         ("text", "Ordered descendant text without normalization; empty for an empty heading."),
     ), "HTML headings with source identity and complete descendant text.",
-        ("material.html_nodes"), content_local=True),
+        ("material.html_elements"), content_local=True),
     _view("html_table", (
         ("content_id", "SHA-256 identity of captured bytes."),
         ("node_index", "Source table node position."),
         ("caption_node_index", "First direct caption node; null when absent."),
         ("caption", "Caption descendant text excluding nested tables; null when absent."),
-    ), "HTML tables, including empty and nested tables.", ("material.html_nodes"), content_local=True),
+    ), "HTML tables, including empty and nested tables.", ("material.html_elements"), content_local=True),
     _view("html_table_cell", (
         ("content_id", "SHA-256 identity of captured bytes."),
         ("table_node_index", "Owning table node position."),
@@ -180,7 +169,7 @@ PUBLIC_OBJECTS = (
         ("is_header", "True for a th source element."),
         ("text", "Ordered descendant text excluding nested tables; empty for an empty cell."),
     ), "One source HTML cell per row with span-aware grid positions, computed on demand.",
-        ("material.html_nodes")),
+        ("material.html_elements")),
     _view("link", (
         ("capture_id", "Capture in which the hyperlink was resolved."),
         ("node_index", "Anchor node position in that capture's content."),

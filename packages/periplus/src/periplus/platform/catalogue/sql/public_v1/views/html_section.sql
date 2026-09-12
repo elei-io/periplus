@@ -31,5 +31,5 @@ WITH headings AS (
 SELECT b.content_id, b.heading_node_index, b.parent_heading_node_index,
        b.start_node_index, greatest(b.start_node_index, coalesce(b.next_heading_node_index, root.subtree_end_index)) AS end_node_index
 FROM boundaries b
-JOIN public_v1.html_node root ON root.content_id = b.content_id
- AND root.node_index = 0 AND root.node_type = 'document';
+JOIN public_v1.html_element root ON root.content_id = b.content_id
+ AND root.parent_index IS NULL;

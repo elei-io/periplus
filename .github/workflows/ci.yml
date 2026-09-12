@@ -32,11 +32,6 @@ jobs:
           cache-dependency-glob: packages/periplus/uv.lock
       - name: Install Python 3.14.7
         run: uv python install 3.14.7
-      - name: Install pinned ICU tokenizer runtime
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential curl pkg-config
-          sudo sh docker/periplus/install-icu.sh
       - name: Install backend
         working-directory: packages/periplus
         run: uv sync --frozen

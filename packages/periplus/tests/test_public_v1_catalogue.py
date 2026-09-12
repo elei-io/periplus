@@ -10,53 +10,7 @@ from periplus.query.validation import _bounded_query
 
 
 class PublicV1CatalogueTests(unittest.TestCase):
-    def test_subtree_text(self):
-        db = duckdb.connect()
-        self.addCleanup(db.close)
-        db.execute('CREATE SCHEMA public_v1; CREATE SCHEMA material')
-        db.execute('''CREATE TABLE material.html_nodes (
-            content_sha256 VARCHAR, node_index INTEGER, parent_index INTEGER,
-            subtree_end_index INTEGER, sibling_index INTEGER, node_type VARCHAR,
-            name VARCHAR, namespace VARCHAR, value VARCHAR, depth INTEGER)''')
-        nodes, elements = parse_document('<p>Hello <strong>world</strong>!<!--omit--></p><p>outside</p>')
-        from dataclasses import astuple
-        db.executemany('INSERT INTO material.html_nodes VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                       [('fixture', *astuple(n)) for n in nodes])
-        root = files('periplus.platform.catalogue').joinpath('sql/public_v1')
-        db.execute(root.joinpath('views/html_node.sql').read_text())
-        db.execute(root.joinpath('helpers/subtree_text.sql').read_text())
-        paragraph = next(e for e in elements if e.tag == 'p')
-        result = db.execute('SELECT * FROM public_v1.subtree_text(?, ?)', ['fixture', paragraph.element_index]).fetchone()
-        self.assertEqual(result[:3], ('Hello world!', False, 12))
-        result = db.execute('SELECT * FROM public_v1.subtree_text(?, ?, max_chars := 5)', ['fixture', paragraph.element_index]).fetchone()
-        self.assertEqual(result[:3], ('Hello', True, 12))
-        self.assertEqual(db.execute("SELECT * FROM public_v1.subtree_text('absent', 0)").fetchall(), [])
 
-    def test_depth_counts_parent_edges_for_every_node_kind(self):
-        from dataclasses import astuple
-        from periplus.materialization.registry import PROJECTIONS
-        projection = next(p for p in PROJECTIONS if p.name == "html_nodes")
-
-        nodes, elements = parse_document('<!doctype html><!--before--><p>A<b>B</b>C<!--inside--></p>')
-        by_index = {n.node_index: n for n in nodes}
-        self.assertEqual(nodes[0].depth, 0)
-        self.assertEqual({n.node_type for n in nodes},
-                         {'document', 'doctype', 'comment', 'element', 'text'})
-        for node in nodes[1:]:
-            self.assertEqual(node.depth, by_index[node.parent_index].depth + 1)
-        for element in elements:
-            self.assertEqual(element.depth, by_index[element.element_index].depth)
-        db = duckdb.connect()
-        self.addCleanup(db.close)
-        db.execute('CREATE SCHEMA material; CREATE SCHEMA public_v1')
-        from periplus.materialization.document_projection import VisitBatchContext
-        context = VisitBatchContext((), (), (), {'fixture': elements}, {'fixture': nodes}, {}, frozenset({'fixture'}))
-        db.register('node_rows', projection.rows(context))
-        db.execute('CREATE TABLE material.html_nodes AS SELECT * FROM node_rows')
-        root = files('periplus.platform.catalogue').joinpath('sql/public_v1')
-        db.execute(root.joinpath('views/html_node.sql').read_text())
-        self.assertEqual(db.execute('SELECT node_index, depth FROM public_v1.html_node ORDER BY node_index').fetchall(),
-                         [(n.node_index, n.depth) for n in nodes])
 
     def test_capture_request_ids_preserve_capture_grain(self):
         from uuid import UUID
@@ -106,9 +60,9 @@ class PublicV1CatalogueTests(unittest.TestCase):
 
     def test_default_version_and_names(self):
         self.assertEqual(QueryRequest(sql='SELECT * FROM capture').schema_version, 'public_v1')
-        for sql in ('SELECT * FROM capture', 'SELECT * FROM public_v1.html_node',
+        for sql in ('SELECT * FROM capture', 'SELECT * FROM public_v1.html_element',
                     'WITH chosen AS (SELECT * FROM capture) SELECT * FROM chosen',
-                    "SELECT * FROM subtree_text('x', 0)"):
+                    "SELECT text FROM html_element"):
             _bounded_query(sql)
         for sql in ('SELECT * FROM ingest.visits', 'SELECT * FROM web.observation',
                     'SELECT * FROM collection_capture', 'SELECT * FROM collection', 'SELECT * FROM fulfillment',

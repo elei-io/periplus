@@ -75,7 +75,7 @@ class MaterializationRegistryTests(unittest.TestCase):
     ) -> None:
         legacy = SimpleNamespace(
             config=SimpleNamespace(alias='periplus'),
-            trusted_remote_rows=lambda sql: [('html_nodes', 'content_sha256')],
+            trusted_remote_rows=lambda sql: [('html_elements', 'content_sha256')],
         )
         self.assertFalse(Catalogue._active_registry_matches(legacy))
 

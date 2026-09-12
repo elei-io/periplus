@@ -1,8 +1,8 @@
 export const docsSqlPatterns = [
   {
-    "title": "Discover pages by text",
-    "description": "Up to 100 matching unique contents, with a representative capture URL. A page match does not imply that every element matches.",
-    "sql": "SELECT * FROM search('robot') ORDER BY score DESC, content_id;"
+    "title": "Choose pages to explore",
+    "description": "Select retained captures, then use their content IDs to inspect HTML elements.",
+    "sql": "SELECT content_id, effective_url, captured_at FROM capture ORDER BY captured_at DESC, capture_id LIMIT 20;"
   },
   {
     "title": "Find matching HTML headings",
@@ -50,9 +50,9 @@ export const docsSqlPatterns = [
     "sql": "SELECT c.node_index AS select_node_index, c.name,\n       o.option_index, o.value, o.text, o.selected, o.disabled\nFROM public_v1.html_form_control c\nJOIN public_v1.html_select_option o\n  ON o.content_id = c.content_id\n AND o.select_node_index = c.node_index\nWHERE c.content_id = '072a5a77e6bf9d591a30832addace1b20ccfa7e4e13b1bd9a00a3779b7bce252'\nORDER BY c.node_index, o.option_index;"
   },
   {
-    "title": "Extract the passage under a heading",
-    "description": "A section starts after its heading and ends at the next heading of equal or higher rank, or document end. Child sections overlap their parent. This extracts source text, including scripts/styles if present; it adds no separators or trimming.",
-    "sql": "SELECT h.text AS heading,\n       coalesce(string_agg(n.value, '' ORDER BY n.node_index), '')\n         AS passage\nFROM public_v1.html_section s\nJOIN public_v1.html_heading h\n  ON h.content_id = s.content_id\n AND h.node_index = s.heading_node_index\nLEFT JOIN public_v1.html_node n\n  ON n.content_id = s.content_id\n AND n.node_index >= s.start_node_index\n AND n.node_index < s.end_node_index\n AND n.node_type = 'text'\nWHERE s.content_id = '01e3b8320926e10284e97da69093af4b4c04e181b5a3607c05bfd1920134a770'\n  AND h.text = 'Product Description'\nGROUP BY s.content_id, s.heading_node_index, h.text;"
+    "title": "Read paragraph elements beneath a heading",
+    "description": "Select paragraphs within the heading-delimited range. Each paragraph contains its full descendant text.",
+    "sql": "SELECT h.text AS heading, e.node_index, e.text\nFROM html_section s\nJOIN html_heading h ON h.content_id=s.content_id AND h.node_index=s.heading_node_index\nJOIN html_element e ON e.content_id=s.content_id AND e.node_index>=s.start_node_index AND e.node_index<s.end_node_index\nWHERE s.content_id='01e3b8320926e10284e97da69093af4b4c04e181b5a3607c05bfd1920134a770' AND h.text='Product Description' AND e.tag='p'\nORDER BY e.node_index;"
   },
   {
     "title": "Find tables beneath Product Information",

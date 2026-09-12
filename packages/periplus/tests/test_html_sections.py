@@ -10,24 +10,14 @@ from periplus.materialization.dom.nodes import parse_document
 
 class HtmlSectionTests(unittest.TestCase):
     def setUp(self):
-        self.db = duckdb.connect()
+        from element_fixture import catalogue
+        self.catalogue = catalogue()
+        self.db = self.catalogue.connection
         self.addCleanup(self.db.close)
-        self.db.execute('CREATE SCHEMA public_v1')
-        self.db.execute('''CREATE TABLE public_v1.html_node (
-            content_id VARCHAR, node_index INTEGER, parent_index INTEGER,
-            subtree_end_index INTEGER, sibling_index INTEGER, node_type VARCHAR,
-            name VARCHAR, namespace VARCHAR, value VARCHAR, depth INTEGER)''')
-        self.db.execute('''CREATE TABLE public_v1.html_element (
-            content_id VARCHAR, node_index INTEGER, parent_index INTEGER,
-            subtree_end_index INTEGER, tag VARCHAR, namespace VARCHAR)''')
-        self.db.execute(files('periplus.platform.catalogue').joinpath('sql/public_v1/views/html_section.sql').read_text())
 
     def load(self, html, content='fixture'):
-        nodes, elements = parse_document(html)
-        self.db.executemany('INSERT INTO public_v1.html_node VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                           [(content, *astuple(n)) for n in nodes])
-        self.db.executemany('INSERT INTO public_v1.html_element VALUES (?, ?, ?, ?, ?, ?)',
-                           [(content,e.element_index,e.parent_index,e.subtree_end_index,e.tag,e.namespace_uri) for e in elements])
+        from element_fixture import seed
+        nodes, elements = seed(self.db, html, content)
         return nodes, [e for e in elements if e.tag in ('h1','h2','h3','h4','h5','h6')]
 
     def test_parent_ranges_and_descendant_heading_text(self):
@@ -40,11 +30,11 @@ class HtmlSectionTests(unittest.TestCase):
                               (ids[2],ids[1],heads[2].subtree_end_index,ids[3]),
                               (ids[3],ids[0],heads[3].subtree_end_index,ids[4]),
                               (ids[4],None,heads[4].subtree_end_index,nodes[0].subtree_end_index)])
-        text=self.db.execute('''SELECT string_agg(n.value,'' ORDER BY n.node_index)
-            FROM public_v1.html_section s JOIN public_v1.html_node n
-              ON n.content_id=s.content_id AND n.node_index>=s.start_node_index
-             AND n.node_index<s.end_node_index AND n.node_type='text'
-            WHERE s.heading_node_index=?''',[ids[1]]).fetchone()[0]
+        text=self.db.execute("""SELECT string_agg(e.text_direct,'' ORDER BY e.node_index)
+            FROM public_v1.html_section s JOIN public_v1.html_element e
+              ON e.content_id=s.content_id AND e.node_index>=s.start_node_index
+             AND e.node_index<s.end_node_index
+            WHERE s.heading_node_index=?""",[ids[1]]).fetchone()[0]
         self.assertEqual(text,'stepsLinuxapt')
 
     def test_all_ranks_skips_and_filtered_heading(self):

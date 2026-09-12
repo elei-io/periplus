@@ -282,27 +282,23 @@ server budget. Stream metadata includes effective limits; input rejections name 
 Deploy the API, query service, public gateway and SDK together after applying Alembic
 revision `20260911_0016`. Ingress must permit the configured request size and stream duration.
 
-### Search and HTML text
+### HTML element text
 
 ```python
 with Client("https://periplus.dev") as client:
-    hits = client.execute(
-        "SELECT * FROM search(?) ORDER BY score DESC, content_id", ["monkey"]
+    pages = client.execute(
+        "SELECT content_id FROM capture ORDER BY captured_at DESC, capture_id LIMIT 1"
     )
-    if hits.rows:
-        content_id = hits.rows[0][hits.columns.index("content_id")]
+    if pages.rows:
         elements = client.execute(
             "SELECT content_id, node_index, tag, text FROM html_element "
             "WHERE content_id = ? AND tag = 'h1' AND text ILIKE ?",
-            [content_id, "%monkey%"],
+            [pages.rows[0][0], "%monkey%"],
         )
 ```
 
-Search runs through the query API and returns up to 100 unique contents with
-`content_id`, `matches: [{snippet, node_indexes}]`, and `score`. Plain queries
-require every distinct ICU word token; a fully double-quoted query requires a
-phrase within a structural text run. All parsed text nodes participate, including
-titles and scripts. Attributes, meta descriptions and comments are excluded.
-There is no substring or wildcard expansion. Join captures for URLs and nodes for
-structure. Ordinary HTML SQL remains portable; direct DuckDB `search()` execution
-requires the query API. Vocabulary and positional postings remain internal.
+`html_element.text` preserves all descendant parsed text, including template,
+script, style and title text. `text_direct` preserves immediate text children.
+There is no search function or public node relation. Text predicates remain ordinary
+SQL; corpus-wide predicates scan text. Join elements to captures by content ID and
+to their parent using content ID plus parent_index = node_index.

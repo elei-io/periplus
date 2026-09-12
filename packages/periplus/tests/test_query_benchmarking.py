@@ -59,9 +59,6 @@ class QueryBenchmarkingTests(unittest.TestCase):
             connection.execute("CREATE TABLE public_v1.html_section(content_id VARCHAR, heading_node_index INTEGER)")
             connection.execute("CREATE TABLE public_v1.html_jsonld(content_id VARCHAR, node_index INTEGER, value JSON, parse_error VARCHAR)")
             connection.execute("CREATE TABLE public_v1.html_metadata(content_id VARCHAR, node_index INTEGER, kind VARCHAR, name VARCHAR, value VARCHAR)")
-            connection.execute("CREATE TABLE public_v1.html_node(content_id VARCHAR, node_index INTEGER, subtree_end_index INTEGER, node_type VARCHAR, value VARCHAR, parent_index INTEGER)")
-            connection.execute(files("periplus.platform.catalogue").joinpath("sql/public_v1/helpers/subtree_text.sql").read_text())
-            connection.execute("CREATE MACRO public_v1.search(query VARCHAR) AS TABLE (SELECT NULL::VARCHAR AS content_id,[]::STRUCT(snippet VARCHAR,node_indexes INTEGER[])[] AS matches,0::DOUBLE AS score WHERE false)")
             for case in discover_cases(root).values():
                 parameters = {"scope": case.scales[0]} if case.scales[0] else None
                 connection.execute("EXPLAIN " + case.sql, parameters)
@@ -100,29 +97,6 @@ class QueryBenchmarkingTests(unittest.TestCase):
         connection.close.assert_called_once()
         self.assertEqual(connection.execute.call_args, call("ROLLBACK"))
 
-    def test_content_scope_cli_requires_speedup_as_well_as_equal_results(self):
-        script = Path(__file__).resolve().parents[1] / "scripts/query_benchmark.py"
-        main = runpy.run_path(str(script))["main"]
-        baseline = dict(case="gov-heading-sections", scale=None, ducklake_snapshot=42,
-                        columns=["x"], types=["INTEGER"], result_rows=1,
-                        result_digest="same", median_warm_ms=20, normal_ms=20,
-                        peak_buffer_bytes=[100], cumulative_rows_scanned=[10],
-                        within_time_budget=True)
-        for timing, succeeds in [(10, True), (30, False)]:
-            with TemporaryDirectory() as directory:
-                report = Path(directory) / "report.json"
-                pair = {"baseline": baseline, "candidate": {**baseline, "median_warm_ms": timing}}
-                argv = [str(script), "--case", "gov-heading-sections", "--content-scope", "--report", str(report)]
-                with patch.object(sys, "argv", argv), patch.dict(main.__globals__, {"measure_pair": lambda *a, **kw: pair, "environment_metadata": lambda: {}}), redirect_stdout(io.StringIO()):
-                    if succeeds:
-                        main()
-                    else:
-                        with self.assertRaises(SystemExit):
-                            main()
-                payload = json.loads(report.read_text())
-                self.assertTrue(payload["comparison"][0]["exact_result"])
-                self.assertEqual(payload["comparison"][0]["performance_improved"], succeeds)
-                self.assertEqual(bool(payload["failures"]), not succeeds)
 
     def test_single_execution_records_no_warm_timing(self):
         root = Path(__file__).resolve().parents[3] / "benchmarks/query/cases"

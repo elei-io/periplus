@@ -10,27 +10,14 @@ from periplus.materialization.dom.nodes import parse_document
 
 class HtmlHeadingTests(unittest.TestCase):
     def setUp(self):
-        self.db = duckdb.connect()
+        from element_fixture import catalogue
+        self.catalogue = catalogue()
+        self.db = self.catalogue.connection
         self.addCleanup(self.db.close)
-        self.db.execute('CREATE SCHEMA public_v1')
-        self.db.execute('''CREATE TABLE public_v1.html_node (
-            content_id VARCHAR, node_index INTEGER, parent_index INTEGER,
-            subtree_end_index INTEGER, sibling_index INTEGER, node_type VARCHAR,
-            name VARCHAR, namespace VARCHAR, value VARCHAR, depth INTEGER)''')
-        self.db.execute('''CREATE TABLE public_v1.html_element (
-            content_id VARCHAR, node_index INTEGER, parent_index INTEGER,
-            subtree_end_index INTEGER, tag VARCHAR, namespace VARCHAR)''')
-        sql = files('periplus.platform.catalogue').joinpath('sql/public_v1/views/html_heading.sql').read_text()
-        self.db.execute(sql)
 
     def load(self, html, content='fixture'):
-        nodes, elements = parse_document(html)
-        self.db.executemany('INSERT INTO public_v1.html_node VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                           [(content, *astuple(n)) for n in nodes])
-        self.db.executemany('INSERT INTO public_v1.html_element VALUES (?, ?, ?, ?, ?, ?)',
-                           [(content, e.element_index, e.parent_index, e.subtree_end_index,
-                             e.tag, e.namespace_uri) for e in elements])
-        return elements
+        from element_fixture import seed
+        return seed(self.db, html, content)[1]
 
     def test_levels_inline_text_empty_and_duplicate_headings(self):
         elements = self.load('<h1> A <em>B</em>&amp;C<!--omit--><br>D </h1>'
@@ -45,7 +32,7 @@ class HtmlHeadingTests(unittest.TestCase):
     def test_declared_html_only_and_no_visibility_inference(self):
         self.load('<div role="heading" aria-level="2">role</div><h7>other</h7>'
                   '<h2 hidden><img alt="not text"><script>x</script><style>y</style>z</h2>')
-        self.db.execute("INSERT INTO public_v1.html_element VALUES ('fixture',999,NULL,1001,'h1','http://www.w3.org/2000/svg')")
+        self.db.execute("INSERT INTO material.html_elements VALUES ('fixture',999,NULL,1001,0,0,'h1','http://www.w3.org/2000/svg',MAP {},'', '',0,0)")
         self.assertEqual(self.db.execute('SELECT level,text FROM public_v1.html_heading').fetchall(), [(2,'xyz')])
 
     def test_content_and_node_filters_preserve_complete_text(self):
