@@ -65,14 +65,19 @@ class ElementMaterializationTests(unittest.TestCase):
         self.assertEqual(self.elements(),[])
         commit_prepared_batch(self.catalogue,self.run,self.batch,prepared)
         initial=self.elements()
+        postings=self.rows("SELECT term,content_id,node_indexes FROM public_v1.html_term ORDER BY term,content_id")
+        self.assertEqual([row[0] for row in postings], ['monkey'])
+        self.assertTrue(postings[0][2])
         self.assertEqual([r[3:] for r in initial if r[2]=='p'],[('monkey monkey','mon monkey')])
         self.assertTrue(self.prepare().already_applied)
         self.assertEqual(self.elements(),initial)
+        self.assertEqual(self.rows("SELECT term,content_id,node_indexes FROM public_v1.html_term ORDER BY term,content_id"),postings)
         self.batch=SimpleNamespace(id=uuid4(),snapshot=self.batch.snapshot,visit_ids=())
         self.html='<title>different</title>'
         commit_prepared_batch(self.catalogue,self.run,self.batch,self.prepare())
         self.assertEqual([r[3] for r in self.elements() if r[2]=='title'],['different'])
         self.assertNotIn('p',[r[2] for r in self.elements()])
+        self.assertEqual(self.rows("SELECT DISTINCT term FROM public_v1.html_term"), [('different',)])
 
     def test_preparation_failure_has_no_published_rows(self):
         with patch('periplus.materialization.batch._write_partitioned_parquet',side_effect=RuntimeError('encoding failed')):
@@ -110,6 +115,10 @@ class ElementMaterializationTests(unittest.TestCase):
         from periplus.materialization.runtime import generation_table
         generation_id=uuid4();hidden={s.name:generation_table(s.name,generation_id) for s in PROJECTIONS}
         for spec in PROJECTIONS:self.catalogue.create_materialization_generation(spec.relation,hidden[spec.name])
+        self.assertEqual(self.rows(
+            "SELECT value FROM periplus.options() WHERE option_name='parquet_row_group_size' "
+            f"AND scope='TABLE' AND scope_entry='material.{hidden['html_terms']}'"
+        ), [('2048',)])
         self.run=SimpleNamespace(id=generation_id,generation_tables=hidden)
         self.batch=SimpleNamespace(id=uuid4(),snapshot=self.batch.snapshot,visit_ids=())
         commit_prepared_batch(self.catalogue,self.run,self.batch,self.prepare())

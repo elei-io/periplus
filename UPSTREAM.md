@@ -3,6 +3,35 @@
 Periplus uses the official DuckDB and DuckLake extensions directly. LakeDucktor owns physical lake
 maintenance; Periplus owns ingestion evidence and logical materialization generations.
 
+## Native sorted merges leave overlapping term ranges at a file-size ceiling
+
+- **Caller:** isolated append-only element-search index comparison; no production
+  schema or service changes.
+- **Evidence:** DuckDB 1.5.5; production LakeDucktor image
+  `sha256:4ed6020562d906d1fb679c2125b776c0bfa378fadd8890310b892e27110a0841`.
+  Eight `bucket(8, term)` partitions, term-first sorting, ten appends, 2,000
+  controlled content identities, and a 1 MB target file size. A rare word's
+  four matching contents are held fixed. After `ducklake_merge_adjacent_files`,
+  the term/batch shape has 24 active files and reads three for the rare word;
+  the term/content shape has 32 active files and reads four. Another native
+  merge pass returns no work and leaves both snapshots unchanged. Flat postings
+  retain 80 files under the same size policy. Complete results remain equal.
+- **Control:** the same data with a 64 MB target fits in eight merged files and
+  reads one file for the word. The 1 MB setting deliberately exposes the
+  multiple-files-per-partition regime without requiring a huge corpus; it is
+  not a proposed production file-size setting or a billion-capture measurement.
+- **Requested investigation:** a native maintenance policy/primitive that maintains
+  bounded-size files with selective, minimally overlapping term ranges as appends
+  accumulate. Sorting within each selected merge group does not itself establish
+  globally disjoint key ranges. This is an access-path limitation of the tested
+  policy, not a correctness bug or a claim that all native alternatives are absent.
+- **Reproducer and measurements:**
+  `benchmarks/query/experiments/index-layout/`, especially the `files` campaign
+  and native `settle.py` follow-up; see
+  [the investigation](docs/query-investigations/append-only-index/README.md).
+  No application-aware merge, mutable posting list, or custom query extension was
+  introduced.
+
 ## DuckLake small term-ID sets use optional scan filters
 
 - **Periplus caller:** experimental vocabulary-to-term-stat discovery, not a shipped projection.

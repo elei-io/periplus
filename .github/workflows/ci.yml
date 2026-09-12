@@ -33,6 +33,8 @@ jobs:
       - name: Install Python 3.14.7
         run: uv python install 3.14.7
       - name: Install backend
+        run: sudo sh docker/periplus/install-icu.sh
+      - name: Sync backend
         working-directory: packages/periplus
         run: uv sync --frozen
       - name: Compile backend

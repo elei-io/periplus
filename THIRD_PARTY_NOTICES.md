@@ -5,6 +5,12 @@ font used by the applications. Other dependencies retain the notices supplied
 in their packages; this is not an exhaustive dependency-license inventory.
 The Periplus license does not replace these terms.
 
+## ICU
+
+The backend image builds ICU 77.1 from the Unicode project's release archive.
+Its complete upstream license and third-party notices are retained in the image
+at `/usr/local/share/licenses/icu/LICENSE`. PyICU retains its packaged license.
+
 ## Selectolax and Lexbor
 
 The backend pins Selectolax 0.4.11 (MIT) and its bundled Lexbor 3.1.0

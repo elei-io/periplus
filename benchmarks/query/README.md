@@ -3,6 +3,10 @@ experiments are historical and are not part of current case discovery.
 
 # Query optimization bench
 
+The current append-only element text index comparison is documented in
+[append-only-index/results.md](../../docs/query-investigations/append-only-index/results.md).
+It compares three posting shapes with page-once ICU tokenization in disposable lakes.
+
 The disposable vocabulary/term-stat materialization experiment is documented in
 [`docs/query-investigations/vocabulary-materialization/`](../../docs/query-investigations/vocabulary-materialization/README.md).
 It builds only a temporary local lake and uses this bench's paired measurement

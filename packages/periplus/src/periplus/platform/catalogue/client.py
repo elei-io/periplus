@@ -184,6 +184,8 @@ class Catalogue:
                             f"{_quote_literal(comment)}"
                         )
         if active_registry_matches:
+            for relation_name, layout in TABLE_LAYOUTS.items():
+                self._set_parquet_layout(relation_name, relation_name.table, layout)
             install_public_catalogue(self)
         self._use_schema_if_available()
         self.validate_schema(include_material=active_registry_matches)
@@ -356,6 +358,19 @@ class Catalogue:
                     f"{_quote_identifier(column_name)} IS "
                     f"{_quote_literal(comment)}"
                 )
+
+        self._set_parquet_layout(relation_name, generation_table, layout)
+
+    def _set_parquet_layout(self, relation_name, table_name, layout) -> None:
+        # DuckLake requires the table's creation transaction to be committed first.
+        # Planning cannot publish batches until both creation and settings succeed.
+        if layout.parquet_row_group_size is not None:
+            self.trusted_remote_execute(
+                f"CALL {_quote_identifier(self.config.alias)}.set_option("
+                f"'parquet_row_group_size', {layout.parquet_row_group_size}, "
+                f"table_name => {_quote_literal(table_name)}, "
+                f"schema => {_quote_literal(relation_name.schema)})"
+            )
 
     def activate_materialization_generations(
         self,

@@ -25,3 +25,4 @@ class RelationName:
 class TableLayout:
     partition_by: tuple[str, ...] = ()
     sort_by: tuple[str, ...] = ()
+    parquet_row_group_size: int | None = None

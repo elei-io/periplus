@@ -530,8 +530,10 @@ is required. The HTML5lib dependency supplies only deterministic byte decoding.
 
 ### Canonical element release
 
-`material.html_elements` stores exact descendant and direct text. Nodes, postings,
-vocabulary and search macros are removed. No additional control migration is needed;
+`material.html_elements` stores exact descendant and direct text. `material.html_terms`
+adds page-once ICU postings with immutable node arrays; `public_v1.html_term` becomes
+available at generation activation. The image and backend CI build checksum-pinned
+ICU 77.1 and validate PyICU 2.16.2 / Unicode 16.0. No additional control migration is needed;
 20260912_0017 remains the durable first-publication intent contract. Deploy all roles
 coherently and trigger a clean registry rebuild. The old active material generation
 remains until atomic activation; normal finalization retires its physical tables.

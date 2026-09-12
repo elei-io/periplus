@@ -20,6 +20,7 @@ from periplus.query.http import _public_metadata, metadata
 
 
 EXPECTED_PUBLIC_RELATIONS = {
+    ("public_v1", "html_term"),
     ("public_v1", "capture"),
     ("public_v1", "link"),
     ("public_v1", "html_element"),

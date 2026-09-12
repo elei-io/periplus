@@ -98,6 +98,7 @@ class ProjectionSpec:
     validation_queries: tuple[str, ...] = ()
     content_presence_predicate: str | None = None
     implementation_dependencies: tuple[str, ...] = ()
+    parquet_row_group_size: int | None = None
 
     @property
     def relation(self) -> RelationName:
@@ -125,6 +126,7 @@ class ProjectionSpec:
                 transform.layout_sql for transform in self.partitioning
             ),
             sort_by=self.sort_order,
+            parquet_row_group_size=self.parquet_row_group_size,
         )
 
     def rows(self, context: VisitBatchContext) -> pa.Table:
@@ -186,6 +188,8 @@ def discover_projections(
 
 
 def _validate_projection(spec: ProjectionSpec) -> None:
+    if spec.parquet_row_group_size is not None and spec.parquet_row_group_size < 2048:
+        raise ValueError("Parquet row groups must contain at least 2048 rows")
     if spec.ownership_grain not in ('content', 'visit'):
         raise ValueError(f'invalid ownership grain for {spec.name}')
     if not spec.name or not spec.name.isidentifier() or spec.name.startswith("_"):
@@ -268,6 +272,7 @@ def registry_digest(
                 for transform in spec.partitioning
             ],
             "sort_order": spec.sort_order,
+            "parquet_row_group_size": spec.parquet_row_group_size,
             "description": spec.description,
             "identity_columns": spec.identity_columns,
             "validation_queries": spec.validation_queries,
