@@ -75,6 +75,20 @@ Internal code-point offsets support excluding nested lists/tables from structure
 views without storing text nodes. Elements use eight content buckets and sort by
 content_sha256, node_index. Public html_element exposes text directly.
 
+### `material.html_terms`
+
+One row per `(term, content_sha256)` with sorted distinct `node_indexes INTEGER[]`.
+ICU 77.1 / Unicode 16.0 root word boundaries segment original parsed page text once;
+term keys use Unicode case folding followed by NFC. An element matches only when
+it fully contains a page token's original code-point span. Enclosing ancestors
+also match. Metadata attributes are excluded; title/script/style text follows the
+canonical page stream. No stemming, substring matching or phrase positions.
+
+Files use eight term buckets, term/content ordering and 2,048-row groups. Native
+maintenance retains the same row-group setting and never aggregates posting arrays.
+The public `html_term(term, content_id, node_indexes)` view exposes this grain.
+Use exact normalized term keys; unnest `node_indexes` for individual element identities.
+
 ### `material.html_jsonld`
 
 One row per `(content_sha256, node_index)` for an HTML JSON-LD script, storing

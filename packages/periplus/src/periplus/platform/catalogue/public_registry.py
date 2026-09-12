@@ -34,6 +34,12 @@ INTERNAL_OBJECTS = (
 )
 
 PUBLIC_OBJECTS = (
+    _view("html_term", (
+        ("term", "ICU 77.1 page word, Unicode case folded then NFC normalized. Exact term key, not a substring or query string."),
+        ("content_id", "SHA-256 identity of captured bytes."),
+        ("node_indexes", "Sorted distinct elements fully containing an occurrence in full parsed page text, including enclosing ancestors."),
+    ), "Immutable term/content postings. Title is page text; metadata attributes are excluded.",
+        ("material.html_terms",), content_local=True),
     _view("capture", (
         ("capture_id", "Acquisition identity with retained content."),
         ("requested_url", "Normalized requested URL."),

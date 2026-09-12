@@ -456,12 +456,16 @@ def _write_partitioned_parquet(
                 )
             ) or "true"
             with step("parquet_encode_upload"):
+                row_group_option = (
+                    f", ROW_GROUP_SIZE {spec.parquet_row_group_size}"
+                    if spec.parquet_row_group_size is not None else ""
+                )
                 connection.execute(
                     f"COPY (SELECT * FROM {typed} "
                     f"WHERE {predicates} "
                     f"ORDER BY {order_by}) "
                     f"TO {sql_string(path)} "
-                    "(FORMAT PARQUET, COMPRESSION ZSTD)"
+                    f"(FORMAT PARQUET, COMPRESSION ZSTD{row_group_option})"
                 )
             with step("file_size_lookup"):
                 size = storage.file_size(connection, path)

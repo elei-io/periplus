@@ -28,6 +28,7 @@ dependencies = [
     "duckdb==1.5.5",
     "croniter>=6,<7",
     "selectolax==0.4.11",
+    "PyICU==2.16.2",
 ]
 
 [dependency-groups]

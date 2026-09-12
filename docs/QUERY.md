@@ -2,6 +2,20 @@
 
 The canonical element replacement is specified in [ELEMENT_LAYOUT.md](ELEMENT_LAYOUT.md).
 
+Exact page-word lookup uses `public_v1.html_term`, an immutable term/content row
+with a sorted node-index list. For example:
+
+```sql
+SELECT content_id, unnest(node_indexes) AS node_index
+FROM public_v1.html_term
+WHERE term = 'catfish';
+```
+
+The term key must already be Unicode case folded and NFC-normalized; it is not a
+free-text query parser. This access path does not replace `element.text ILIKE`
+substring semantics. Page words crossing inline elements belong only to elements
+containing the complete word. Title is page text; metadata attributes are not.
+
 Periplus delivers its query interface in three layers, in this order.
 
 The continuous investigation loop, decision matrix and production-reader bench are
