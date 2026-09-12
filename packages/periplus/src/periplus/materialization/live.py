@@ -67,9 +67,14 @@ class LiveCdcConnection:
         return self.catalogue.trusted_connection
 
     def bootstrap(self) -> None:
+        generation = state.active_generation()
+        consumer = (
+            f", consumer := {sql_string(_consumer_name(generation.id))}"
+            if generation is not None else ""
+        )
         self.connection.execute(
             "SELECT * FROM cdc_doctor("
-            f"{sql_string(self.catalogue.config.alias)})"
+            f"{sql_string(self.catalogue.config.alias)}{consumer})"
         ).fetchall()
 
     def active_generation(self) -> ActiveGeneration | None:
@@ -106,9 +111,9 @@ class LiveCdcConnection:
 
     def _consumer_exists(self, name: str) -> bool:
         rows = self.connection.execute(
-            "SELECT consumer_name FROM cdc_list_consumers("
-            f"{sql_string(self.catalogue.config.alias)}) "
-            f"WHERE consumer_name = {sql_string(name)}"
+            "SELECT consumer_name FROM cdc_consumer_stats("
+            f"{sql_string(self.catalogue.config.alias)}, "
+            f"consumer := {sql_string(name)})"
         ).fetchall()
         return bool(rows)
 

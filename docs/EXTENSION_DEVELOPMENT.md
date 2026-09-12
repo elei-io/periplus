@@ -14,6 +14,13 @@ When upgrading, update those pins together with the Python DuckDB dependency and
 verify the community artifact on the deployment platforms, and rebuild the immutable core image.
 An unexpected community version fails validation; runtime does not automatically update it.
 
+Setup scopes `cdc_doctor` to the active generation when one exists. Consumer
+existence uses the native `cdc_consumer_stats(..., consumer := name)` argument.
+Unscoped doctor/list calls inspect historical consumers' pending schema boundaries
+and can exceed worker transaction limits on a mature lake. A SQL WHERE applied
+after `cdc_list_consumers` does not restrict that internal work. Full historical
+diagnostics remain an explicit operator action; setup does not retire/reset cursors.
+
 The upstream source lives at https://github.com/elei-io/ducklake-cdc-extension. Follow that
 repository's build/test instructions when developing CDC itself, then publish through community.
 
