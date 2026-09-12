@@ -29,7 +29,7 @@ function parseSample(): ElementRow[] {
   const visit = (node: Node) => { nodes.push(node); node.childNodes.forEach(visit) }
   visit(document)
   const indices = new Map(nodes.map((node, index) => [node, index]))
-  return elements.map(element => ({ index: indices.get(element)!, parent: indices.get(element.parentNode!) ?? null, tag: element.localName,
+  return elements.map(element => ({ index: indices.get(element)!, parent: element.parentElement ? indices.get(element.parentElement) ?? null : null, tag: element.localName,
     attributes: Object.fromEntries(Array.from(element.attributes, attribute => [attribute.name, attribute.value])),
     direct: Array.from(element.childNodes).filter(node => node.nodeType === Node.TEXT_NODE).map(node => node.textContent).join(""),
   }))

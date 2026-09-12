@@ -1,5 +1,7 @@
 # Lifecycle
 
+The canonical element replacement is specified in [ELEMENT_LAYOUT.md](ELEMENT_LAYOUT.md).
+
 Periplus keeps acquisition small and derived evidence append-only while retained.
 Explicit retirement is the sole deletion path; see [RETENTION.md](RETENTION.md).
 
@@ -36,20 +38,19 @@ physical-schema declaration. Add one file, edit one file, or delete one file; th
 a complete rebuild. The generation digest includes the complete source of every discovered
 projection file and its declared implementation dependencies, so an implementation-only edit cannot silently reuse the previous generation.
 
-The current files project structural HTML and complete positional text postings at content grain,
-link occurrences and readiness membership at visit grain, and a shared vocabulary at generation grain. HTML readiness also requires the active content root
-marker because a separate batch may own shared-content output.
+The current files project complete HTML elements and JSON-LD at content grain,
+with links and readiness at visit grain. HTML readiness requires the null-parent
+element because a separate batch may own shared-content output.
 
 A visit batch loads visits and documents from a pinned snapshot, groups unique HTML
 sources, and parses each body once. The batch containing the minimum retained HTML
 `document_id` for each content hash owns its DOM output. The decision is deterministic
 for that snapshot, including replay; every observation emits its own link occurrences.
 
-Registry callbacks produce Arrow tables with normalized ICU text as the posting key.
-Preparation needs no shared dictionary allocation, membership lookup or lake transaction.
-The internal `material.term(text)` view derives distinct terms from current postings;
-search reads postings directly, so vocabulary enumeration is outside its hot path.
-Temporary Arrow files remain bounded by the existing document and batch budgets.
+Registry callbacks produce Arrow tables. Every element stores complete descendant
+text and direct text. Preparation needs no vocabulary allocation, tokenizer or
+lake transaction. Large nested pages can amplify temporary preparation memory;
+worker concurrency and document limits bound admission.
 
 Generic lifecycle code writes partitioned,
 sorted immutable Parquet outside the commit claim. Under exact generation, observation
@@ -305,8 +306,6 @@ budget. Redelivery uses the remaining claim lifetime capped at 30 seconds plus
 jitter, allowing early releases to become useful without occupying a writer lane.
 Uncertain writes retain their original claims and fail-stop bounds.
 
-Positional postings use one lazy text-index result per content in the visit-batch
-context. The cache ends with preparation. Element attributes/direct text are stored
-on nodes; public elements are projected from those nodes. A complete rebuild activates
-text-key postings and DOM together, and replaces the stored dictionary with the internal
-vocabulary view. Normal finalization removes obsolete material tables.
+Elements share one parsed document context. Exact descendant text is materialized
+for every element; parser nodes are temporary. A complete rebuild activates all
+new projections together. Normal finalization removes obsolete material tables.

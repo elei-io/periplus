@@ -318,20 +318,16 @@ class RetentionTests(unittest.TestCase):
         self.document_visit()
         self.document_visit()
         connection = self.catalogue.trusted_connection
-        tables = ['html_nodes', '_periplus_rebuild_html_nodes_test', '_periplus_retired_html_nodes_test']
+        tables = ['html_elements', '_periplus_rebuild_html_elements_test', '_periplus_retired_html_elements_test']
         for table in tables:
-            if table != 'html_nodes':
-                connection.execute(f'CREATE TABLE material.{table} AS SELECT * FROM material.html_nodes WHERE false')
-            connection.execute(f'INSERT INTO material.{table} (content_sha256, node_index, subtree_end_index, sibling_index, node_type, depth) VALUES (?, 0, 1, 0, ?, 0)', ['a'*64, 'document'])
-        connection.execute("INSERT INTO material.posting VALUES ('monkeys', ?, 2,[0,1],[[0],[0]])", ['a'*64])
+            if table != 'html_elements':
+                connection.execute(f'CREATE TABLE material.{table} AS SELECT * FROM material.html_elements WHERE false')
+            connection.execute(f"INSERT INTO material.{table} (content_sha256, node_index, subtree_end_index, sibling_index, tag, depth, attributes, text_direct, text, text_start, text_end) VALUES (?, 0, 1, 0, ?, 0, MAP {{}}, '', '', 0, 0)", ['a'*64, 'html'])
         candidates = self.candidates()
         self.retention.purge_observation(candidates[0], now=self.now)
-        self.assertEqual(connection.execute('SELECT count(*) FROM material.posting').fetchone()[0], 1)
         for table in tables:
             self.assertEqual(connection.execute(f'SELECT count(*) FROM material.{table}').fetchone()[0], 1)
         self.retention.purge_observation(candidates[1], now=self.now)
-        self.assertEqual(connection.execute('SELECT count(*) FROM material.posting').fetchone()[0], 0)
-        self.assertEqual(connection.execute('SELECT * FROM material.term').fetchall(), [])
         for table in tables:
             self.assertEqual(connection.execute(f'SELECT count(*) FROM material.{table}').fetchone()[0], 0)
 

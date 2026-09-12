@@ -4,28 +4,9 @@ import unittest
 
 from periplus.materialization.dom.links import links_from_elements
 from periplus.materialization.dom.nodes import parse_document
-from periplus.materialization.search_text import build_search_text
 
 
 class LexborContractTests(unittest.TestCase):
-    def test_postings_cover_template_and_head_text_with_valid_provenance(self):
-        nodes, _ = parse_document(
-            "<title>headword</title><style>styleword</style>"
-            "<script>scriptword</script><template>templateword</template>"
-            '<p data-x="attributeonly">mon<b>key</b> monkey</p>'
-        )
-        terms = build_search_text(nodes).occurrences
-        self.assertEqual(
-            set(terms),
-            {"headword", "styleword", "scriptword", "templateword", "monkey"},
-        )
-        self.assertEqual(len(terms["monkey"]), 2)
-        self.assertEqual(len(terms["monkey"][0].node_indexes), 2)
-        for occurrences in terms.values():
-            for occurrence in occurrences:
-                for index in occurrence.node_indexes:
-                    self.assertEqual(nodes[index].node_type, "text")
-
     def test_links_inside_template_fragments_preserve_node_references(self):
         nodes, elements = parse_document(
             '<template><a href="/inside">inside</a></template><a href="/outside">outside</a>'

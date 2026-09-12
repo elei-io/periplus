@@ -6,15 +6,7 @@ WITH captions AS (
 )
 SELECT t.content_id, t.node_index, c.node_index AS caption_node_index,
        CASE WHEN c.node_index IS NOT NULL THEN
-           coalesce(string_agg(n.value, '' ORDER BY n.node_index)
-               FILTER (WHERE nested.node_index IS NULL), '') END AS caption
+           material.element_text_excluding(c.content_id, c.node_index, ['table']) END AS caption
 FROM public_v1.html_element t
-LEFT JOIN captions c ON c.content_id = t.content_id AND c.parent_index = t.node_index
-LEFT JOIN public_v1.html_node n ON n.content_id = t.content_id
- AND n.node_index > c.node_index AND n.node_index < c.subtree_end_index AND n.node_type = 'text'
-LEFT JOIN public_v1.html_element nested ON nested.content_id = t.content_id
- AND nested.tag = 'table' AND nested.namespace = 'http://www.w3.org/1999/xhtml'
- AND nested.node_index > c.node_index AND n.node_index > nested.node_index
- AND n.node_index < nested.subtree_end_index
-WHERE t.tag = 'table' AND t.namespace = 'http://www.w3.org/1999/xhtml'
-GROUP BY t.content_id, t.node_index, c.node_index;
+LEFT JOIN captions c ON c.content_id=t.content_id AND c.parent_index=t.node_index
+WHERE t.tag='table' AND t.namespace='http://www.w3.org/1999/xhtml';

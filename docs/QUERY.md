@@ -1,5 +1,7 @@
 # Query
 
+The canonical element replacement is specified in [ELEMENT_LAYOUT.md](ELEMENT_LAYOUT.md).
+
 Periplus delivers its query interface in three layers, in this order.
 
 The continuous investigation loop, decision matrix and production-reader bench are
@@ -136,22 +138,10 @@ increase the server's limits. Administrative SQL retains its separate fixed resu
 
 ### Page discovery and structured text
 
-Use `search('query')` through the query API for positional page discovery, and
-`html_element.text` / `html_node.text` for deterministic structural SQL. Search
-returns content IDs, matched snippets with node IDs, and scores; see
-[the contract](SCHEMA.md#public_v1searchquery). It is the deliberate API-only
-exception to portable catalogue SQL: the stored macro supplies a typed signature
-and explicitly rejects direct execution. ICU query tokenization and staged lookup
-belong in `query/search.py`, not an extension or a materialization callback.
-
-Vocabulary and one positional posting relation remain private; prose is not
-materialized. All parsed text-node locations are indexed, excluding attributes and
-comments. Arbitrary SQL text predicates are not transparently rewritten. This is
-schema/catalogue and API-contract work, not a semantics-preserving optimizer pass.
-Search resolves only constant literal/parameter calls, binds the outer SQL before
-running discovery, and shares its snapshot, deadline, cancellation and result limits.
-Preparation does not run discovery. Plain and phrase modes are explicit; no public
-term surface or DISTINCT-term optimization is introduced.
+Choose captures, then query `html_element.text` and `text_direct` using ordinary
+SQL. Full descendant text is materialized. There is no search macro, vocabulary,
+posting relation or text-specific API rewrite. This is a schema/catalogue change;
+ordinary native optimizer behavior and resource limits remain.
 
 ## 2. Python SDK
 
@@ -205,13 +195,7 @@ installs the macros alongside views; `GET /query/helpers` derives documentation 
 manifest. Next.js proxies discovery and loads it into the agent context for each request.
 There is no helper-specific Python execution or prep-time rewrite path.
 
-The initial `public_v1.subtree_text` helper addresses a catalogue usability/correctness gap:
-callers were reconstructing DOM text incorrectly. It is not an optimizer workaround. The
-implementation orders text nodes by document position within the exclusive subtree boundary,
-excluding comments and text outside the root. Selected node count and output characters
-are bounded; ordinary query limits still govern physical scan cost. Contract tests compare every
-subtree with parser text, exercise lateral calls, and install the helper into read-only DuckLake
-query-service fixtures. Future performance changes follow the triage above.
+The current helper registry is empty: descendant text is a stored element column.
 
 ### Query failure categories
 
@@ -715,125 +699,11 @@ That investigation did not activate a runtime rewrite. The reviewed, deliberatel
 implementation below follows the subsequent scope decision; materializations remain unchanged.
 
 
-### Historical content-scoping experiment (2026-09-09; removed from API 2026-09-10)
+### Retired text and content-scoping experiments
 
-The following records the former implementation, not current API behavior.
-Compiler `public-query-v4` removes this rewrite, installed-definition checks and the
-additional JSON-plan inspection from prep and execution. The content-scoping code
-and plan detector were retained as research-only benchmark candidates, with differential
-tests. The later narrowly scoped experimental activation is documented below. Validation, Cartesian-product
-warnings, plan preview truncation, resource limits, history and native DuckDB
-optimization remain. Future activation requires the optimization playbook's evidence.
-
-### Former reviewed implementation
-
-This is a **compiler/optimizer** fix for selective discovery followed by extraction that
-DuckDB otherwise computes across the corpus. It adds no persistent relation or extraction
-semantics. The submitted query is bound first. For eligible queries, prep selects the
-filtered driver once in a statement-local materialized CTE, derives distinct content IDs,
-and semijoins those IDs into both complete node and element inputs of reviewed views.
-Final joins retain their original multiplicity; driver predicates move into selection
-and other predicates remain in the final query. This lets DuckDB drop unused prose text
-after discovery instead of retaining it to repeat the same test. In particular, selecting a
-heading never removes the other headings needed to compute its section boundary.
-
-Eligibility is intentionally syntactic and bounded, rather than a general lineage engine:
-
-- A source in FROM or any JOIN is `prose`, `capture`, `html_node`, or `html_element`,
-  with at least one qualified source-only WHERE conjunct. Prep selects the first eligible
-  filtered source in written order and preserves the original join order. Supported expressions include comparisons,
-  LIKE/ILIKE, IN lists, Boolean combinations, and lower/upper/coalesce; arbitrary
-  functions and explicit casts do not qualify.
-- Up to eight ordinary inner joins connect registered sources by exactly
-  `USING (content_id)` or a required qualified equality to an earlier source's
-  `content_id` within the `ON` conjunction. Parentheses and either equality direction
-  are supported. Additional deterministic predicates remain in the original join;
-  an equality appearing only inside `OR` does not establish connectivity.
-  Sources must be one of the drivers or a reviewed content-local view.
-- Extraction coverage is `html_node`, `html_element`, `html_metadata`, `html_heading`,
-  `html_section`, `html_form`, `html_form_control`, `html_select_option`, `html_list`,
-  `html_jsonld`, `html_image`, `html_code`, and `html_table`.
-- User subqueries, CTEs, aggregates, windows, outer joins, explicit LIMIT/OFFSET,
-  computed outputs without aliases, and existing named/numbered parameters stay unchanged.
-  Anonymous `?` parameters retain their original positions through numbered references.
-  Table-cell extraction and list-item numbering remain outside coverage because their
-  extraction rules can raise data-dependent errors.
-
-`CatalogueObject.content_local` is an explicit reviewed promise, not an inference from
-column names. Changes to an opted-in view require reviewing that promise again. All
-expanded public view definitions, primitive views, and the driver must match the installed
-catalogue, normalized with DuckDB's native parser in the execution transaction. A mismatch
-leaves the original query unchanged. Generated SQL passes public namespace validation too.
-There is no analytical discovery query during prep, no cross-request cache of matches,
-and no separate snapshot or new setting. Expansion is capped at 1,500 input AST nodes,
-eight dependency levels, and the existing 100,000-character SQL limit.
-
-The `content_scope` informational diagnostic identifies activation. Prep and execution
-both apply the same rule independently. The returned SQL is standalone public SQL with
-query-local CTEs; direct DuckDB users retain the original portable views and can also run
-that returned SQL. Inspection statements such as EXPLAIN remain unchanged; use the prep
-response to inspect the automatically chosen plan.
-
-Validation covers all 13 opted-in views using real parser/projection fixtures at selective,
-empty, and full domains in both join directions, plus all six prose/capture/heading
-join orders, duplicate captures and driver nodes, complete section
-partitions, multiple extraction targets, parameter order, output labels/types, definition
-mismatches, unsupported syntax, and the locked read-only QueryService. Nineteen additional
-read-only comparisons on corpus snapshot 8458 preserved complete result multisets and
-column descriptions. For `%wild robot%`, title groups fell from 1,478 to 8, and heading
-extraction/section windows from 39,457 to 91. For `%robot%`, these fell to 289 and 7,968.
-The title query retains `name = 'title'`, including metadata declarations bearing that
-name, and returned the same 334 rows. A subsequent read-only comparison on snapshot
-8458 checked all six prose/capture/heading join orders for `%wild robot%`, including
-`FROM html_heading h JOIN capture c USING (content_id) JOIN prose p USING (content_id)`.
-All returned the same 182 rows and reduced heading extraction from 39,457 to 91 groups.
-
-This rule reduces work behind extraction barriers; it is not a cost model or a guarantee
-of file pruning or lower latency. Full-domain searches retained full extraction work and
-added CTE/key-set overhead. Single paired timings are recorded in the investigation and
-must not be treated as production performance guarantees.
-
-### Historical shared-input plan diagnostics and optimizer evaluation
-
-Compiler `public-query-v3` retains the reviewed content-scoping rewrite and adds
-bounded inspection of the native JSON plan for its actual row-capped executable.
-This is another EXPLAIN, never EXPLAIN ANALYZE or a discovery execution during prep.
-It shares the existing transaction and deadline. Display-plan truncation does not
-truncate this inspection. JSON inspection is limited to 1 MB, 4,096 nodes and 64
-levels; unsupported evidence produces `content_scope_plan_unverified` rather than
-claiming that physical work is bounded.
-
-`content_scope` now reports that selected-document restrictions were *added*, not
-that every scan is limited. `content_scope_shared_input` warns when a native
-`__common_subplan_*` producer reads HTML primitives without the selected key CTE,
-while its consumers apply that restriction later. The detector follows native CTE
-indices through producer dependencies, excludes consumer subtrees, and does not
-label inputs with their own content-key scan filters unrestricted. This narrowly
-recognizes an observed barrier; absence of the warning does not prove low cost,
-complete predicate propagation or file pruning. Diagnostics flow through ordinary
-prep/execute responses and private preparation evidence.
-
-Regression tests measure the shared producer and complete section-window row
-counts, not just result equality. The diagnostic-only `common_subplan` alternative
-is also compared across all 13 reviewed views at selective, empty and full domains,
-including duplicate captures and column descriptions. The real read-only DuckLake
-service test checks the warning in both preparation and execution.
-
-`scripts/query_common_subplan_probe.py` provides the bounded read-only comparison
-against configured reader credentials. It uses a disposable connection, alternates
-variant order, pins each pair to one snapshot, validates installed definitions and
-compares complete result multisets/types. It stops comparisons after a timeout or
-result bound (100,000 rows / 32 MiB) rather than asserting partial equivalence.
-It prints aggregate evidence only. Run it with `uv run python` from
-`packages/periplus/`; `--case`, `--seconds` (default 20) and `--repetitions` (default 2)
-limit the work.
-
-No automatic optimizer selection is enabled by this evaluation. Production query
-connections remain configuration-locked, with the normal native optimizer set.
-Per-query toggling would require changing that security/lifecycle boundary;
-globally disabling common-subplan extraction is not justified by selective-only
-speedups. The production-data comparisons and remaining broad-query timeouts are
-recorded in [the investigation](query-investigations/key-domain/README.md).
+Previous postings, vocabulary, prose and content-scoping investigations are historical
+measurements. Their implementations are removed by the canonical element release.
+See the individual reports under query-investigations for original evidence.
 
 ## Stable and experimental execution
 
@@ -843,78 +713,13 @@ console links preserve the selected mode with `mode=experimental`. Stable uses
 `/api/query/experimental/exec`, `/api/query/experimental/prep` and
 `/api/query/experimental/helpers`. The SQL assistant validates against the selected mode.
 
-Stable and experimental share compiler `public-query-v11`, with mode suffixes
-`:stable` and `:experimental`. Both include the promoted
-`capture_heading_content_scope_v1` optimization.
-Experimental additionally supports the execution-only selected-content rule below.
-New candidates remain experimental until explicitly promoted.
+Stable and experimental share compiler `public-query-v12`, with mode suffixes.
+Both run ordinary validated SQL and report an empty optimizations list. Previous
+DOM rewrites are removed. Processes retain independent admission and resource
+limits. Experimental failure is never retried through stable.
 
-`capture_heading_content_scope_v1` activates only for a conservative inner join of
-`capture` and `html_heading` with a single exact `capture.effective_url` equality,
-a plain content-ID join and string parameter bindings.
-The original SQL binds first, and installed view definitions must match the reviewed
-versions inside the pinned read transaction. Unsupported forms retain ordinary execution.
-Native DuckDB optimizers remain enabled in both modes. They share public catalogue semantics
-and lake layout. This split does not undo catalogue improvements or isolate
-physical storage changes. QueryService owns the execution mode; future candidate
-rewrites must be explicitly restricted to experimental until promoted.
-
-Prepared and executed responses identify `query_mode`, `compiler_version` and
-`optimizations` (empty when no rewrite applies). History records the mode in the compiler version,
-including failed admission. The SQL console shows the public schema (`public_v1`)
-and execution mode, not the internal compiler version; compiler metadata remains
-available through the API and operator query history. Separate processes provide independent connection,
-admission, memory and spill limits; they still share storage and cluster capacity.
-Experimental unavailability is an error, never a retry through stable.
-
-See [the first-three investigation](query-investigations/experimental-first-three/README.md)
-for paired production evidence and rejected candidates. No shared physical layout
-or catalogue relation changes are part of this activation.
-
-### Promotion to the shared baseline
-
-The existing experimental rules were promoted unchanged at the user's request.
-The [promotion record](query-investigations/shared-query-baseline/README.md) links
-the original frozen-snapshot evidence and records common-path activation tests.
-Existing research-only candidates remain research-only. Stable is now the normal
-optimized endpoint, while experimental remains available for future candidates.
-
-
-### Experimental selected-content execution
-
-`selected_content_scan_v1` resolves distinct non-null content IDs from a leading
-filtered capture CTE during execution, then passes one bound array to exact
-membership filters on HTML primitives. Selection and extraction share
-the existing read transaction, admission slot and operation deadline. Prep binds
-and explains the original statement and reports `selected_content_available`;
-it never executes discovery. Execution reports the applied optimization and its
-actual extraction plan while preserving the submitted SQL and parameters.
-
-Initial grammar: one to four nonrecursive SELECT CTEs; the first directly projects
-capture columns including content_id, has a WHERE and no joins, aggregates or
-limit. Each subsequent SELECT block starts from that CTE. Heading, section,
-and metadata joins must preserve its content domain through ordinary inner
-or left joins, using content_id or a required equality to the driver content_id.
-Auxiliary CTE joins use capture_id. Reviewed deterministic expressions and literal
-or parameter UUID casts are supported; windows, correlated subqueries, arbitrary
-functions, computed driver keys and unsupported joins remain native. This does
-not cover an independent corpus-wide metadata aggregation CTE.
-
-Installed view definitions must match within the transaction. Complete document
-partitions are retained for section boundaries. Selection reads at most 100,001 capture-key rows to detect a 100,000-row
-collection bound, then deduplicates in bounded application memory (at most 100,000
-IDs and 8 MiB of UTF-8 key data). It does not add an unbounded DISTINCT aggregation
-before the selection limit. Duplicate captures count toward the input-row bound. If the collection bound is exceeded, execution reports
-`selected_content_bound` and uses the original SQL within the remaining deadline.
-These are collection safety bounds, not a latency-based eligibility heuristic.
-
-The acceptance priority is completion at bounded resources: modest slowdowns for
-broad selections are accepted, but correctness and resource limits are unchanged.
-[Investigation and evidence](query-investigations/request-scope/README.md) record
-both gains and the broad synthetic regression. Stable execution is unchanged;
-compiler v10 identifies this revision in both modes. No persistent tables, global
-DuckDB optimizer settings, service limits or deployment topology are changed.
-
+Prepared/executed responses and private history retain mode, compiler version,
+SQL, parameters and plan evidence. Native DuckDB optimizers remain enabled.
 
 ### Notebook input and streaming transport
 

@@ -1,5 +1,7 @@
 # Schema
 
+The canonical element replacement is specified in [ELEMENT_LAYOUT.md](ELEMENT_LAYOUT.md).
+
 Periplus has one evidence path:
 
 ```text
@@ -59,19 +61,19 @@ of the public SQL contract.
 
 The fixed projection registry is authoritative. The registry declares the following document structures plus visit readiness:
 
-### `material.html_nodes`
+### `material.html_elements`
 
-One row per `(content_sha256, node_index)` containing the complete parsed document
-node tree, including stored integer depth (document root = 0). It shares the
-parse context and position space with elements and links.
-The `node_index = 0` document row is the generation content-presence marker.
+One row per `(content_sha256, node_index)` with parent_index, subtree_end_index,
+sibling_index, depth, tag, namespace, attributes, text_direct, text, text_start and
+text_end. IDs retain parsed preorder gaps. Parent references skip non-element
+containers; the document element has null parent and depth zero. Sibling positions
+count projected elements. The null-parent row proves content presence.
 
-### Element data in `material.html_nodes`
-
-Element nodes carry normalized `tag`, `attributes` and `text_direct`; these are null on non-elements.
-The public `html_element` view filters element rows from this single material table.
-Text-node order and provenance remain available for reconstruction and term matches.
-
+Every element stores exact descendant text in parsed order, including template
+fragments and script/style/title text. No whitespace normalization or separators.
+Internal code-point offsets support excluding nested lists/tables from structured
+views without storing text nodes. Elements use eight content buckets and sort by
+content_sha256, node_index. Public html_element exposes text directly.
 
 ### `material.html_jsonld`
 
@@ -81,50 +83,6 @@ script text; a bounded standalone DuckDB connection preserves the public parser
 contract. Invalid scripts remain rows. Files use eight content-hash buckets and
 sort by `(content_sha256, node_index)`. This projection shares content ownership,
 replay, rebuild and atomic activation with the other fixed projections.
-
-### `material.term` and `material.posting`
-
-Private vocabulary: `term(text VARCHAR)` is an internal distinct view over
-`posting.text`, computed on demand. New terms become visible in the same snapshot
-as their postings. Full vocabulary enumeration scans the text column; it is not
-on the search path. No dictionary allocation or membership lookup occurs during preparation.
-
-There is one positional relation, sorted by `(text, content_sha256)` without
-partition fan-out:
-
-```text
-posting(text VARCHAR, content_sha256 VARCHAR, frequency BIGINT,
-        positions BIGINT[], node_indexes INTEGER[][])
-```
-
-One row per term/content. Frequency equals the number of positions. Each ascending
-position has a corresponding nonempty list of contributing text-node IDs; a word
-split across inline nodes is one occurrence with multiple owners. No separate
-prose, content-posting or node-posting materialization remains.
-
-Every parsed text node participates regardless of its document location, including
-title, script, style, template, noscript, hidden and foreign-element text. Attributes,
-comments and other nontext nodes are excluded. There is no visibility inference.
-ICU root-locale word boundaries follow case folding and NFC. Numbers are retained;
-whitespace, punctuation and symbols do not become standalone terms. No stemming or
-stopword filtering. PyICU 2.16.2 / ICU 77.1 / Unicode 16.0 are pinned.
-
-Text boundaries (`all-text-inline-runs-v1`) are structural, independent of CSS.
-These HTML elements are transparent on entry and exit:
-`a abbr b bdi bdo cite code data del dfn em i ins kbd label mark q rp rt ruby s samp
-small span strong sub sup time u var wbr`.
-Every other element, including custom elements and foreign namespaces, breaks the
-run on entry and exit. Comments add no separator. Concatenate parsed text values
-within each run before normalization/tokenization. Each run leaves one unused
-position afterward, so consecutive-position phrases cannot cross runs. Whitespace
-inside a run separates words normally; punctuation is ignored by word matching.
-For example `mon<strong>key</strong>` indexes `monkey` once; separate paragraphs
-cannot form a phrase, even if CSS displays them inline.
-
-Vocabulary and postings share generation publication, replay, replacement and
-retirement with the other projections. Changing coverage, tokenization or boundaries
-requires a full rebuild. Term-major sorting does not guarantee bounded file reads
-under appends; LakeDucktor owns physical maintenance.
 
 ### `material.link_occurrences`
 
@@ -163,73 +121,15 @@ and execution report `schema_version`; execution additionally reports
 promise that an expired snapshot can be replayed. Physical layout is private.
 There are no `web` or `content` compatibility namespaces.
 
-### `public_v1.search(query)`
-
-`search()` is a **query-API feature**, exposed through a typed catalogue macro for
-metadata and DESCRIBE. Direct execution in plain DuckDB raises an explicit error.
-Ordinary HTML SQL remains portable. The API runs the same ICU tokenizer as ingestion,
-then vocabulary lookup, posting selection and bounded snippet extraction inside one
-request snapshot, deadline and admission slot. Preparation binds an empty typed
-result and does not discover contents. Plans describe final SQL composition, not
-all preceding search stages.
-
-Results: `content_id`, `matches STRUCT(snippet VARCHAR, node_indexes INTEGER[])[]`,
-`score DOUBLE`. One row per retained HTML content with at least one capture;
-duplicate captures do not multiply hits. Join captures yourself for URLs or titles.
-
-Plain queries require every distinct word token. A fully double-quoted query
-requires the full token sequence at consecutive positions within a structural run;
-repeated tokens are significant in phrases. Unquoted duplicates are ignored.
-No substring, prefix, wildcard, stemming or semantic expansion. Quotes cannot be
-mixed into a plain query. NULL, empty and nonword-only queries return no rows.
-At most 256 characters / 32 tokens per query and four constant calls per SQL request.
-Arguments must be string literals, NULL or bound parameters, not row-dependent SQL.
-All text locations above participate; meta descriptions and other attributes do not.
-
-Plain scores sum distinct query-term frequencies. Phrase scores count matching
-starts. Order is score descending then content ID ascending, capped at 100 after
-matching and capture eligibility. Phrase verification happens before the cap.
-Use an outer ORDER BY when composing SQL. Ranking may evolve.
-
-Matches contain up to three representative occurrences in document order, with
-contributing node IDs. Snippets preserve case, normalize NFC, collapse whitespace,
-and contain at most 240 characters starting up to 60 before a matching token.
-They may cut words or long phrases. Context is not included in node ID provenance.
-Snippet extraction rejects text nodes/ranges over 8,000,000 characters, more than
-10,000 text nodes per range, or intermediate collections over 32 MiB. Budget failures
-raise errors rather than returning a silently incomplete result set.
-
-```sql
-SELECT * FROM search('monkeys zoo') ORDER BY score DESC, content_id;
-SELECT * FROM search('"monkeys in the zoo"');
-SELECT s.content_id, m.snippet, n.node_index, n.parent_index
-FROM search('monkey') s,
-     unnest(s.matches) AS matches(m),
-     unnest(m.node_indexes) AS ids(node_index)
-JOIN html_node n ON n.content_id=s.content_id AND n.node_index=ids.node_index;
-```
-
-The 100-content output cap does not bound index scan cost. No public prose, term
-or term_node relation or compatibility alias exists. Complete text-node coverage
-also does not imply that a word index can transparently accelerate arbitrary
-substring/element predicates; such optimizations must prove coverage and reapply
-original predicates.
-
 ### Deterministic HTML text
 
-`html_node.text` equals the parsed value for text nodes and is NULL for document,
-doctype, element, comment and processing-instruction nodes. `value` retains its
-existing meaning, including comment and instruction contents.
-
-`html_element.text` concatenates all descendant text-node values in depth-first
-document order. It returns an empty string for an element without text. It adds
-no separators and performs no trimming, case folding or whitespace normalization.
-Parsed HTML entity decoding and parser newline normalization have already happened.
-Thus `<p>mon<b>key</b></p>` gives `monkey`, and `<p>A<br>B</p>` gives `AB`.
-Comments contribute nothing; script, style, title, template and noscript text nodes
-are included when present in the parsed tree. CSS visibility is irrelevant.
-`text_direct` concatenates only immediate child text with the same whitespace rules.
-These columns preserve content IDs, node indices and subtree boundaries.
+Every element stores all descendant parsed text in document order, including template
+fragments, scripts, styles and titles. Whitespace is preserved; no separators are
+inserted. Comments and attributes contribute no text. `text_direct` contains only
+immediate child text; template fragments are not immediate text children. These
+values describe the parsed document, not browser visibility or original byte spelling.
+Use ordinary SQL predicates; corpus-wide text discovery scans text until a separate
+acceleration layer is introduced. There is no public search macro.
 
 ### `public_v1.capture`
 
@@ -263,57 +163,27 @@ across captures; node and element storage remains content-owned, hash-partitione
 and sorted by content identity and node position. Adding capture byte metadata
 requires no physical rewrite or materialization rebuild.
 
-### `public_v1.html_node` and `public_v1.html_element`
+### `public_v1.html_element`
 
-Both relations share `content_id VARCHAR`, `node_index INTEGER`,
-`parent_index INTEGER`, `subtree_end_index INTEGER`, `sibling_index INTEGER`,
-`depth INTEGER`.
-Identity is `(content_id, node_index)` within the returned catalogue snapshot.
-Positions are zero-based depth-first positions across **all** nodes, including the
-document root. Subtree end is exclusive. Parent is null only for the document
-root. Sibling positions count all node kinds. Depth counts parent edges from the
-document root: document = 0, html = 1, and each child is one deeper than its parent.
-The same element has the same depth in both relations; depth is structural, not
-heading rank or visual importance.
+One row per `(content_id VARCHAR, node_index INTEGER)` with parent_index,
+subtree_end_index, sibling_index and depth (INTEGER), tag and namespace (VARCHAR),
+attributes (MAP(VARCHAR,VARCHAR)), text_direct and text (VARCHAR).
 
-`html_node` adds `node_type VARCHAR`, `name VARCHAR`, `namespace VARCHAR`, and
-`value VARCHAR`. Kinds are `document`, `document_fragment`, `doctype`, `element`, `text`, `comment`, and
-`processing_instruction` (where produced by HTML5 parsing). Name is the local
-name for elements/doctypes or instruction target; otherwise null. Namespace is a
-URI where applicable, otherwise null. Value contains text/comment/instruction
-content; other kinds have null values. Doctype source details remain in raw bytes.
+Positions preserve Lexbor preorder IDs, with gaps for non-element nodes. Parent
+references identify the nearest enclosing element; the document element has no
+parent and depth zero. Sibling positions count elements only. Subtree end is
+exclusive in the same preorder coordinate space. Template fragments participate
+in traversal but are not stored as rows. Attribute namespaces use Clark notation.
 
-`html_element` adds `tag VARCHAR`, `namespace VARCHAR`,
-`attributes MAP(VARCHAR, VARCHAR)`, and `text_direct VARCHAR`. Attribute keys use
-Clark notation `{namespace-uri}local-name` for namespaced attributes; other keys
-are unchanged local names. Direct text concatenates immediate child text nodes in
-order, including text after child elements. It excludes descendant element text.
-Empty direct text is an empty string. Neither relation models CSS visibility.
+Lexbor 3.1.0 through Selectolax 0.4.11 determines HTML5 tree repair and names.
+Text, comments and fragment nodes exist transiently while parsing. Their separate
+identities are not persisted. Raw bytes preserve source spelling and comments.
+Rendered Unicode is used directly; response bytes use BOM, supported early meta
+charset, then Windows-1252, replacing malformed byte sequences deterministically.
+A parser change requires rebuilding all dependent projections together.
 
-The projection describes an HTML5 parsed tree, including parser-inserted elements,
-not source token offsets. Exact spelling, duplicate source attributes, entity
-spelling and other serialization details remain in original bytes. Adjacent text
-fragments are merged. A parser change requires a complete coherent generation;
-node references must not be reused across snapshots without checking identity.
-
-The parser contract is Lexbor 3.1.0 through pinned Selectolax 0.4.11. Lexbor owns
-tree repair, namespace interpretation and parsed attribute names. Template content
-is preserved as an explicit `document_fragment` child of its template element;
-this logical containment edge keeps all content in the same preorder space.
-The fragment has null name/namespace/value. A template's direct text is empty;
-its descendant text includes the fragment's text nodes. Comments and processing
-instructions retain their parsed character data, but are not text postings.
-Changing this parser contract rebuilds all dependent projections together.
-
-Rendered captures arrive as Unicode. Exact response bytes use deterministic HTML
-encoding detection: BOM, then a supported meta charset in the first 1024 bytes,
-otherwise Windows-1252. Malformed encoded sequences are replaced; there is no
-statistical encoding guess or late-meta reparse. Raw bytes remain authoritative.
-
-HTML projections are asynchronous. A capture with no matching node root may be
-awaiting materialization; absence does not prove an empty document.
-HTML readiness uses the content document-root presence marker. Use LEFT JOIN when
-retaining captures without available structure matters.
+HTML materialization is asynchronous. A missing document element can mean pending
+materialization. Use LEFT JOIN when retaining captures without structure matters.
 
 ### `public_v1.html_form`, `html_form_control`, and `html_select_option`
 
@@ -457,7 +327,7 @@ separate source rows. No entity flattening, context fetching, URL resolution, RD
 expansion, or schema.org interpretation occurs. Script src URLs are not fetched;
 a source-only script with no inline text is reported as empty.
 
-Original script text is available from html_node children through the source
+Parsed script text is available from html_element.text_direct through the source
 node. HTML script raw-text parsing does not decode entity-like strings such as
 `&amp;`. Filters on content_id/node_index restrict source selection.
 
@@ -612,21 +482,19 @@ by content_id and positions in `[start_node_index, end_node_index)`. Parent and
 child ranges overlap deliberately; querying both can repeat nested content.
 
 ```sql
-SELECT s.heading_node_index, h.text AS heading,
-       coalesce(string_agg(n.value, '' ORDER BY n.node_index), '') AS passage
+SELECT s.heading_node_index, h.text AS heading, e.node_index, e.text
 FROM public_v1.html_section s
 JOIN public_v1.html_heading h
   ON h.content_id = s.content_id AND h.node_index = s.heading_node_index
-LEFT JOIN public_v1.html_node n
-  ON n.content_id = s.content_id AND n.node_index >= s.start_node_index
- AND n.node_index < s.end_node_index AND n.node_type = 'text'
-WHERE s.content_id = ? AND lower(trim(h.text)) = 'product description'
-GROUP BY s.heading_node_index, h.text;
+JOIN public_v1.html_element e
+  ON e.content_id = s.content_id AND e.node_index >= s.start_node_index
+ AND e.node_index < s.end_node_index
+WHERE s.content_id = ? AND e.tag = 'p'
+ORDER BY e.node_index;
 ```
 
-The example concatenates source text without separators or trimming; comments are
-excluded by node_type and script/style text is included. html_section itself does
-not choose a text extraction policy. Filter content before expanding passages.
+Each paragraph contains complete descendant text. Nested matching paragraphs or
+other enclosing elements can repeat text; this query does not reconstruct a passage.
 
 ### `public_v1.html_heading`
 
@@ -729,17 +597,6 @@ parsed href values are retained; targets use existing URL normalization. Resolut
 uses the capture's effective URL and applicable document base URL. Join capture
 first to obtain content identity before joining the source element. A linked
 destination need not have been captured.
-
-### `public_v1.subtree_text`
-
-A table macro accepts `source_content_id VARCHAR`, `root_node_index INTEGER`,
-optional `max_chars` (default 20000, range 0–100000) and `max_nodes` (default 10000,
-range 1–10000). It returns `text VARCHAR`, `truncated BOOLEAN`, `total_chars BIGINT`,
-and `node_count BIGINT`. Text nodes within the subtree are concatenated in order,
-without separators, trimming or visibility filtering. Comments are excluded.
-Script/style text is included. Missing roots return zero rows; empty existing
-subtrees return one empty result. Character truncation is explicit. Oversized
-subtrees fail rather than returning incomplete text without notice.
 
 ### Collection lineage
 
@@ -886,14 +743,3 @@ continues. After dependencies are complete and evidence committed, `acquisition_
 selection context become null. `completed_status` and `completed_evidence` preserve current
 request progress; URL keys still enforce request-local deduplication. These compact rows
 are operational state, not a historical corpus, and retire with the parent request.
-
-### Node term occurrences
-
-`material.node_posting(term_id, content_sha256, node_index, frequency)` stores term
-occurrences touching eligible body text nodes, clustered by content, term and node.
-These matches remain internal and do not define public element-text coverage.
-Terms are segmented from complete prose, including words split across inline nodes.
-One occurrence can touch several nodes; node frequencies are not additive.
-Shared batch context computes prose and occurrence maps once per unique content.
-
-Search plan preparation uses an empty typed result to validate the surrounding SQL; its cardinality estimates do not describe discovery. Use API preparation instead of `EXPLAIN` or `SUMMARIZE` with search. `DESCRIBE` uses the stored result signature without discovery.

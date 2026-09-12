@@ -1,15 +1,7 @@
-"""Partition expanding validation inputs once, outside persistent lake storage."""
-from collections.abc import Iterator
+"""Snapshot-pinned scalar validation without occurrence expansion or staging."""
 from contextlib import contextmanager
-from pathlib import Path
-from tempfile import TemporaryDirectory
-
 from sqlglot import exp, parse_one
-
-from periplus.materialization.registry import PROJECTIONS, ProjectionSpec
-from periplus.materialization.sql import sql_string
-from periplus.platform.telemetry import event
-
+from periplus.materialization.registry import ProjectionSpec
 
 def at_snapshot(sql: str, snapshot: int | None) -> str:
     """Pin physical lake reads without retaining a metadata transaction."""
@@ -34,105 +26,9 @@ def at_snapshot(sql: str, snapshot: int | None) -> str:
     return tree.sql(dialect="duckdb")
 
 
-def _needs_partitioning(sql: str) -> bool:
-    return any(isinstance(node, (exp.Unnest, exp.Explode, exp.SortArray, exp.ArrayDistinct))
-               for node in parse_one(sql, read="duckdb").walk())
-
-
-def _sources(sql: str, spec: ProjectionSpec) -> tuple[exp.Expression, list[exp.Table]]:
-    tree = parse_one(sql, read="duckdb")
-    tables = list(tree.find_all(exp.Table))
-    # The supported expanding contracts count source-row defects and equijoin
-    # references on content identity. Fail closed for a different contract.
-    if (len(tree.expressions) != 1 or not isinstance(tree.expressions[0], exp.Count)
-            or not isinstance(tree.expressions[0].this, exp.Star)
-            or tree.args.get('limit') or tree.args.get('group') or tree.args.get('having')):
-        raise ValueError("expanding validation requires a row-defect count")
-    if any(isinstance(node, (exp.Group, exp.Having, exp.Limit, exp.Offset,
-                             exp.Distinct, exp.Window, exp.SetOperation))
-           or (isinstance(node, exp.AggFunc) and node is not tree.expressions[0])
-           for node in tree.walk()):
-        raise ValueError("expanding validation must preserve source-row defects")
-    if sum(t.db == 'material' and t.name == spec.name for t in tables) != 1:
-        raise ValueError("expanding validation requires one validated source relation")
-    registered = {p.name: p for p in PROJECTIONS}
-    for table in tables:
-        relation = registered.get(table.name)
-        if (table.db != 'material' or relation is None
-                or 'content_sha256' not in relation.identity_columns):
-            raise ValueError("expanding validation sources must have content identities")
-    for join in tree.find_all(exp.Join):
-        if 'content_sha256' not in [key.name for key in join.args.get('using') or []]:
-            raise ValueError("partitioned validation joins must equate content identities")
-    return tree, tables
-
-
 @contextmanager
-def validation_statements(catalogue, spec: ProjectionSpec, *, partitions: int = 64, snapshot: int | None = None):
-    """Yield (query, partition, SQL); cleanup staged files on every exit.
-
-    Hash partitioning preserves equal content identities, including duplicates.
-    Each referenced relation is staged in a single scan with only columns used by
-    the checks. No per-partition lake scan or occurrence-wide global join remains.
-    """
-    if partitions < 1:
-        raise ValueError("validation partitions must be positive")
-    expanding = {i: sql for i, sql in enumerate(spec.validation_queries) if _needs_partitioning(sql)}
-    columns: dict[str, set[str]] = {}
-    registered = {p.name: p for p in PROJECTIONS}
-    for sql in expanding.values():
-        tree, tables = _sources(sql, spec)
-        used = {column.name for column in tree.find_all(exp.Column)} | {'content_sha256'}
-        for table in tables:
-            available = {column.name for column in registered[table.name].columns}
-            columns.setdefault(table.name, set()).update(used & available)
-    with TemporaryDirectory(prefix='periplus-validation-') as directory:
-        paths: dict[tuple[str, int], list[str]] = {}
-        for name, selected in columns.items():
-            destination = Path(directory) / name
-            projection = ', '.join(f'"{column}"' for column in sorted(selected))
-            event('materialization_validation_staging', operation=name, outcome='started')
-            source = at_snapshot(
-                f"SELECT {projection}, hash(content_sha256) % {partitions} "
-                f"AS __validation_partition FROM material.{name}", snapshot
-            )
-            # PARTITION_BY retains a thread buffer in addition to each Parquet
-            # writer's row group. Both must flush early for nested list columns.
-            flush_threshold = int(catalogue.trusted_remote_rows(
-                "SELECT current_setting('partitioned_write_flush_threshold')"
-            )[0][0])
-            try:
-                catalogue.trusted_remote_execute("SET partitioned_write_flush_threshold=2048")
-                catalogue.trusted_remote_execute(
-                    f"COPY ({source}) TO {sql_string(str(destination))} "
-                    "(FORMAT PARQUET, COMPRESSION SNAPPY, ROW_GROUP_SIZE 2048, "
-                    "PARTITION_BY (__validation_partition))"
-                )
-            finally:
-                catalogue.trusted_remote_execute(
-                    f"SET partitioned_write_flush_threshold={flush_threshold}"
-                )
-            for path in destination.rglob('*.parquet'):
-                partition = int(path.parent.name.split('=')[1])
-                paths.setdefault((name, partition), []).append(str(path))
-            event('materialization_validation_staging', operation=name, outcome='finished',
-                  bytes=sum(path.stat().st_size for path in destination.rglob('*.parquet')))
-
-        def statements() -> Iterator[tuple[int, int, str]]:
-            for index, sql in enumerate(spec.validation_queries):
-                if index not in expanding:
-                    yield index, 0, at_snapshot(sql, snapshot)
-                    continue
-                for partition in range(partitions):
-                    tree, tables = _sources(sql, spec)
-                    for table in tables:
-                        files = paths.get((table.name, partition), [])
-                        selected = ', '.join(f'"{column}"' for column in sorted(columns[table.name]))
-                        source = (f"read_parquet([{','.join(sql_string(path) for path in files)}], hive_partitioning=false)"
-                                  if files else f'material.{table.name}')
-                        replacement = parse_one(
-                            f'SELECT {selected} FROM {source}' + ('' if files else ' WHERE false'), read='duckdb'
-                        ).subquery(alias=table.alias_or_name)
-                        table.replace(replacement)
-                    yield index, partition, tree.sql(dialect='duckdb')
-        yield statements()
+def validation_statements(catalogue, spec: ProjectionSpec, *, snapshot: int | None = None):
+    """Yield registry checks against one fixed source snapshot."""
+    del catalogue
+    yield ((index, 0, at_snapshot(sql, snapshot))
+           for index, sql in enumerate(spec.validation_queries))

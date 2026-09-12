@@ -4,14 +4,14 @@ from datetime import UTC, datetime
 from contextlib import contextmanager
 from unittest.mock import patch
 
-from test_term_materialization import TermMaterializationTests
+from test_element_materialization import ElementMaterializationTests
 from periplus.materialization.batch import commit_prepared_batch
 from periplus.materialization.models import MaterializationRunRecord, MaterializationBatchRecord
 from periplus.materialization.state import begin_rebuild_write
 from periplus.platform.catalogue.exceptions import CatalogueOutcomePending
 
 
-class FirstPublicationTests(TermMaterializationTests):
+class FirstPublicationTests(ElementMaterializationTests):
     def setUp(self):
         super().setUp()
         self.run.source_snapshot = self.batch.snapshot
@@ -32,12 +32,12 @@ class FirstPublicationTests(TermMaterializationTests):
                 with self.assertRaises(CatalogueOutcomePending):
                     commit_prepared_batch(self.catalogue, self.run, self.batch, prepared)
             self.assertFalse(any(c.args[0].startswith('DELETE') for c in execute.call_args_list))
-        expected = self.terms()
+        expected = self.elements()
         self.expire_claims()
         with patch.object(self.catalogue, 'trusted_remote_execute', wraps=original) as execute:
             commit_prepared_batch(self.catalogue, self.run, self.batch, prepared)
             self.assertTrue(any(c.args[0].startswith('DELETE') for c in execute.call_args_list))
-        self.assertEqual(expected, self.terms())
+        self.assertEqual(expected, self.elements())
         self.assertTrue(commit_prepared_batch(self.catalogue, self.run, self.batch, prepared).already_applied)
 
     def test_intent_before_lake_failure_forces_replacement(self):
@@ -45,7 +45,7 @@ class FirstPublicationTests(TermMaterializationTests):
         self.assertTrue(begin_rebuild_write(self.run, self.batch))
         self.assertFalse(begin_rebuild_write(self.run, self.batch))
         commit_prepared_batch(self.catalogue, self.run, self.batch, prepared)
-        self.assertTrue(self.terms())
+        self.assertTrue(self.elements())
 
     def test_intent_failure_does_not_enter_lake(self):
         prepared = replace(self.prepare(), stable_content_ownership=True)
@@ -71,11 +71,11 @@ class FirstPublicationTests(TermMaterializationTests):
         with patch.object(self.catalogue, 'remote_transaction', rollback):
             with self.assertRaisesRegex(RuntimeError, 'before commit'):
                 commit_prepared_batch(self.catalogue, self.run, self.batch, prepared)
-        self.assertEqual(self.terms(), [])
+        self.assertEqual(self.elements(), [])
         self.expire_claims()
         self.assertFalse(begin_rebuild_write(self.run, self.batch))
         commit_prepared_batch(self.catalogue, self.run, self.batch, prepared)
-        self.assertTrue(self.terms())
+        self.assertTrue(self.elements())
 
     def test_changed_content_owner_uses_replacement(self):
         prepared = replace(self.prepare(), stable_content_ownership=False)

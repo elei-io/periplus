@@ -23,7 +23,6 @@ EXPECTED_PUBLIC_RELATIONS = {
     ("public_v1", "capture"),
     ("public_v1", "link"),
     ("public_v1", "html_element"),
-    ("public_v1", "html_node"),
     ("public_v1", "html_heading"),
     ("public_v1", "html_code"),
     ("public_v1", "html_section"),
@@ -63,7 +62,7 @@ class PublicCatalogueTests(unittest.TestCase):
             {(item.schema, item.name) for item in objects if item.kind == "view"},
             EXPECTED_PUBLIC_RELATIONS,
         )
-        self.assertEqual([(item.schema, item.name) for item in objects if item.kind == "table_macro"], [("public_v1", "subtree_text"), ("public_v1", "search")])
+        self.assertEqual([(item.schema, item.name) for item in objects if item.kind == "table_macro"], [])
         self.assertTrue(all(not item.requires_functions for item in objects))
 
     def test_installs_and_validates_public_views(self) -> None:
@@ -85,7 +84,7 @@ class PublicCatalogueTests(unittest.TestCase):
         self.assertEqual(views, EXPECTED_PUBLIC_RELATIONS)
         with self.assertRaises(duckdb.CatalogException):
             self.catalogue.connection.execute("SELECT * FROM public_v1.object")
-        self.assertEqual(set(macros), {("subtree_text",), ("search",)})
+        self.assertEqual(set(macros), set())
 
     def test_install_removes_superseded_web_and_dom_objects(self) -> None:
         self.catalogue.connection.execute("CREATE SCHEMA web")
@@ -141,7 +140,7 @@ class PublicCatalogueTests(unittest.TestCase):
         for name in ('prose', 'term', 'term_node'):
             with self.assertRaises(duckdb.CatalogException):
                 self.catalogue.connection.execute(f'SELECT * FROM public_v1.{name}')
-        for name in ('term', 'posting', 'html_nodes'):
+        for name in ('html_elements',):
             self.catalogue.connection.execute(f'SELECT * FROM material.{name} LIMIT 0')
 
     def test_views_preserve_observation_content_and_occurrence_grains(self) -> None:
@@ -192,11 +191,11 @@ class PublicCatalogueTests(unittest.TestCase):
                     'utf-8', 'content-a', 100, 'objects/a', 'identity', 100
                 );
 
-            INSERT INTO material.html_nodes (content_sha256,node_index,parent_index,subtree_end_index,depth,sibling_index,name,tag,namespace,attributes,text_direct,node_type) VALUES
-                ('content-a', 0, NULL, 2, 0, 0, 'html', 'html', 'http://www.w3.org/1999/xhtml',
-                 MAP {}, '', 'element'),
-                ('content-a', 1, 0, 2, 1, 0, 'a', 'a', 'http://www.w3.org/1999/xhtml',
-                 MAP {'href': '/next'}, 'Next', 'element');
+            INSERT INTO material.html_elements (content_sha256,node_index,parent_index,subtree_end_index,depth,sibling_index,tag,namespace,attributes,text_direct,text,text_start,text_end) VALUES
+                ('content-a', 0, NULL, 2, 0, 0, 'html', 'http://www.w3.org/1999/xhtml',
+                 MAP {}, '', 'Next', 0, 4),
+                ('content-a', 1, 0, 2, 1, 0, 'a', 'http://www.w3.org/1999/xhtml',
+                 MAP {'href': '/next'}, 'Next', 'Next', 0, 4);
 
             INSERT INTO material.link_occurrences VALUES (
                 '30000000-0000-0000-0000-000000000001',
@@ -320,7 +319,7 @@ class PublicCatalogueTests(unittest.TestCase):
             {(str(row[0]), str(row[1])) for row in rows},
             EXPECTED_PUBLIC_RELATIONS,
         )
-        self.assertEqual(set(macro_rows), {("public_v1", "subtree_text"), ("public_v1", "search")})
+        self.assertEqual(set(macro_rows), set())
 
         response = asyncio.run(metadata(_LocalCatalogueControl(self.catalogue)))
         self.assertEqual(response.catalogue_version, PUBLIC_CATALOGUE_VERSION)
@@ -328,7 +327,7 @@ class PublicCatalogueTests(unittest.TestCase):
             {(item.schema_name, item.name) for item in response.relations},
             EXPECTED_PUBLIC_RELATIONS,
         )
-        self.assertEqual([item.name for item in response.macros], ["subtree_text", "search"])
+        self.assertEqual([item.name for item in response.macros], [])
 
 
 class _LocalCatalogue:

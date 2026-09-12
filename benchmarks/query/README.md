@@ -1,7 +1,5 @@
-Current page-discovery and element-text cases are `search-discovery` and `element-text`.
-Superseded public prose/term workloads are archived under `retired/`; they are not
-part of the current public contract or normal case discovery. Historical experiment
-results remain evidence for internal storage choices, not supported public examples.
+Current element-text cases exercise ordinary SQL over stored elements. Old search
+experiments are historical and are not part of current case discovery.
 
 # Query optimization bench
 
@@ -201,9 +199,7 @@ With the normal lake-reader environment, use the shared measurement/result check
 and include execution-time key selection in each candidate measurement:
 
 ```sh
-uv run python scripts/query_selected_content_benchmark.py \
   --case selected-content-headings --report ../../.artifacts/selected-forward.json
-uv run python scripts/query_selected_content_benchmark.py \
   --case selected-content-headings --candidate-first \
   --report ../../.artifacts/selected-reverse.json
 ```

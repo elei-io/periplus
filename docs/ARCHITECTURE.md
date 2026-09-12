@@ -54,9 +54,7 @@ service stores Periplus control state only.
 schemas, and transactionally installs the complete persistent `public_v1.*` contract.
 Ordinary Periplus processes validate the installed contract and never repair it.
 
-`search()` is a deliberate query-API feature: its typed catalogue signature rejects
-direct execution. The API owns ICU tokenization and staged positional lookup within
-the request snapshot. Ordinary HTML SQL remains directly portable.
+Element text is stored directly on every materialized HTML element. Ordinary HTML SQL is portable; no search function or persistent node relation is installed.
 
 Periplus uses the standard DuckDB runtime and official storage extensions. The query API owns
 query validation and future optimizations. One DuckLake connection factory owns storage-protocol
