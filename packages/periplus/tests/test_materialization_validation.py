@@ -43,6 +43,7 @@ class PartitionedValidationTests(unittest.TestCase):
     def test_reject_self_join_and_unequal_reference_partitioning(self):
         spec = next(p for p in PROJECTIONS if p.name == 'posting')
         for sql in [
+            'SELECT count(*) FROM (SELECT DISTINCT unnest(node_indexes) FROM material.posting) p',
             'SELECT count(*) FROM material.posting a JOIN material.posting b USING(content_sha256), unnest(a.positions)',
             'SELECT count(*) FROM (SELECT unnest(node_indexes) FROM material.posting) p JOIN material.html_nodes n ON true',
         ]:

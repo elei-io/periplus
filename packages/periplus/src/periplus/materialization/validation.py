@@ -25,6 +25,11 @@ def _sources(sql: str, spec: ProjectionSpec) -> tuple[exp.Expression, list[exp.T
             or not isinstance(tree.expressions[0].this, exp.Star)
             or tree.args.get('limit') or tree.args.get('group') or tree.args.get('having')):
         raise ValueError("expanding validation requires a row-defect count")
+    if any(isinstance(node, (exp.Group, exp.Having, exp.Limit, exp.Offset,
+                             exp.Distinct, exp.Window, exp.SetOperation))
+           or (isinstance(node, exp.AggFunc) and node is not tree.expressions[0])
+           for node in tree.walk()):
+        raise ValueError("expanding validation must preserve source-row defects")
     if sum(t.db == 'material' and t.name == spec.name for t in tables) != 1:
         raise ValueError("expanding validation requires one validated source relation")
     registered = {p.name: p for p in PROJECTIONS}
