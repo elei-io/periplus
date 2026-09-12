@@ -7,6 +7,7 @@ import duckdb
 from datetime import UTC, datetime
 import json
 import logging
+from time import monotonic
 from typing import Literal
 from uuid import UUID
 
@@ -19,6 +20,8 @@ from periplus.materialization.batch import (
     prepare_batch,
 )
 from periplus.materialization import metrics
+from periplus.materialization.validation import validation_statements
+from periplus.platform.telemetry import event
 from periplus.materialization.contracts import (
     LiveBatchWork,
 )
@@ -824,7 +827,8 @@ def _activate_or_catch_up(
 
 def _finalize_activation(run: MaterializationRun) -> None:
     with catalogue_from_env(threads=1, memory_limit="2GB") as catalogue:
-        _verify_active_generation(catalogue, run)
+        with catalogue.remote_transaction():
+            _verify_active_generation(catalogue, run)
         catalogue.finalize_materialization_activation(
             (spec.relation for spec in PROJECTIONS),
             activation_id=run.id.hex,
@@ -935,19 +939,27 @@ def _verify_active_generation(catalogue, run: MaterializationRun) -> None:
             "SELECT count(*) - count(DISTINCT "
             f"({identity})) FROM {spec.relation.qualified}"
         )
+        event("materialization_validation_started", operation=spec.name, code="identity")
         duplicates = int(catalogue.trusted_remote_rows(query)[0][0])
+        event("materialization_validation_finished", operation=spec.name, code="identity", rows=duplicates)
         if duplicates:
             raise RuntimeError(
                 f"{spec.name} contains {duplicates} duplicate identities"
             )
-        for validation_query in spec.validation_queries:
-            invalid = int(
-                catalogue.trusted_remote_rows(validation_query)[0][0]
-            )
-            if invalid:
-                raise RuntimeError(
-                    f"{spec.name} validation found {invalid} invalid rows"
-                )
+        with validation_statements(catalogue, spec) as statements:
+            for query_index, partition, statement in statements:
+                started = monotonic()
+                fields = dict(operation=spec.name, code=f"validation_{query_index}", attempt=partition)
+                event("materialization_validation_started", **fields)
+                invalid = int(catalogue.trusted_remote_rows(statement)[0][0])
+                event("materialization_validation_finished", **fields,
+                      rows=invalid, elapsed_ms=(monotonic() - started) * 1000)
+                if invalid:
+                    raise RuntimeError(
+                        f"{spec.name} validation {query_index} partition {partition} "
+                        f"found {invalid} invalid rows"
+                    )
+
 
 
 def _drop_unregistered_material_relations(catalogue) -> None:
