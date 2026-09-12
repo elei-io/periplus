@@ -11,6 +11,21 @@ from periplus.materialization.sql import sql_string
 from periplus.platform.telemetry import event
 
 
+def at_snapshot(sql: str, snapshot: int | None) -> str:
+    """Pin physical lake reads without retaining a metadata transaction."""
+    if snapshot is None:
+        return sql
+    if snapshot < 0:
+        raise ValueError("snapshot must be nonnegative")
+    tree = parse_one(sql, read="duckdb")
+    for table in tree.find_all(exp.Table):
+        if table.db in {"material", "ingest"}:
+            table.set("when", exp.HistoricalData(
+                this="AT", kind="VERSION", expression=exp.Literal.number(snapshot)
+            ))
+    return tree.sql(dialect="duckdb")
+
+
 def _expanding(sql: str) -> bool:
     return any(isinstance(node, (exp.Unnest, exp.Explode))
                for node in parse_one(sql, read="duckdb").walk())
@@ -45,7 +60,7 @@ def _sources(sql: str, spec: ProjectionSpec) -> tuple[exp.Expression, list[exp.T
 
 
 @contextmanager
-def validation_statements(catalogue, spec: ProjectionSpec, *, partitions: int = 64):
+def validation_statements(catalogue, spec: ProjectionSpec, *, partitions: int = 64, snapshot: int | None = None):
     """Yield (query, partition, SQL); cleanup staged files on every exit.
 
     Hash partitioning preserves equal content identities, including duplicates.
@@ -69,9 +84,12 @@ def validation_statements(catalogue, spec: ProjectionSpec, *, partitions: int = 
             destination = Path(directory) / name
             projection = ', '.join(f'"{column}"' for column in sorted(selected))
             event('materialization_validation_staging', operation=name, outcome='started')
+            source = at_snapshot(
+                f"SELECT {projection}, hash(content_sha256) % {partitions} "
+                f"AS __validation_partition FROM material.{name}", snapshot
+            )
             catalogue.trusted_remote_execute(
-                f"COPY (SELECT {projection}, hash(content_sha256) % {partitions} "
-                f"AS __validation_partition FROM material.{name}) TO {sql_string(str(destination))} "
+                f"COPY ({source}) TO {sql_string(str(destination))} "
                 "(FORMAT PARQUET, COMPRESSION ZSTD, PARTITION_BY (__validation_partition))"
             )
             for path in destination.rglob('*.parquet'):
@@ -83,7 +101,7 @@ def validation_statements(catalogue, spec: ProjectionSpec, *, partitions: int = 
         def statements() -> Iterator[tuple[int, int, str]]:
             for index, sql in enumerate(spec.validation_queries):
                 if index not in expanding:
-                    yield index, 0, sql
+                    yield index, 0, at_snapshot(sql, snapshot)
                     continue
                 for partition in range(partitions):
                     tree, tables = _sources(sql, spec)
