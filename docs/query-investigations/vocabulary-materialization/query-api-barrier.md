@@ -1,5 +1,9 @@
 # Experimental query API input barrier
 
+Historical investigation: the public prose/term surfaces and associated compiler paths
+were removed by the search contract release. Commands below describe the earlier revision;
+the old query cases now live under `benchmarks/query/retired/`.
+
 Status: local implementation and tests, not deployed or promoted (2026-09-11).
 Classification: optimizer, following [extraction-pruning.md](extraction-pruning.md).
 The public relation grain and physical layout are unchanged.

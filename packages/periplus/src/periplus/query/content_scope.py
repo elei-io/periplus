@@ -27,7 +27,7 @@ _ALLOWED = {
     'order', 'ordered', 'distinct', 'limit', 'offset', 'star',
 }
 _PRIMITIVES = {'html_node', 'html_element', 'html_jsonld'}
-_DRIVERS = {'prose', 'capture', *_PRIMITIVES}
+_DRIVERS = {'capture', *_PRIMITIVES}
 _MAX_NODES = 1500
 _MAX_SQL = 100_000
 
@@ -225,50 +225,13 @@ def content_scope(sql: str, *, materialize_inputs: bool = False, heading_driver:
         return None
     driver.replace(exp.Table(this=exp.to_identifier(selected), alias=exp.TableAlias(this=exp.to_identifier(driver.alias_or_name, quoted=True))))
     # Selected rows already satisfy these predicates. Leaving them above the
-    # CTE would force it to carry large prose text solely to test it a second time.
+    # CTE would force it to carry large text solely to test it a second time.
     tree.set('where', exp.Where(this=exp.and_(*remaining)) if remaining else None)
     tree.set('with_', exp.With(expressions=ctes))
     result = tree.sql(dialect='duckdb')
     if len(result) > _MAX_SQL:
         return None
     return ContentScope(result, definitions, keys)
-
-
-def prose_heading_scope(sql: str, parameters: list[object] | tuple[object, ...] = ()) -> ContentScope | None:
-    """Experimental prose/heading inner joins, with one total text predicate."""
-    if any(not isinstance(value, str) for value in parameters):
-        return None
-    tree = _one_statement(sql)
-    if not isinstance(tree, exp.Select) or tree.args.get('with_'):
-        return None
-    tables = list(tree.find_all(exp.Table))
-    if len(tables) != 2 or sorted(t.name for t in tables) != ['html_heading', 'prose']:
-        return None
-    prose = next(t for t in tables if t.name == 'prose')
-    joins = tree.args.get('joins') or []
-    if len(joins) != 1:
-        return None
-    join = joins[0]
-    if not join.args.get('using'):
-        on = join.args.get('on')
-        if (on is None or not isinstance(on.unnest(), exp.EQ)
-                or not all(isinstance(c, exp.Column) and c.name == 'content_id'
-                           for c in (on.unnest().this, on.unnest().expression))):
-            return None
-    where = tree.args.get('where')
-    if where is None:
-        return None
-    predicate = where.this.unnest()
-    if not isinstance(predicate, (exp.EQ, exp.Like, exp.ILike)):
-        return None
-    column, value = predicate.this.unnest(), predicate.expression.unnest()
-    if (not isinstance(column, exp.Column) or column.table != prose.alias_or_name
-            or column.name != 'text'
-            or not ((isinstance(value, exp.Literal) and value.is_string)
-                    or isinstance(value, exp.Placeholder))):
-        return None
-    # All grammar, catalogue, alias, parameter and join checks remain shared.
-    return content_scope(sql, materialize_inputs=True, input_barrier=True)
 
 
 def capture_heading_scope(sql: str, parameters: list[object] | tuple[object, ...] = ()) -> ContentScope | None:

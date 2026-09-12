@@ -23,24 +23,17 @@ export function LandingExample() {
       </Card>)}
     </div>
     <Card className="landing-query-panel">
-      <CardHeader><CardTitle><h3>Count AI mentions by domain</h3></CardTitle><CardDescription>Count “artificial intelligence” and standalone “AI” across each domain, using the latest capture of each page.</CardDescription></CardHeader>
+      <CardHeader><CardTitle><h3>Discover pages about artificial intelligence</h3></CardTitle><CardDescription>Find up to 100 matching contents with matching snippets and text-node IDs. Join captures when you want URLs.</CardDescription></CardHeader>
       <CardContent className="flex min-w-0 flex-col gap-4">
         <SqlExample sql={landingSql} />
         <Table>
-          <TableCaption>Illustrative data · fictional domains and counts</TableCaption>
-          <TableHeader><TableRow><TableHead>domain</TableHead><TableHead>mentions</TableHead><TableHead>matching_pages</TableHead></TableRow></TableHeader>
+          <TableCaption>Illustrative results · fictional pages</TableCaption>
+          <TableHeader><TableRow><TableHead>content_id</TableHead><TableHead>snippet</TableHead><TableHead>node_indexes</TableHead><TableHead>score</TableHead></TableRow></TableHeader>
           <TableBody>{[
-            ["research.example.com", 284, 42],
-            ["robotics.example.com", 196, 31],
-            ["ventures.example.com", 153, 27],
-            ["computing.example.com", 128, 24],
-            ["healthtech.example.com", 97, 19],
-            ["manufacturing.example.com", 76, 16],
-            ["education.example.com", 58, 13],
-            ["climate.example.com", 43, 11],
-            ["logistics.example.com", 29, 8],
-            ["agriculture.example.com", 17, 5],
-          ].map(([domain, mentions, pages]) => <TableRow key={domain}><TableCell>{domain}</TableCell><TableCell>{mentions}</TableCell><TableCell>{pages}</TableCell></TableRow>)}</TableBody>
+            ["abc123…", "Artificial intelligence research", "[42]", 6],
+            ["def456…", "Investing in artificial intelligence companies", "[18, 20]", 4],
+            ["ghi789…", "Our team studies artificial intelligence applications", "[71]", 2],
+          ].map(([content, snippet, nodes, score]) => <TableRow key={content}><TableCell>{content}</TableCell><TableCell>{snippet}</TableCell><TableCell>{nodes}</TableCell><TableCell>{score}</TableCell></TableRow>)}</TableBody>
         </Table>
       </CardContent>
     </Card>

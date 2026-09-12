@@ -1,0 +1,7 @@
+id = "search-discovery"
+title = "Discover pages by body text"
+use_case = "Discover up to 100 unique contents using the public search contract."
+classification = "schema"
+ordered = true
+memory_limit = "512MB"
+max_warm_ms = 60000

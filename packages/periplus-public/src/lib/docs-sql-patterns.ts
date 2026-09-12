@@ -1,17 +1,17 @@
 export const docsSqlPatterns = [
-{
-  "title": "Find books mentioning robots",
-  "description": "Search body prose, then extract book titles and URLs. Returns historical captured pages mentioning robot, including navigation/footer matches; it does not claim the book is about robotics. Repeated URL/title pairs are collapsed. Titles use immediate h1 text, which holds the complete titles on this source.",
-  "sql": "-- Same discovery and extraction, using materialized body text.\nWITH source_content AS (\n  SELECT DISTINCT content_id FROM public_v1.capture\n  WHERE effective_url LIKE 'https://books.toscrape.com/catalogue/%/index.html'\n    AND effective_url NOT LIKE 'https://books.toscrape.com/catalogue/category/%'\n), candidates AS (\n  SELECT content_id FROM public_v1.prose\n  JOIN source_content USING (content_id)\n  WHERE text ILIKE '%robot%'\n)\nSELECT DISTINCT c.effective_url AS url, h.text_direct AS title\nFROM candidates m\nJOIN public_v1.capture c USING (content_id)\nJOIN public_v1.html_element h USING (content_id)\nWHERE c.effective_url LIKE 'https://books.toscrape.com/catalogue/%/index.html'\n  AND c.effective_url NOT LIKE 'https://books.toscrape.com/catalogue/category/%'\n  AND h.tag = 'h1'\n  AND h.namespace = 'http://www.w3.org/1999/xhtml'\nORDER BY url, title;\n"
-},
-{
-  "title": "The same search using DOM nodes",
-  "description": "Without prose, reconstruct body text and block boundaries while excluding script, style, template and noscript subtrees. This single-token search has the same matching semantics as the prose example; it performs substantially more query-time work. Titles use immediate h1 text, which holds the complete titles on this source.",
-  "sql": "-- Find captured book pages mentioning robots, then extract their titles.\n-- Reconstruct searchable body text without using prose. The single-token\n-- predicate is insensitive to whitespace collapsing; block separators still\n-- prevent matches fabricated by joining words across block boundaries.\nWITH source_content AS (\n  SELECT DISTINCT content_id FROM public_v1.capture\n  WHERE effective_url LIKE 'https://books.toscrape.com/catalogue/%/index.html'\n    AND effective_url NOT LIKE 'https://books.toscrape.com/catalogue/category/%'\n), source_nodes AS MATERIALIZED (\n  SELECT n.content_id, n.node_index, n.subtree_end_index,\n         n.node_type, n.name, n.namespace, n.value\n  FROM public_v1.html_node n\n  JOIN source_content s USING (content_id)\n), marked AS (\n  SELECT *,\n    max(CASE WHEN node_type = 'element' AND name = 'body'\n                  AND namespace = 'http://www.w3.org/1999/xhtml'\n             THEN subtree_end_index END)\n      OVER (PARTITION BY content_id ORDER BY node_index ROWS UNBOUNDED PRECEDING) AS body_end,\n    max(CASE WHEN node_type = 'element'\n                  AND name IN ('script', 'style', 'template', 'noscript')\n             THEN subtree_end_index ELSE 0 END)\n      OVER (PARTITION BY content_id ORDER BY node_index ROWS UNBOUNDED PRECEDING) AS excluded_end\n  FROM source_nodes\n), eligible AS MATERIALIZED (\n  SELECT * FROM marked\n  WHERE node_index < body_end AND node_index >= excluded_end\n), blocks AS (\n  SELECT * FROM eligible\n  WHERE node_type = 'element'\n    AND namespace = 'http://www.w3.org/1999/xhtml'\n    AND name IN ('address', 'article', 'aside', 'blockquote', 'br', 'caption', 'dd', 'details', 'dialog', 'div', 'dl', 'dt', 'fieldset', 'figcaption', 'figure', 'footer', 'form', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'header', 'hgroup', 'hr', 'li', 'main', 'menu', 'nav', 'ol', 'p', 'pre', 'section', 'summary', 'table', 'tbody', 'td', 'tfoot', 'th', 'thead', 'tr', 'ul')\n), text_events AS (\n  SELECT content_id, node_index AS position, 1 AS ordering, value AS text\n  FROM eligible WHERE node_type = 'text'\n  UNION ALL\n  SELECT content_id, node_index, 0, ' ' FROM blocks\n  UNION ALL\n  SELECT content_id, subtree_end_index, 0, ' ' FROM blocks\n), candidates AS (\n  SELECT content_id FROM text_events\n  GROUP BY content_id\n  HAVING string_agg(text, '' ORDER BY position, ordering) ILIKE '%robot%'\n)\nSELECT DISTINCT c.effective_url AS url, h.text_direct AS title\nFROM candidates m\nJOIN public_v1.capture c USING (content_id)\nJOIN public_v1.html_element h USING (content_id)\nWHERE c.effective_url LIKE 'https://books.toscrape.com/catalogue/%/index.html'\n  AND c.effective_url NOT LIKE 'https://books.toscrape.com/catalogue/category/%'\n  AND h.tag = 'h1'\n  AND h.namespace = 'http://www.w3.org/1999/xhtml'\nORDER BY url, title;\n"
-},
+  {
+    "title": "Discover pages by text",
+    "description": "Up to 100 matching unique contents, with a representative capture URL. A page match does not imply that every element matches.",
+    "sql": "SELECT * FROM search('robot') ORDER BY score DESC, content_id;"
+  },
+  {
+    "title": "Find matching HTML headings",
+    "description": "Complete descendant text preserves parsed whitespace and inline words. Script and style text are included when inside the selected element.",
+    "sql": "SELECT content_id, node_index, tag, text FROM html_element WHERE tag = 'h1' AND text ILIKE '%robot%' ORDER BY content_id, node_index LIMIT 100;"
+  },
   {
     "title": "Read a page outline",
-    "description": "One row per HTML h1–h6, including text inside nested elements. Heading levels come from tags, not visual styling.",
+    "description": "One row per HTML h1\u2013h6, including text inside nested elements. Heading levels come from tags, not visual styling.",
     "sql": "SELECT node_index, level, text\nFROM public_v1.html_heading\nWHERE content_id = '01e3b8320926e10284e97da69093af4b4c04e181b5a3607c05bfd1920134a770'\nORDER BY node_index;"
   },
   {
@@ -64,7 +64,7 @@ export const docsSqlPatterns = [
     "description": "One row per code element; block means it has a pre ancestor. Text preserves whitespace and nested syntax highlighting. Language hints remain available in html_element attributes.",
     "sql": "WITH pages AS (\n  SELECT DISTINCT content_id\n  FROM (\n    SELECT content_id FROM public_v1.capture\n    ORDER BY captured_at DESC NULLS LAST, capture_id DESC\n    LIMIT 10\n  )\n)\nSELECT c.content_id, c.node_index, c.block, c.text\nFROM public_v1.html_code c\nWHERE c.content_id IN (SELECT content_id FROM pages)\nORDER BY c.content_id, c.node_index\nLIMIT 100;"
   }
-]
+] as const
 
 export const booksTableSql = `WITH books AS (
     SELECT effective_url AS url, captured_at, content_id

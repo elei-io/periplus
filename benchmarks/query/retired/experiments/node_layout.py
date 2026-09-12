@@ -77,8 +77,8 @@ def run(count, input_dir, type_partition=False, term="monkey"):
             db.execute('ALTER TABLE material.old_nodes SET PARTITIONED BY (bucket(8, content_sha256))')
             db.execute('ALTER TABLE material.old_nodes SET SORTED BY (content_sha256, node_index)')
             db.execute('INSERT INTO material.old_nodes SELECT * FROM legacy_nodes')
-            case = load_case(Path(__file__).resolve().parents[1]/'cases/node-layout')
-            candidate = case.sql.replace("'monkey'", "'" + term.replace("'", "''") + "'").replace('FROM term_node','FROM public_v1.term_node').replace('JOIN html_node','JOIN public_v1.html_node').replace('JOIN html_element','JOIN public_v1.html_element')
+            case = load_case(Path(__file__).resolve().parents[1]/'retired/node-layout')
+            candidate = case.sql.replace("'monkey'", "'" + term.replace("'", "''") + "'").replace('FROM public_v1.term_node', 'FROM (SELECT p.content_sha256 AS content_id, p.node_index, t.text FROM material.node_posting p JOIN material.term t USING (term_id))').replace('JOIN html_node','JOIN public_v1.html_node').replace('JOIN html_element','JOIN public_v1.html_element')
             baseline = candidate.replace('public_v1.html_element','material.old_elements').replace('public_v1.html_node', '(SELECT content_sha256 AS content_id,node_index,parent_index,node_type FROM material.old_nodes)')
             results = []
             with patch('periplus.query.benchmarking.catalogue_config_from_env',return_value=config):

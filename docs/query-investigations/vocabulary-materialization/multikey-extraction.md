@@ -1,5 +1,9 @@
 # Fixed multi-content extraction under unrelated appends
 
+Historical investigation: the public prose/term surfaces and associated compiler paths
+were removed by the search contract release. Commands below describe the earlier revision;
+the old query cases now live under `benchmarks/query/retired/`.
+
 Status: diagnosis complete; physical-read acceptance still open, 2026-09-11.
 No production mutation, runtime setting change or deployment.
 Classification: native scan filtering and physical layout/maintenance, following

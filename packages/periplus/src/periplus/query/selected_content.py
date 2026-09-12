@@ -14,7 +14,7 @@ from periplus.query.validation import _one_statement
 MAX_KEYS = 100_000
 MAX_KEY_BYTES = 8 * 1024 * 1024
 _PREFIX = '__periplus_selected_'
-_VIEWS = {'html_heading', 'html_section', 'html_metadata', 'prose'}
+_VIEWS = {'html_heading', 'html_section', 'html_metadata'}
 _ALLOWED = set('select with cte from table tablealias identifier column alias join star where and or not paren eq neq gt gte lt lte like ilike is null in literal boolean placeholder parameter var cast datatype arraycontains lower upper trim left substring length coalesce replace min max sum count group order ordered limit distinct tuple'.split())
 
 
@@ -149,14 +149,12 @@ def selected_content(sql: str, parameters: list[object] | tuple[object, ...] = (
         dependencies.append(('html_element', columns))
     if needed & {'html_heading', 'html_section'}:
         dependencies.append(('html_node', 'content_id,node_index,subtree_end_index,node_type,value'))
-    if 'prose' in needed:
-        dependencies.append(('prose', '*'))
     generated = []
     for name, columns in dependencies:
         definitions[name] = _source('views/' + name + '.sql')
         body = _one_statement(f'SELECT {columns} FROM public_v1.{name} WHERE {key_filter}')
         generated.append(exp.CTE(this=body, alias=exp.TableAlias(this=exp.to_identifier(_PREFIX + name)), materialized=True))
-    for name in sorted(needed - {'prose'}):
+    for name in sorted(needed):
         body = _one_statement(re.split(r'\bAS\b', definitions[name], maxsplit=1, flags=re.I)[1])
         for table in body.find_all(exp.Table):
             if table.name in {'html_element', 'html_node'}:

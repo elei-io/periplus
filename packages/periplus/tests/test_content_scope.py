@@ -12,34 +12,12 @@ from periplus.materialization.registry import PROJECTIONS
 from periplus.platform.catalogue.client import _column_type
 from periplus.platform.catalogue.public import public_objects
 from periplus.platform.catalogue.schema import expected_columns
-from periplus.query.content_scope import content_scope, capture_heading_scope, prose_heading_scope, _source
+from periplus.query.content_scope import content_scope, capture_heading_scope, _source
 from periplus.query.validation import _bounded_query
 from periplus.query.scope_plan import shared_html_inputs
 
 
 class ContentScopeTests(unittest.TestCase):
-    def test_prose_heading_barrier_equivalence_and_eligibility(self):
-        sql = "SELECT h.*,p.text AS prose_text FROM prose p JOIN html_heading h USING(content_id) WHERE p.text ILIKE ? ORDER BY h.content_id,h.node_index"
-        # Duplicate driver rows must multiply output exactly as the original join.
-        self.db.execute("INSERT INTO material.prose SELECT * FROM material.prose WHERE content_sha256='a'")
-        for pattern in ('%robot%', '%', '%absent%'):
-            candidate = prose_heading_scope(sql, [pattern])
-            self.assertIsNotNone(candidate)
-            self.assertIn('OFFSET 0', candidate.sql)
-            self.assertTrue(candidate.matches(self.db, self.installed))
-            _bounded_query(candidate.sql)
-            before = self.db.execute(sql, [pattern])
-            description, rows = before.description, before.fetchall()
-            after = self.db.execute(candidate.sql, [pattern])
-            self.assertEqual(description, after.description)
-            self.assertEqual(rows, after.fetchall())
-        for other in (sql + ' LIMIT 1', sql.replace('JOIN', 'LEFT JOIN'),
-                      sql.replace('p.text ILIKE ?', 'p.text ILIKE ? OR h.level=1'),
-                      sql.replace('html_heading', 'html_section'),
-                      sql.replace('p.text ILIKE ?', 'random()>0.5'),
-                      'WITH prose AS (SELECT NULL AS content_id, NULL AS text) ' + sql):
-            self.assertIsNone(prose_heading_scope(other, ['%robot%']), other)
-        self.assertIsNone(prose_heading_scope(sql, [None]))
 
     def setUp(self):
         self.db = duckdb.connect()
@@ -69,7 +47,7 @@ class ContentScopeTests(unittest.TestCase):
         context = VisitBatchContext((), (), (), {k: v[1] for k, v in parsed.items()},
                                     {k: v[0] for k, v in parsed.items()}, {}, frozenset(parsed))
         for name, project in [(spec.name, spec.rows) for spec in PROJECTIONS
-                              if spec.name not in {"term", "content_posting", "node_posting"}]:
+                              if spec.name not in {"term", "posting"}]:
             self.db.register('projection_rows', project(context))
             self.db.execute(f'INSERT INTO material.{name} SELECT * FROM projection_rows')
             self.db.unregister('projection_rows')
@@ -134,15 +112,15 @@ class ContentScopeTests(unittest.TestCase):
             for pattern in ('%robot%', '%absent%', '%'):
                 with self.subTest(view=item.name, pattern=pattern):
                     _, rows = self.assertEquivalent(
-                        f'SELECT e.* FROM prose p JOIN {item.name} e USING (content_id) WHERE p.text ILIKE ?', [pattern])
+                        f'SELECT e.* FROM html_node p JOIN {item.name} e USING (content_id) WHERE p.text ILIKE ?', [pattern])
                     self.assertEquivalent(
-                        f'SELECT e.* FROM {item.name} e JOIN prose p USING (content_id) WHERE p.text ILIKE ?', [pattern])
+                        f'SELECT e.* FROM {item.name} e JOIN html_node p USING (content_id) WHERE p.text ILIKE ?', [pattern])
                     if pattern == '%robot%':
                         self.assertTrue(rows, item.name)
 
     def test_complete_partitions_multiple_targets_and_duplicate_drivers(self):
         self.assertEquivalent("""SELECT c.effective_url AS url, m.value AS title, h.*
-          FROM prose p JOIN capture c USING (content_id)
+          FROM html_node p JOIN capture c USING (content_id)
           JOIN html_metadata m USING (content_id) JOIN html_heading h USING (content_id)
           WHERE p.text ILIKE '%robot%' AND m.name = 'title'""")
         self.assertEquivalent("""SELECT s.* FROM html_node n JOIN html_section s ON n.content_id = s.content_id
@@ -153,18 +131,18 @@ class ContentScopeTests(unittest.TestCase):
           WHERE e.tag = 'p' AND e.text_direct = 'robot'""")
 
     def test_join_orders_preserve_rows_parameters_and_complete_partitions(self):
-        for order in permutations(('html_heading h', 'capture c', 'prose p')):
+        for order in permutations(('html_heading h', 'capture c', 'html_node p')):
             relations = ' JOIN '.join([order[0], *(t + ' USING (content_id)' for t in order[1:])])
             with self.subTest(order=order):
                 _, rows = self.assertEquivalent(
                     'SELECT ? AS marker, c.effective_url AS url, h.level, h.text AS heading FROM '
                     + relations + ' WHERE p.text ILIKE ? AND h.level = ?', ['marker', '%robot%', 1])
-                self.assertEqual(len(rows), 2)  # Both captures of the same content.
+                self.assertEqual(len(rows), 10)  # Five matching text nodes across two captures.
                 self.assertEquivalent('SELECT * FROM ' + relations + " WHERE p.text ILIKE '%robot%'")
         self.assertEquivalent("""SELECT h.*, s.* FROM html_heading h
           JOIN html_section s ON h.content_id = s.content_id
           JOIN capture c ON c.content_id = h.content_id
-          JOIN prose p ON p.content_id = s.content_id
+          JOIN html_node p ON p.content_id = s.content_id
           WHERE p.text ILIKE '%robot%' AND h.level = 1""")
         self.assertEquivalent("""SELECT s.* FROM html_section s
           JOIN html_node n ON s.content_id = n.content_id WHERE n.value = 'robot'""")
@@ -174,7 +152,7 @@ class ContentScopeTests(unittest.TestCase):
           WHERE e.tag = 'p' AND e.text_direct = 'robot'""")
 
     def test_joined_driver_does_not_relax_safety_rules(self):
-        base = "SELECT h.* FROM html_heading h JOIN prose p USING (content_id) WHERE p.text ILIKE '%robot%'"
+        base = "SELECT h.* FROM html_heading h JOIN html_node p USING (content_id) WHERE p.text ILIKE '%robot%'"
         for sql in (base.replace(' JOIN ', ' LEFT JOIN '), base.replace(' JOIN ', ' FULL JOIN '),
                     base.replace('USING (content_id)', 'ON true'), base + ' LIMIT 1',
                     base.replace("p.text ILIKE '%robot%'", "p.text ILIKE '%robot%' OR h.level = 1")):
@@ -187,8 +165,8 @@ class ContentScopeTests(unittest.TestCase):
                 continue
             for pattern in ('%robot%', '%absent%', '%'):
                 for reverse in (False, True):
-                    sources = (f'{item.name} e JOIN prose p' if reverse
-                               else f'prose p JOIN {item.name} e')
+                    sources = (f'{item.name} e JOIN html_node p' if reverse
+                               else f'html_node p JOIN {item.name} e')
                     with self.subTest(view=item.name, pattern=pattern, reverse=reverse):
                         self.assertEquivalent(
                             f'SELECT e.* FROM {sources} ON p.content_id = e.content_id '
@@ -220,17 +198,17 @@ class ContentScopeTests(unittest.TestCase):
 
     def test_parameters_identifiers_and_output_contract(self):
         self.assertEquivalent("""SELECT ? AS marker, m.value AS title, '?' AS literal
-          FROM public_v1.prose AS "P" JOIN public_v1.html_metadata AS "m" USING (content_id)
+          FROM public_v1.html_node AS "P" JOIN public_v1.html_metadata AS "m" USING (content_id)
           WHERE "P".text ILIKE ? AND m.name = ? /* ? stays a comment */
           ORDER BY title""", ['marker', '%robot%', 'title'])
         self.assertEquivalent("""SELECT DISTINCT m.value AS __periplus_scope_selected
-          FROM prose p JOIN html_metadata m USING (content_id)
+          FROM html_node p JOIN html_metadata m USING (content_id)
           WHERE (p.text ILIKE '%robot%' OR p.text = '') AND m.name = 'title'""")
-        self.assertEquivalent("""SELECT lower(m.value) AS title FROM prose p
+        self.assertEquivalent("""SELECT lower(m.value) AS title FROM html_node p
           JOIN html_metadata m USING (content_id) WHERE lower(p.text) LIKE '%robot%'""")
 
     def test_unsupported_queries_stay_unchanged(self):
-        base = "SELECT m.* FROM prose p JOIN html_metadata m USING (content_id) WHERE p.text ILIKE '%robot%'"
+        base = "SELECT m.* FROM html_node p JOIN html_metadata m USING (content_id) WHERE p.text ILIKE '%robot%'"
         cases = [
             base + ' LIMIT 10', base + ' OFFSET 1', base.replace(' JOIN ', ' LEFT JOIN '),
             base.replace(' JOIN ', ' FULL JOIN '), base.replace(' USING (content_id)', ' ON true'),
@@ -239,8 +217,8 @@ class ContentScopeTests(unittest.TestCase):
             base.replace("p.text ILIKE '%robot%'", "p.text::INTEGER > 0"),
             base.replace("p.text ILIKE '%robot%'", "m.name = 'title'"),
             base.replace("p.text ILIKE '%robot%'", "p.text ILIKE '%robot%' OR m.name = 'title'"),
-            base.replace('prose p', '(SELECT * FROM prose) p'),
-            'WITH p AS (SELECT * FROM prose) ' + base,
+            base.replace('html_node p', '(SELECT * FROM html_node) p'),
+            'WITH p AS (SELECT * FROM html_node) ' + base,
             base.replace("'%robot%'", '$1'),
             base.replace('html_metadata', 'html_table_cell'),
             base.replace('html_metadata', 'html_list_item'),
@@ -256,7 +234,7 @@ class ContentScopeTests(unittest.TestCase):
                 self.assertIsNone(content_scope(sql))
 
     def test_changed_or_missing_installed_definitions_disable_optimization(self):
-        scoped = content_scope("SELECT m.* FROM prose p JOIN html_metadata m USING (content_id) WHERE p.text = 'robot'")
+        scoped = content_scope("SELECT m.* FROM html_node p JOIN html_metadata m USING (content_id) WHERE p.text = 'robot'")
         for name in scoped.definitions:
             changed = dict(self.installed)
             changed[name] = 'CREATE VIEW x AS SELECT 42'
@@ -301,7 +279,7 @@ class ContentScopeTests(unittest.TestCase):
                 continue
             for pattern in ('%robot%', '%absent%', '%'):
                 with self.subTest(view=item.name, pattern=pattern):
-                    sql = f'''SELECT c.effective_url, e.* FROM prose p JOIN capture c USING(content_id)
+                    sql = f'''SELECT c.effective_url, e.* FROM html_node p JOIN capture c USING(content_id)
                         JOIN {item.name} e ON e.content_id=c.content_id AND e.content_id IS NOT NULL
                         WHERE p.text ILIKE ?'''
                     scoped = content_scope(sql)

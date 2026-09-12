@@ -1,5 +1,9 @@
 # Fixed-content extraction after term discovery
 
+Historical investigation: the public prose/term surfaces and associated compiler paths
+were removed by the search contract release. Commands below describe the earlier revision;
+the old query cases now live under `benchmarks/query/retired/`.
+
 Status: diagnosis complete, production acceptance still open (2026-09-11).
 Local disposable lake only; no production execution ID.
 Workload: discovery followed by whole-content prose/heading extraction.

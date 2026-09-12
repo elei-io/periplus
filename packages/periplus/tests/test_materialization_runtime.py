@@ -1054,6 +1054,10 @@ class MaterializationParquetTests(unittest.TestCase):
                 value = '{"value":true}'
             elif data_type.startswith("timestamp"):
                 value = datetime(2026, 1, 1, tzinfo=UTC)
+            elif duckdb_type == "BIGINT[]":
+                value = [index]
+            elif duckdb_type == "INTEGER[][]":
+                value = [[index]]
             elif data_type.startswith("list<"):
                 value = ["value"]
             elif data_type.startswith("map<"):

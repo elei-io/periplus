@@ -1,0 +1,8 @@
+id = "vocabulary-search"
+title = "Vocabulary candidates with exact body verification"
+use_case = "Compare full body discovery with internal vocabulary and postings candidates."
+classification = "both"
+ordered = true
+memory_limit = "4GiB"
+max_warm_ms = 60000
+seconds = 120

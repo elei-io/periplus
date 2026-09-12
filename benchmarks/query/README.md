@@ -1,3 +1,8 @@
+Current page-discovery and element-text cases are `search-discovery` and `element-text`.
+Superseded public prose/term workloads are archived under `retired/`; they are not
+part of the current public contract or normal case discovery. Historical experiment
+results remain evidence for internal storage choices, not supported public examples.
+
 # Query optimization bench
 
 The disposable vocabulary/term-stat materialization experiment is documented in
@@ -211,15 +216,14 @@ under ignored `.artifacts/` with a matching case.toml and pass `--case-root`; re
 it after the investigation. Public-service activation and limits still require
 separate QueryService validation.
 
-## Unified node layout experiment
+## Positional search acceptance
 
-Run from packages/periplus:
+The current all-text layout and query-API search experiment is documented in
+[the positional-search investigation](../../docs/query-investigations/positional-search/README.md).
+Run `experiments/positional_search.py` with a retained HTML directory. It validates
+actual registry output and measures complete query-API requests through the shared runner.
 
-```sh
-uv run python ../../benchmarks/query/experiments/node_layout.py --documents 500 --report ../../.artifacts/query-benchmarks/node-layout.json
-```
-
-Use `--input-dir` for a retained UTF-8 HTML corpus; without it, input is explicitly
-synthetic. The disposable lake compares old separate element/node storage with the
-unified node table using the shared measurement runner in both orders.
-See [the investigation](../../docs/query-investigations/node-layout/README.md).
+Older body-only and alternative-layout scripts are archived in `retired/experiments`.
+Reproduce them at commit `466beb9`; they target the superseded registry. Their
+[posting-summary results](../../docs/query-investigations/posting-summary/README.md)
+remain useful historical evidence, not acceptance results for the all-text layout.

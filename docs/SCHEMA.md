@@ -14,7 +14,7 @@ small evidence kernel.
 Periplus owns observation faithfully. Interpretation begins outside Periplus. It does not publish a
 `data.*` schema or define domain entities such as companies, products, people, claims, or topics.
 
-Physical contract version: `10.0.0`. The cutover resets disposable prior state; there is no graph-era
+Physical contract version: `12.0.0`. The cutover resets disposable prior state; there is no graph-era
 crawl table or compatibility migration.
 
 ## `ingest.*`
@@ -82,37 +82,47 @@ contract. Invalid scripts remain rows. Files use eight content-hash buckets and
 sort by `(content_sha256, node_index)`. This projection shares content ownership,
 replay, rebuild and atomic activation with the other fixed projections.
 
-### `material.prose`
+### `material.term` and `material.posting`
 
-One row per `content_sha256` with materialized searchable body `text`. It shares
-content ownership and the complete generation lifecycle with the DOM projections.
-Files are unpartitioned and sorted by content identity, avoiding bucket fan-out
-for this one-row-per-content corpus scan surface.
+Private vocabulary: `term(text VARCHAR, term_id BIGINT)`, sorted by text. Numeric
+IDs are reserved append-only within each generation and may change on rebuild.
 
-### `material.term` and `material.content_posting`
+There is one positional relation, sorted by `(term_id, content_sha256)` without
+partition fan-out:
 
-Private term materialization consists of:
+```text
+posting(term_id BIGINT, content_sha256 VARCHAR, frequency BIGINT,
+        positions BIGINT[], node_indexes INTEGER[][])
+```
 
-- `term(text VARCHAR, term_id BIGINT)`: one normalized term per generation.
-  Unpartitioned, sorted by `text`; missing terms are reserved under the generation claim.
-- `content_posting(term_id BIGINT, content_sha256 VARCHAR, frequency BIGINT)`: one positive
-  frequency per term/content pair. Unpartitioned, sorted by `(term_id, content_sha256)`.
+One row per term/content. Frequency equals the number of positions. Each ascending
+position has a corresponding nonempty list of contributing text-node IDs; a word
+split across inline nodes is one occurrence with multiple owners. No separate
+prose, content-posting or node-posting materialization remains.
 
-Terms come from the same body-text extraction as prose, using ICU root-locale word
-boundaries after case folding and NFC normalization. Numbers are retained; punctuation,
-whitespace and symbols are discarded. No stemming, stopword removal, positions or semantic
-ranking is implied. PyICU 2.16.2, ICU 77.1 and Unicode 16.0 are pinned and validated;
-changing tokenization requires a complete generation rebuild.
+Every parsed text node participates regardless of its document location, including
+title, script, style, template, noscript, hidden and foreign-element text. Attributes,
+comments and other nontext nodes are excluded. There is no visibility inference.
+ICU root-locale word boundaries follow case folding and NFC. Numbers are retained;
+whitespace, punctuation and symbols do not become standalone terms. No stemming or
+stopword filtering. PyICU 2.16.2 / ICU 77.1 / Unicode 16.0 are pinned.
 
-The dictionary is generation-owned and append-only. Numeric IDs are private and can change
-between rebuilds. Frequencies share content ownership, replay, retirement and atomic activation
-with the other content projections. Unused reservations survive until the generation is removed.
-The public `term(content_id, text, frequency)` view exposes their logical contents;
-dictionary IDs and physical layout remain private.
+Text boundaries (`all-text-inline-runs-v1`) are structural, independent of CSS.
+These HTML elements are transparent on entry and exit:
+`a abbr b bdi bdo cite code data del dfn em i ins kbd label mark q rp rt ruby s samp
+small span strong sub sup time u var wbr`.
+Every other element, including custom elements and foreign namespaces, breaks the
+run on entry and exit. Comments add no separator. Concatenate parsed text values
+within each run before normalization/tokenization. Each run leaves one unused
+position afterward, so consecutive-position phrases cannot cross runs. Whitespace
+inside a run separates words normally; punctuation is ignored by word matching.
+For example `mon<strong>key</strong>` indexes `monkey` once; separate paragraphs
+cannot form a phrase, even if CSS displays them inline.
 
-Term-major sorting is a starting layout, not a guarantee of bounded reads under appends.
-LakeDucktor owns compaction; overlapping file ranges and native multi-key scan filtering
-remain measured limitations described in the query investigation.
+Vocabulary and postings share generation publication, replay, replacement and
+retirement with the other projections. Changing coverage, tokenization or boundaries
+requires a full rebuild. Term-major sorting does not guarantee bounded file reads
+under appends; LakeDucktor owns physical maintenance.
 
 ### `material.link_occurrences`
 
@@ -151,85 +161,73 @@ and execution report `schema_version`; execution additionally reports
 promise that an expired snapshot can be replayed. Physical layout is private.
 There are no `web` or `content` compatibility namespaces.
 
-### `public_v1.term`
+### `public_v1.search(query)`
 
-One row per normalized term and unique HTML content:
+`search()` is a **query-API feature**, exposed through a typed catalogue macro for
+metadata and DESCRIBE. Direct execution in plain DuckDB raises an explicit error.
+Ordinary HTML SQL remains portable. The API runs the same ICU tokenizer as ingestion,
+then vocabulary lookup, posting selection and bounded snippet extraction inside one
+request snapshot, deadline and admission slot. Preparation binds an empty typed
+result and does not discover contents. Plans describe final SQL composition, not
+all preceding search stages.
 
-| Column | Meaning |
-| --- | --- |
-| `content_id` | SHA-256 identity of captured HTML bytes. |
-| `text` | Normalized term extracted from body prose. |
-| `frequency` | BIGINT occurrence count within that content's body prose. |
+Results: `content_id`, `matches STRUCT(snippet VARCHAR, node_indexes INTEGER[])[]`,
+`score DOUBLE`. One row per retained HTML content with at least one capture;
+duplicate captures do not multiply hits. Join captures yourself for URLs or titles.
 
-Terms use the same body text as `prose`. ICU case folding and NFC normalization
-mean `Monkeys` becomes `monkeys`, `Straße` becomes `strasse`, and canonically
-equivalent accented spellings share a term. ICU segments multilingual text,
-including Chinese and Japanese; terms are tokenizer units, not a promise of
-linguistic words. Numbers remain; punctuation and symbols do not. There is no
-stemming or stopword removal. SQL literals are not automatically tokenized:
-use the normalized spelling for exact equality.
+Plain queries require every distinct word token. A fully double-quoted query
+requires the full token sequence at consecutive positions within a structural run;
+repeated tokens are significant in phrases. Unquoted duplicates are ignored.
+No substring, prefix, wildcard, stemming or semantic expansion. Quotes cannot be
+mixed into a plain query. NULL, empty and nonword-only queries return no rows.
+At most 256 characters / 32 tokens per query and four constant calls per SQL request.
+Arguments must be string literals, NULL or bound parameters, not row-dependent SQL.
+All text locations above participate; meta descriptions and other attributes do not.
 
-```sql
--- Contents mentioning monkeys, with all their headings.
-SELECT h.level, h.text, h.node_index, t.content_id, t.frequency
-FROM term t
-JOIN html_heading h USING (content_id)
-WHERE t.text = 'monkeys'
-LIMIT 10;
+Plain scores sum distinct query-term frequencies. Phrase scores count matching
+starts. Order is score descending then content ID ascending, capped at 100 after
+matching and capture eligibility. Phrase verification happens before the cap.
+Use an outer ORDER BY when composing SQL. Ranking may evolve.
 
--- Match vocabulary spellings containing monkey.
-SELECT content_id, text, frequency
-FROM term
-WHERE text ILIKE '%monkey%'
-LIMIT 10;
-
--- Both terms occur in the same content; this does not assert phrase order.
-SELECT a.content_id
-FROM term a JOIN term b USING (content_id)
-WHERE a.text = 'monkeys' AND b.text = 'zoo'
-LIMIT 10;
-```
-
-Repeated captures of identical content share frequencies; joining `capture` can
-repeat a term row for each capture. Empty prose has no term rows. Reserved terms
-with no postings are absent. Results have no implicit relevance order; heading
-joins return headings from matching content, not necessarily matching headings.
-Phrase verification belongs against prose. A LIMIT caps returned rows, not scan
-cost; common terms, broad patterns and DOM joins can still be expensive.
-
-### `public_v1.prose`
-
-One row per materialized unique HTML content: `content_id VARCHAR`, `text VARCHAR`,
-both non-null. Repeated captures share the same row. Empty or missing bodies yield
-an empty string. Join captures or HTML structures using `content_id`.
-
-Text follows parsed body document order, excluding comments and script, style,
-template and noscript subtrees. Navigation, footers, code, and declared hidden
-content remain included. Attributes (including image alt and input values) are
-not substituted. This is deterministic source text, not main-article extraction,
-CSS visibility, accessible names, or browser innerText.
-
-Inline text is concatenated without inserted separators. HTML block tags
-(address, article, aside, blockquote, caption, dd, details, dialog, div, dl, dt,
-fieldset, figcaption, figure, footer, form, h1–h6, header, hgroup, li, main, menu,
-nav, ol, p, pre, section, summary, table, tbody, td, tfoot, th, thead, tr, ul)
-insert separators before and after their contents; br and hr also separate text.
-Unicode whitespace runs collapse to one ASCII space and outer whitespace is
-trimmed. Case, punctuation and decoded characters otherwise remain unchanged.
-No truncation is applied.
+Matches contain up to three representative occurrences in document order, with
+contributing node IDs. Snippets preserve case, normalize NFC, collapse whitespace,
+and contain at most 240 characters starting up to 60 before a matching token.
+They may cut words or long phrases. Context is not included in node ID provenance.
+Snippet extraction rejects text nodes/ranges over 8,000,000 characters, more than
+10,000 text nodes per range, or intermediate collections over 32 MiB. Budget failures
+raise errors rather than returning a silently incomplete result set.
 
 ```sql
-SELECT e.content_id, e.node_index
-FROM html_element e
-JOIN prose p USING (content_id)
-WHERE p.text ILIKE '%visa sponsorship%'
-  AND e.tag = 'h1';
+SELECT * FROM search('monkeys zoo') ORDER BY score DESC, content_id;
+SELECT * FROM search('"monkeys in the zoo"');
+SELECT s.content_id, m.snippet, n.node_index, n.parent_index
+FROM search('monkey') s,
+     unnest(s.matches) AS matches(m),
+     unnest(m.node_indexes) AS ids(node_index)
+JOIN html_node n ON n.content_id=s.content_id AND n.node_index=ids.node_index;
 ```
 
-This returns headings in matching documents, not necessarily headings containing
-the phrase. Prose is a discovery surface; verify structural claims using the DOM.
-Substring searches still scan prose text, and selective DOM reads depend on the
-physical plan. Prose normalization is not equivalent to exact subtree text.
+The 100-content output cap does not bound index scan cost. No public prose, term
+or term_node relation or compatibility alias exists. Complete text-node coverage
+also does not imply that a word index can transparently accelerate arbitrary
+substring/element predicates; such optimizations must prove coverage and reapply
+original predicates.
+
+### Deterministic HTML text
+
+`html_node.text` equals the parsed value for text nodes and is NULL for document,
+doctype, element, comment and processing-instruction nodes. `value` retains its
+existing meaning, including comment and instruction contents.
+
+`html_element.text` concatenates all descendant text-node values in depth-first
+document order. It returns an empty string for an element without text. It adds
+no separators and performs no trimming, case folding or whitespace normalization.
+Parsed HTML entity decoding and parser newline normalization have already happened.
+Thus `<p>mon<b>key</b></p>` gives `monkey`, and `<p>A<br>B</p>` gives `AB`.
+Comments contribute nothing; script, style, title, template and noscript text nodes
+are included when present in the parsed tree. CSS visibility is irrelevant.
+`text_direct` concatenates only immediate child text with the same whitespace rules.
+These columns preserve content IDs, node indices and subtree boundaries.
 
 ### `public_v1.capture`
 
@@ -877,7 +875,9 @@ are operational state, not a historical corpus, and retire with the parent reque
 
 `material.node_posting(term_id, content_sha256, node_index, frequency)` stores term
 occurrences touching eligible body text nodes, clustered by content, term and node.
-`public_v1.term_node(content_id, text, node_index, frequency)` exposes those matches.
+These matches remain internal and do not define public element-text coverage.
 Terms are segmented from complete prose, including words split across inline nodes.
 One occurrence can touch several nodes; node frequencies are not additive.
 Shared batch context computes prose and occurrence maps once per unique content.
+
+Search plan preparation uses an empty typed result to validate the surrounding SQL; its cardinality estimates do not describe discovery. Use API preparation instead of `EXPLAIN` or `SUMMARIZE` with search. `DESCRIBE` uses the stored result signature without discovery.

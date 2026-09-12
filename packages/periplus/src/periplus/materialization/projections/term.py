@@ -10,7 +10,7 @@ validate_tokenizer()
 
 def content_terms(context: VisitBatchContext):
     for content_id in sorted(context.content_output_hashes):
-        yield content_id, context.search_text(content_id).content_counts
+        yield content_id, context.search_text(content_id).occurrences
 
 
 def project(context: VisitBatchContext) -> pa.Table:

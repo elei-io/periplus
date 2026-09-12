@@ -1,5 +1,9 @@
 # Prose scalars before capture joins
 
+Historical investigation: the public prose/term surfaces and associated compiler paths
+were removed by the search contract release. Commands below describe the earlier revision;
+the old query cases now live under `benchmarks/query/retired/`.
+
 Classification: compiler/optimizer. The public prose grain is already one row per
 content. The original plan carries prose through the capture join before computing
 a small count; broad prose scanning remains necessary. Hypothesis: materializing

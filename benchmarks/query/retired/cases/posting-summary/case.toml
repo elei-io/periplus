@@ -1,0 +1,8 @@
+id = "posting-summary"
+title = "Page summaries versus positional discovery"
+use_case = "Measure discovery and ranking across internal posting layouts."
+classification = "schema"
+ordered = true
+memory_limit = "4GiB"
+max_warm_ms = 60000
+seconds = 120

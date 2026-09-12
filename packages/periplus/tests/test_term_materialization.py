@@ -53,7 +53,7 @@ class TermMaterializationTests(unittest.TestCase):
         return dict(self.rows('SELECT text, term_id FROM material.term'))
 
     def terms(self):
-        return self.rows('SELECT text, content_sha256, frequency FROM material.content_posting '
+        return self.rows('SELECT text, content_sha256, frequency FROM material.posting '
                          'JOIN material.term USING (term_id) ORDER BY text, content_sha256')
 
     def expire_claims(self):
@@ -61,23 +61,22 @@ class TermMaterializationTests(unittest.TestCase):
         with self.sessions.begin() as session:
             session.execute(delete(LakeWriteClaimRecord))
 
-    def test_node_postings_commit_replay_and_replace_atomically(self):
+    def test_positions_commit_replay_and_replace_atomically(self):
         self.html = '<p>mon<strong>key</strong> monkey</p>'
         prepared = self.prepare()
         commit_prepared_batch(self.catalogue, self.run, self.batch, prepared)
-        sql = ("SELECT t.text, p.node_index, p.frequency FROM material.node_posting p "
-               "JOIN material.term t USING(term_id) ORDER BY p.node_index")
+        sql = "SELECT t.text,p.frequency,p.positions,p.node_indexes FROM material.posting p JOIN material.term t USING(term_id) ORDER BY t.text"
         initial = self.rows(sql)
-        self.assertEqual([(term, count) for term, _, count in initial], [('monkey', 1)] * 3)
-        self.assertEqual(self.rows("SELECT text,frequency FROM public_v1.term"), [('monkey', 2)])
-        self.assertEqual(self.rows("SELECT text,node_index,frequency FROM public_v1.term_node ORDER BY node_index"), initial)
+        self.assertEqual([(t,f) for t,f,_,_ in initial], [('monkey',2)])
+        self.assertEqual([len(x) for x in initial[0][3]], [2,1])
+        self.assertEqual(initial[0][2][1],initial[0][2][0]+1)
         self.assertTrue(self.prepare().already_applied)
-        self.assertEqual(self.rows(sql), initial)
+        self.assertEqual(self.rows(sql),initial)
         self.batch = SimpleNamespace(id=uuid4(), snapshot=self.batch.snapshot, visit_ids=())
-        self.html = '<p>different</p>'
+        self.html = '<title>different</title>'
         prepared = self.prepare()
-        commit_prepared_batch(self.catalogue, self.run, self.batch, prepared)
-        self.assertEqual([(term, count) for term, _, count in self.rows(sql)], [('different', 1)])
+        commit_prepared_batch(self.catalogue,self.run,self.batch,prepared)
+        self.assertEqual([(t,f) for t,f,_,_ in self.rows(sql)], [('different',1)])
 
     def test_reservation_survives_failed_encoding_and_replay_reuses_ids(self):
         with patch('periplus.materialization.batch._write_partitioned_parquet',
@@ -121,13 +120,13 @@ class TermMaterializationTests(unittest.TestCase):
             with self.assertRaisesRegex(duckdb.TransactionException, 'lookup failed'):
                 self.prepare()
         self.assertEqual(self.dictionary(), {})
-        self.assertTrue(self.prepare().files['content_posting'])
+        self.assertTrue(self.prepare().files['posting'])
 
     def test_failed_registration_rolls_back_all_content_but_preserves_reservations(self):
         prepared = self.prepare()
         original = self.catalogue.trusted_remote_execute
         def fail_registration(sql):
-            if 'ducklake_add_data_files' in sql and "'content_posting'" in sql:
+            if 'ducklake_add_data_files' in sql and "'posting'" in sql:
                 raise duckdb.TransactionException('registration failed')
             return original(sql)
         with patch.object(self.catalogue, 'trusted_remote_execute', side_effect=fail_registration):
@@ -135,7 +134,7 @@ class TermMaterializationTests(unittest.TestCase):
                 commit_prepared_batch(self.catalogue, self.run, self.batch, prepared)
         self.assertTrue(self.dictionary())
         self.assertEqual(self.terms(), [])
-        self.assertEqual(self.rows('SELECT count(*) FROM material.prose'), [(0,)])
+        self.assertEqual(self.rows('SELECT count(*) FROM material.html_nodes'), [(0,)])
         commit_prepared_batch(self.catalogue, self.run, self.batch, prepared)
         self.assertTrue(self.terms())
 
@@ -173,7 +172,7 @@ class TermMaterializationTests(unittest.TestCase):
         self.catalogue.trusted_remote_execute(f"INSERT INTO material.{hidden['term']} VALUES ('unused', 1)")
         prepared = self.prepare()
         commit_prepared_batch(self.catalogue, self.run, self.batch, prepared)
-        actual = self.rows(f"SELECT text, content_sha256, frequency FROM material.{hidden['content_posting']} "
+        actual = self.rows(f"SELECT text, content_sha256, frequency FROM material.{hidden['posting']} "
                            f"JOIN material.{hidden['term']} USING (term_id) ORDER BY text, content_sha256")
         self.assertEqual(actual, expected)
         self.assertNotEqual(self.rows(f"SELECT term_id FROM material.{hidden['term']} WHERE text='monkeys'"),
