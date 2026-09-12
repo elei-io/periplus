@@ -96,6 +96,16 @@ URI. Materialization code does not branch by storage backend.
    Readiness is unknown while activation is in progress.
 6. Retired tables remain until completion is durably recorded and post-activation checks pass.
 
+Post-activation checks share one read snapshot. Expanding reference checks first
+copy only their required columns into 64 temporary content-hash partitions, then
+run the original predicates on matching partitions. Equal content identities stay
+together, so missing references and duplicates remain detectable. This avoids a
+global occurrence expansion and repeated lake scans. Temporary files are removed
+on normal completion and exceptions; they are not registered lake data. Staging
+and each validation query report progress. These partitions reduce intermediate
+size; a single oversized content or skewed partition can still exceed a worker's
+fixed memory or temporary-storage budget and must fail without skipping checks.
+
 A registry/schema change cannot be applied to a running or active generation with a different
 digest. Partial activation and per-table repair do not exist.
 
