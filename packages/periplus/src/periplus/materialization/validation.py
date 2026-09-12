@@ -34,8 +34,8 @@ def at_snapshot(sql: str, snapshot: int | None) -> str:
     return tree.sql(dialect="duckdb")
 
 
-def _expanding(sql: str) -> bool:
-    return any(isinstance(node, (exp.Unnest, exp.Explode))
+def _needs_partitioning(sql: str) -> bool:
+    return any(isinstance(node, (exp.Unnest, exp.Explode, exp.SortArray, exp.ArrayDistinct))
                for node in parse_one(sql, read="duckdb").walk())
 
 
@@ -77,7 +77,7 @@ def validation_statements(catalogue, spec: ProjectionSpec, *, partitions: int = 
     """
     if partitions < 1:
         raise ValueError("validation partitions must be positive")
-    expanding = {i: sql for i, sql in enumerate(spec.validation_queries) if _expanding(sql)}
+    expanding = {i: sql for i, sql in enumerate(spec.validation_queries) if _needs_partitioning(sql)}
     columns: dict[str, set[str]] = {}
     registered = {p.name: p for p in PROJECTIONS}
     for sql in expanding.values():
@@ -98,7 +98,7 @@ def validation_statements(catalogue, spec: ProjectionSpec, *, partitions: int = 
             )
             catalogue.trusted_remote_execute(
                 f"COPY ({source}) TO {sql_string(str(destination))} "
-                "(FORMAT PARQUET, COMPRESSION ZSTD, PARTITION_BY (__validation_partition))"
+                "(FORMAT PARQUET, COMPRESSION SNAPPY, PARTITION_BY (__validation_partition))"
             )
             for path in destination.rglob('*.parquet'):
                 partition = int(path.parent.name.split('=')[1])

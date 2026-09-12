@@ -99,8 +99,9 @@ URI. Materialization code does not branch by storage backend.
 Post-activation checks pin physical reads with `AT (VERSION => snapshot)` and let
 each query finish its own transaction. They must not hold one metadata transaction
 across the complete validation, which can exceed the fixed remote transaction
-timeout. Expanding reference checks first
-copy only their required columns into 64 temporary content-hash partitions, then
+timeout. Array-sorting and expanding reference checks first
+copy only their required columns into 64 temporary content-hash partitions
+with Snappy compression to reduce staging CPU, then
 run the original predicates on matching partitions. Equal content identities stay
 together, so missing references and duplicates remain detectable. This avoids a
 global occurrence expansion and repeated lake scans. Temporary files are removed
