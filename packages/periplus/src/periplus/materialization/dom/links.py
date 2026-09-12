@@ -28,6 +28,7 @@ def _base_domain(url: str) -> str:
 class ElementLike(Protocol):
     element_index: int
     parent_index: int | None
+    subtree_end_index: int
     tag: str
     attributes: dict[str, str]
     text_direct: str
@@ -49,6 +50,7 @@ GroupedLinkPayload = dict[str, list[LinkPayload]]
 @dataclass(slots=True)
 class _OpenElement:
     element_index: int
+    subtree_end_index: int
     tag: str
 
 
@@ -157,26 +159,22 @@ def _scan_elements(
     finished_anchors: list[DomAnchor] = []
     document_base_url = page_url
     base_selected = False
-    root_parent: int | None = None
     previous_index = -1
 
-    def close_until(parent_index: int | None) -> None:
-        while stack and stack[-1].element_index != parent_index:
-            stack.pop()
-
-        actual_parent = stack[-1].element_index if stack else root_parent
-        if actual_parent != parent_index:
-            raise ValueError("an element parent must be its open document-order ancestor")
-
     for element in elements:
-        if previous_index == -1:
-            root_parent = element.parent_index
         if element.element_index <= previous_index:
             raise ValueError("elements must have increasing document-order indexes")
         previous_index = element.element_index
         if element.parent_index is not None and not 0 <= element.parent_index < element.element_index:
             raise ValueError("an element parent must precede the element in document order")
-        close_until(element.parent_index)
+        # Element rows omit non-element ancestors, notably template.content
+        # document fragments. Complete subtree ranges preserve that ancestry.
+        while stack and element.element_index >= stack[-1].subtree_end_index:
+            stack.pop()
+        if element.subtree_end_index <= element.element_index:
+            raise ValueError("an element subtree must end after its start")
+        if stack and element.subtree_end_index > stack[-1].subtree_end_index:
+            raise ValueError("an element subtree must be contained by its ancestor")
 
         tag = element.tag.lower()
         if tag == "a":
@@ -191,6 +189,7 @@ def _scan_elements(
 
         opened = _OpenElement(
             element_index=element.element_index,
+            subtree_end_index=element.subtree_end_index,
             tag=tag,
         )
         stack.append(opened)
@@ -209,6 +208,5 @@ def _scan_elements(
                     document_base_url = resolved
                     base_selected = True
 
-    close_until(root_parent)
     finished_anchors.sort(key=lambda anchor: anchor.element_index)
     return finished_anchors, document_base_url

@@ -119,6 +119,28 @@ _step = Histogram(
     buckets=DURATION_BUCKETS,
 )
 
+_retained = Gauge(
+    "periplus_materialization_retained_preparation_bytes",
+    "Local Arrow bytes retained during dictionary reservation, summed across lanes.",
+)
+_preparations = Counter(
+    "periplus_materialization_preparation_attempts_total",
+    "Batch projection preparations, including preparations later discarded.",
+)
+
+
+def preparation_attempt() -> None:
+    _preparations.inc()
+
+
+@contextmanager
+def retained_preparation(size_bytes: int) -> Iterator[None]:
+    _retained.inc(size_bytes)
+    try:
+        yield
+    finally:
+        _retained.dec(size_bytes)
+
 
 @contextmanager
 def step(name: str) -> Iterator[None]:

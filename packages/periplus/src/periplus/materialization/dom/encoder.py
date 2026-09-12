@@ -16,17 +16,11 @@ import hashlib
 import json
 from collections.abc import Iterator
 from dataclasses import dataclass
-from importlib.metadata import version
-from xml.etree.ElementTree import Element
+from xml.etree.ElementTree import Element, Comment
 
-import html5lib
+from periplus.materialization.dom.lexbor import PARSER_NAME, PARSER_VERSION, PARSER_CONTRACT, records
 
-PARSER_NAME = "html5lib"
-PARSER_VERSION = version("html5lib")
-_PARSER_OPTIONS = {
-    "namespace_html_elements": True,
-    "treebuilder": "etree",
-}
+_PARSER_OPTIONS = {"contract": PARSER_CONTRACT, "byte_decoding": "bom-meta1024-windows1252-v1"}
 PARSER_OPTIONS_HASH = hashlib.sha256(
     json.dumps(_PARSER_OPTIONS, sort_keys=True, separators=(",", ":")).encode()
 ).hexdigest()
@@ -58,23 +52,43 @@ def parse_html(source: str) -> Element:
     if not isinstance(source, str):
         raise TypeError("source must be a string containing captured HTML")
 
-    return html5lib.parse(
-        source,
-        treebuilder=_PARSER_OPTIONS["treebuilder"],
-        namespaceHTMLElements=_PARSER_OPTIONS["namespace_html_elements"],
-    )
+    return _element_tree(source)
 
 
 def parse_html_bytes(source: bytes) -> Element:
-    """Parse exact response bytes using HTML5 encoding detection."""
-
+    """Decode exact response bytes with the fixed BOM/meta charset policy."""
     if not isinstance(source, bytes):
         raise TypeError("source must be exact HTML bytes")
-    return html5lib.parse(
-        source,
-        treebuilder=_PARSER_OPTIONS["treebuilder"],
-        namespaceHTMLElements=_PARSER_OPTIONS["namespace_html_elements"],
-    )
+    return _element_tree(source)
+
+
+def _element_tree(source: str | bytes) -> Element:
+    root = None
+    stack: list[Element | None] = []
+    for record in records(source):
+        if record is None:
+            stack.pop()
+            continue
+        kind, name, namespace, value, attributes = record
+        parent = stack[-1] if stack else None
+        current = parent
+        if kind == "element":
+            current = Element(f"{{{namespace}}}{name}" if namespace else name, attributes)
+            if parent is not None:
+                parent.append(current)
+            elif root is None:
+                root = current
+        elif kind == "comment" and parent is not None:
+            parent.append(Comment(value))
+        elif kind == "text" and parent is not None:
+            if len(parent):
+                parent[-1].tail = (parent[-1].tail or "") + (value or "")
+            else:
+                parent.text = (parent.text or "") + (value or "")
+        stack.append(current)
+    if root is None:
+        raise ValueError("Lexbor did not produce an HTML root")
+    return root
 
 
 def iter_html_elements(source: str) -> Iterator[ElementRow]:

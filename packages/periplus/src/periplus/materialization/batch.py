@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import random
 import time
-from collections.abc import Callable
-from contextlib import ExitStack
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -12,7 +13,7 @@ from uuid import UUID, uuid4
 import pyarrow as pa
 
 from periplus.ingestion.objects.html import RawHtmlRepository
-from periplus.materialization import state
+from periplus.materialization import metrics, state
 from periplus.materialization.document_projection import (
     DocumentObservation,
     DocumentProjectionSource,
@@ -32,7 +33,7 @@ from periplus.platform.catalogue.storage import (
     portable_registration_path,
     storage_protocol,
 )
-from periplus.retention.identities import retired_ids, write_claims
+from periplus.retention.identities import WriteClaimUnavailable, retired_ids, write_claims
 from periplus.urls import normalize_url
 
 
@@ -110,7 +111,12 @@ def prepare_batch(
         # Reserve shared keys before encoding final Parquet. These append-only reservations
         # may outlive a failed batch; IDs are never recycled within a generation.
         dictionary_inputs = projections.dictionary_inputs()
-        with step("dictionary_reservation"), write_claims({"generation": [str(run.id)]}):
+        with step("dictionary_reservation"), _dictionary_claim(
+            catalogue, run, active_generation=active_generation,
+            assert_writable=assert_writable, retained_bytes=projections.size_bytes,
+        ) as current:
+            if not current:
+                return BatchResult(0, 0, 0, 0, 0, 0, 0, superseded=True)
             if assert_writable is not None:
                 assert_writable()
             if active_generation and not _is_active_generation(catalogue, run.id):
@@ -162,6 +168,44 @@ def prepare_batch(
             parquet_seconds=parquet_seconds,
             files=files,
         )
+
+
+@contextmanager
+def _dictionary_claim(
+    catalogue: Catalogue,
+    run: MaterializationRun,
+    *,
+    active_generation: bool,
+    assert_writable: Callable[[], None] | None,
+    retained_bytes: int,
+) -> Iterator[bool]:
+    """Retry known acquisition rejection while the caller retains bounded Arrow files.
+
+    Only __enter__ rejection is retryable here. Transaction/body/release errors
+    propagate to the existing catalogue outcome handling unchanged.
+    """
+    deadline = time.monotonic() + 120.0
+    attempts = 0
+    with metrics.retained_preparation(retained_bytes), ExitStack() as claim:
+        with step("dictionary_claim_wait"):
+            while True:
+                if attempts and assert_writable is not None:
+                    assert_writable()
+                if active_generation and not _is_active_generation(catalogue, run.id):
+                    yield False
+                    return
+                try:
+                    claim.enter_context(write_claims({"generation": [str(run.id)]}, wait_seconds=0))
+                    break
+                except WriteClaimUnavailable:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise
+                    metrics.retry("dictionary_claim")
+                    attempts += 1
+                    backoff = min(2.0, 0.1 * 2 ** min(attempts, 5))
+                    time.sleep(min(remaining, random.uniform(0.1, backoff)))
+        yield True
 
 
 def commit_prepared_batch(

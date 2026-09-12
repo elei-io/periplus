@@ -59,3 +59,30 @@ validation. They ran alone under the source-byte reservation rule: 19.09 s total
 2.58 GiB peak combined RSS, 137,289,356 final Parquet bytes. This confirms the
 oversized path on current corpus extremes; it is not a comparison against the
 sequential baseline.
+
+## Lexbor and retained preparation, 2026-09-12
+
+The complete Lexbor adapter (including template fragments, namespace/attribute
+extraction and processing instructions) was measured on the same fixtures and
+budgets, with two parser processes. Compared with the preceding HTML5lib parallel
+results:
+
+| Workload | HTML5lib | Lexbor | Peak combined RSS, old → new |
+| --- | ---: | ---: | ---: |
+| 500 documents, complete pipeline | 34.79 s | 26.46 s | 1.15 → 1.01 GiB |
+| Three largest documents, complete pipeline | 19.09 s | 5.75 s | 2.58 → 1.94 GiB |
+
+The 500-document Lexbor run spent 17.73 s in projection/source/dictionary
+preparation, 5.30 s in Parquet writes, 0.45 s committing and 2.71 s validating.
+Two Lexbor runs produced identical fingerprints for all six projections. The new
+tree contains 1,151,337 nodes, including explicit template fragments; old parser
+identities are intentionally not an equality target. Other relation counts remain
+149,907 terms, 840,034 postings, 58,351 links, 460 JSON-LD rows and 500 visit proofs.
+The full native adapter's measured pipeline gain is 24%, not the prototype's
+parser-only 7× gain. These are local results, not a whole-rebuild forecast.
+
+Add `--dictionary-contention` to hold a real control-Postgres generation claim for
+two seconds at the first dictionary reservation. A 500-document run passed with
+six rejected acquisitions, **one preparation**, zero retained bytes after return,
+and all six fingerprints identical to the uncontended run. Its 30.18 s total
+includes the deliberately induced wait and is not a throughput comparison.

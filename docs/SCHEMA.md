@@ -275,7 +275,7 @@ The same element has the same depth in both relations; depth is structural, not
 heading rank or visual importance.
 
 `html_node` adds `node_type VARCHAR`, `name VARCHAR`, `namespace VARCHAR`, and
-`value VARCHAR`. Kinds are `document`, `doctype`, `element`, `text`, `comment`, and
+`value VARCHAR`. Kinds are `document`, `document_fragment`, `doctype`, `element`, `text`, `comment`, and
 `processing_instruction` (where produced by HTML5 parsing). Name is the local
 name for elements/doctypes or instruction target; otherwise null. Namespace is a
 URI where applicable, otherwise null. Value contains text/comment/instruction
@@ -293,6 +293,20 @@ not source token offsets. Exact spelling, duplicate source attributes, entity
 spelling and other serialization details remain in original bytes. Adjacent text
 fragments are merged. A parser change requires a complete coherent generation;
 node references must not be reused across snapshots without checking identity.
+
+The parser contract is Lexbor 3.1.0 through pinned Selectolax 0.4.11. Lexbor owns
+tree repair, namespace interpretation and parsed attribute names. Template content
+is preserved as an explicit `document_fragment` child of its template element;
+this logical containment edge keeps all content in the same preorder space.
+The fragment has null name/namespace/value. A template's direct text is empty;
+its descendant text includes the fragment's text nodes. Comments and processing
+instructions retain their parsed character data, but are not text postings.
+Changing this parser contract rebuilds all dependent projections together.
+
+Rendered captures arrive as Unicode. Exact response bytes use deterministic HTML
+encoding detection: BOM, then a supported meta charset in the first 1024 bytes,
+otherwise Windows-1252. Malformed encoded sequences are replaced; there is no
+statistical encoding guess or late-meta reparse. Raw bytes remain authoritative.
 
 HTML projections are asynchronous. A capture with no matching node root may be
 awaiting materialization; absence does not prove an empty document.

@@ -57,5 +57,6 @@ PROJECTION = ProjectionSpec(
     projector=project,
     description="Complete HTML5 document tree, including text and comments.",
     identity_columns=("content_sha256", "node_index"),
+    implementation_dependencies=("periplus.materialization.dom.nodes", "periplus.materialization.dom.lexbor"),
     content_presence_predicate="node_index = 0",
 )

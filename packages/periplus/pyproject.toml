@@ -1,6 +1,6 @@
 [project]
 license = "AGPL-3.0-only"
-license-files = ["LICENSE", "NOTICE"]
+license-files = ["LICENSE", "NOTICE", "licenses/lexbor/*"]
 name = "periplus"
 version = "0.1.0"
 description = "Web acquisition and normalization for SQL-centric data pipelines"
@@ -22,12 +22,13 @@ dependencies = [
     "tldextract>=5.3.2",
     "boto3>=1.42",
     "zstandard>=0.25",
-    "html5lib>=1.1",
+    "html5lib==1.1",
     "pyarrow>=21",
     "pyicu==2.16.2",
     "sqlglot>=27",
     "duckdb==1.5.5",
     "croniter>=6,<7",
+    "selectolax==0.4.11",
 ]
 
 [dependency-groups]

@@ -22,6 +22,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import psutil
 import pyarrow as pa
+from prometheus_client import REGISTRY
 from sqlalchemy import create_engine
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
@@ -56,6 +57,51 @@ from periplus.retention.models import (
     RetentionObjectRecord,
     RetiredEvidenceRecord,
 )
+from periplus.retention.identities import write_claims
+
+
+@contextmanager
+def dictionary_contention(enabled):
+    """Hold a real control-Postgres generation claim after preparation completes."""
+    if not enabled:
+        yield
+        return
+    held = threading.Event()
+    release = threading.Event()
+    threads = []
+    errors = []
+
+    def holder(keys):
+        try:
+            with write_claims(keys):
+                held.set()
+                release.wait(2)
+        except BaseException as error:
+            errors.append(error)
+            held.set()
+
+    @contextmanager
+    def contend(keys, **kwargs):
+        if not threads:
+            thread = threading.Thread(target=holder, args=(keys,))
+            threads.append(thread)
+            thread.start()
+            if not held.wait(10):
+                raise TimeoutError("benchmark claim holder did not start")
+            if errors:
+                raise errors[0]
+        with write_claims(keys, **kwargs):
+            yield
+
+    try:
+        with patch("periplus.materialization.batch.write_claims", contend):
+            yield
+    finally:
+        release.set()
+        for thread in threads:
+            thread.join()
+        if errors:
+            raise errors[0]
 
 
 @contextmanager
@@ -63,6 +109,8 @@ def sequential(repository, sources, **kwargs):
     context = build_visit_batch_context(repository, sources, **kwargs)
 
     class Baseline:
+        size_bytes = 0  # This baseline holds the context in memory, without Arrow spool files.
+
         def dictionary_inputs(self):
             return {
                 spec.name: spec.rows(context)
@@ -175,6 +223,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--mode", choices=["sequential", "parallel"], required=True)
     parser.add_argument("--count", type=int, default=500)
+    parser.add_argument("--dictionary-contention", action="store_true")
     parser.add_argument(
         "--control-url",
         default="postgresql://periplus:periplus@127.0.0.1:55432/periplus_test",
@@ -228,7 +277,8 @@ def main():
                 ):
                     prepared = prepare_batch(catalogue, repository, run, batch)
             else:
-                prepared = prepare_batch(catalogue, repository, run, batch)
+                with dictionary_contention(args.dictionary_contention):
+                    prepared = prepare_batch(catalogue, repository, run, batch)
             preparation = time.perf_counter() - started
             committed = commit_prepared_batch(catalogue, run, batch, prepared)
             validation_started = time.perf_counter()
@@ -277,7 +327,14 @@ def main():
             "fingerprints": fingerprints,
             "rows": counts,
             "registry_digest": REGISTRY_DIGEST,
+            "preparation_attempts": REGISTRY.get_sample_value("periplus_materialization_preparation_attempts_total"),
+            "dictionary_claim_retries": REGISTRY.get_sample_value("periplus_materialization_retries_total", {"reason": "dictionary_claim"}) or 0,
+            "retained_bytes_after": REGISTRY.get_sample_value("periplus_materialization_retained_preparation_bytes"),
         }
+        if args.dictionary_contention:
+            assert result["preparation_attempts"] == 1, result
+            assert result["dictionary_claim_retries"] >= 1, result
+            assert result["retained_bytes_after"] == 0, result
         (args.output / "result.json").write_text(json.dumps(result, indent=2) + "\n")
         print(json.dumps(result), flush=True)
 

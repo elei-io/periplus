@@ -537,4 +537,13 @@ Arrow intermediates use the pod's temporary filesystem and are deleted after
 preparation, including exceptions. The parent reserves dictionary IDs and writes
 one registry-sorted/partitioned Parquet file set per batch. Generation claims,
 content ownership, atomic registration and durable receipts are unchanged.
-This execution change does not alter the registry digest or require a migration.
+The Lexbor adapter uses the pinned 64-bit Selectolax 0.4.11 / Lexbor 3.1.0 native
+ABI. Dependency upgrades require native completeness tests on the deployment
+platform and a coherent rebuild. Parser source is included in the registry digest;
+all DOM identities and postings activate together. No control-Postgres migration
+is required. The HTML5lib dependency supplies only deterministic byte decoding.
+
+Dictionary-claim contention retains Arrow preparation for at most 120 seconds
+within the same lane and storage budget. The retained-preparation byte gauge,
+`dictionary_claim_wait` step duration and `dictionary_claim` retry counter expose
+storage and contention separately from parsing.

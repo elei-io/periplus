@@ -11,6 +11,14 @@ The backend image builds ICU 77.1 from the Unicode project's release archive.
 Its complete upstream license and third-party notices are retained in the image
 at `/usr/local/share/licenses/icu/LICENSE`. PyICU retains its packaged license.
 
+## Selectolax and Lexbor
+
+The backend pins Selectolax 0.4.11 (MIT) and its bundled Lexbor 3.1.0
+(Apache-2.0). The DOM adapter's read-only native layouts follow Lexbor's DOM and
+HTML interface headers. Selectolax retains its packaged MIT license; Periplus
+includes Lexbor's license and notice under `packages/periplus/licenses/lexbor/`
+and in the backend Python distribution's license files.
+
 ## shadcn/ui
 
 Source: https://github.com/shadcn-ui/ui
