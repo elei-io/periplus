@@ -3,8 +3,9 @@
 This is schema/catalogue work. Text lives directly on every element; no search
 rewrite or posting index participates. Use the actual projection registry,
 prepare_batch, commit_prepared_batch, Parquet writer and shared query benchmark.
-The fixture injects retained HTML source selection and uses isolated SQLite control
-state. It does not simulate NATS, production Postgres latency, object-store latency,
+The fixture seeds real ingest visits/documents and uses isolated SQLite control
+state. Source snapshot selection, content ownership, write intent and receipts use
+the application code. It does not simulate NATS, production Postgres latency, object-store latency,
 multiple writer pods or the entire production corpus.
 
 Run from the repository with the normal backend environment:
