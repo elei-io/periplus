@@ -36,7 +36,7 @@ physical-schema declaration. Add one file, edit one file, or delete one file; th
 a complete rebuild. The generation digest includes the complete source of every discovered
 projection file and its declared implementation dependencies, so an implementation-only edit cannot silently reuse the previous generation.
 
-The current files project structural HTML, searchable body prose and term frequencies at content grain,
+The current files project structural HTML and complete positional text postings at content grain,
 link occurrences and readiness membership at visit grain, and a shared vocabulary at generation grain. HTML readiness also requires the active content root
 marker because a separate batch may own shared-content output.
 
@@ -290,10 +290,10 @@ budget. Redelivery uses the remaining claim lifetime capped at 30 seconds plus
 jitter, allowing early releases to become useful without occupying a writer lane.
 Uncertain writes retain their original claims and fail-stop bounds.
 
-Prose, content-term counts and node-term counts share one lazy search-text result per
+Vocabulary and positional postings share one lazy text-index result per
 content in the visit-batch context. Dictionary preparation populates this result before
 dependent projections consume it. The cache ends with that preparation context; it is
 not a durable cache or a cross-retry guarantee. Element attributes/direct text are written
 on materialized nodes, and public elements are projected from those nodes. A complete
-rebuild activates the new dictionary, both posting tables and unified DOM together;
+rebuild activates the new dictionary, the positional posting table and unified DOM together;
 normal post-activation finalization removes obsolete material tables.

@@ -298,9 +298,11 @@ with Client("https://periplus.dev") as client:
         )
 ```
 
-Search returns up to 100 unique contents with title, representative URL, snippet
-and score. It initially matches literal substrings in body prose only; titles are display-only
-and initial scores are all 1. Percent and underscore are
-literal inside the search argument. Element predicates use ordinary SQL wildcard
-semantics and complete parsed descendant text with preserved whitespace.
-Prose, vocabulary and postings remain internal.
+Search runs through the query API and returns up to 100 unique contents with
+`content_id`, `matches: [{snippet, node_indexes}]`, and `score`. Plain queries
+require every distinct ICU word token; a fully double-quoted query requires a
+phrase within a structural text run. All parsed text nodes participate, including
+titles and scripts. Attributes, meta descriptions and comments are excluded.
+There is no substring or wildcard expansion. Join captures for URLs and nodes for
+structure. Ordinary HTML SQL remains portable; direct DuckDB `search()` execution
+requires the query API. Vocabulary and positional postings remain internal.

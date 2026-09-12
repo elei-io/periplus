@@ -141,7 +141,7 @@ class PublicCatalogueTests(unittest.TestCase):
         for name in ('prose', 'term', 'term_node'):
             with self.assertRaises(duckdb.CatalogException):
                 self.catalogue.connection.execute(f'SELECT * FROM public_v1.{name}')
-        for name in ('prose', 'term', 'content_posting', 'node_posting', 'html_nodes'):
+        for name in ('term', 'posting', 'html_nodes'):
             self.catalogue.connection.execute(f'SELECT * FROM material.{name} LIMIT 0')
 
     def test_views_preserve_observation_content_and_occurrence_grains(self) -> None:

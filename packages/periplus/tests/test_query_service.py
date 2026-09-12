@@ -23,13 +23,18 @@ class QueryServiceTests(unittest.TestCase):
             service=QueryService(self.config, mode=mode)
             self.addCleanup(service.close)
             request=QueryRequest(sql="SELECT * FROM search(?) ORDER BY score DESC, content_id", parameters=['robot'])
-            self.assertEqual(service.prepare(request).optimizations, [])
+            self.assertEqual(service.prepare(request).optimizations, ['positional_search_v1'])
             rows=service.execute(request).rows
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0][0], 'helper-fixture')
             for name in ('term', 'term_node', 'prose'):
                 with self.assertRaises(ValueError):
                     service.execute(QueryRequest(sql=f'SELECT * FROM {name}'))
+
+    def test_invalid_outer_search_sql_does_not_discover(self):
+        with patch('periplus.query.search.discover',side_effect=AssertionError('invalid query scans')):
+            with self.assertRaises(duckdb.BinderException):
+                self.service.execute(QueryRequest(sql="SELECT missing FROM search('robot')"))
 
     def test_stream_metadata_is_also_subject_to_result_byte_budget(self):
         from periplus.query.service import ResultLimitError
@@ -144,9 +149,9 @@ class QueryServiceTests(unittest.TestCase):
         d.execute("INSERT INTO ingest.documents (document_id, visit_id, detected_media_type, content_sha256) SELECT document_id, visit_id, 'text/html', visit_id::VARCHAR FROM ingest.visits WHERE requested_url <> 'https://example.com/inline'")
         d.execute("INSERT INTO material.html_nodes (content_sha256, node_index, subtree_end_index, node_type, value, depth) VALUES ('helper-fixture',0,4,'element',NULL,0),('helper-fixture',1,2,'text','start',1),('helper-fixture',2,3,'text','nested',1),('helper-fixture',3,4,'text','end',1)")
         d.execute("UPDATE material.html_nodes SET name = 'title', namespace = 'http://www.w3.org/1999/xhtml', text_direct = 'start' WHERE content_sha256 = 'helper-fixture' AND node_index = 0")
-        d.execute("INSERT INTO material.prose VALUES ('helper-fixture', 'robot careers')")
         d.execute("INSERT INTO material.term VALUES ('robot', 1), ('robotics', 2), ('unused', 3)")
-        d.execute("INSERT INTO material.content_posting VALUES (1, 'helper-fixture', 2), (2, 'helper-fixture', 1)")
+        d.execute("INSERT INTO material.posting VALUES (1, 'helper-fixture', 2,[0,1],[[4],[4]]), (2, 'helper-fixture', 1,[2],[[4]])")
+        d.execute("INSERT INTO material.html_nodes (content_sha256,node_index,subtree_end_index,node_type,value,depth) VALUES ('helper-fixture',4,5,'text','robot robot robotics careers',1)")
         d.execute("UPDATE periplus.material.html_nodes SET tag=lower(name) WHERE node_type='element'")
         d.close()
         self.service = QueryService(self.config)
@@ -169,7 +174,7 @@ class QueryServiceTests(unittest.TestCase):
         self.assertEqual(stable.query_mode, QueryMode.STABLE)
         self.assertEqual(result.query_mode, QueryMode.EXPERIMENTAL)
         self.assertEqual(result.optimizations, [])
-        self.assertEqual(evidence.compiler_version, "public-query-v10:experimental")
+        self.assertEqual(evidence.compiler_version, "public-query-v11:experimental")
         self.assertNotEqual(result.compiler_version, stable.compiler_version)
         with self.assertRaises(ValueError):
             QueryService(self.config, mode="invalid")
@@ -198,7 +203,7 @@ class QueryServiceTests(unittest.TestCase):
         self.assertEqual(after.types, before.types)
         self.assertEqual(after.sql, request.sql)
         self.assertEqual(before.optimizations, ['capture_heading_content_scope_v1'])
-        self.assertEqual(before.compiler_version, 'public-query-v10:stable')
+        self.assertEqual(before.compiler_version, 'public-query-v11:stable')
         self.assertEqual(after.optimizations, ['capture_heading_content_scope_v1'])
         self.assertIn('CTE', after.plan)
         self.assertEqual(stable.prepare(request).optimizations, after.optimizations)
@@ -216,8 +221,10 @@ class QueryServiceTests(unittest.TestCase):
         request = QueryRequest(sql="""SELECT c.requested_url AS url, m.value AS title
             FROM search('robot') p JOIN capture c USING (content_id)
             JOIN html_metadata m USING (content_id)
-            WHERE p.snippet ILIKE ? AND m.name = ?""", parameters=['%robot%', 'title'])
-        expected = self.service.connection.execute(request.sql, request.parameters).fetchall()
+            WHERE p.matches[1].snippet ILIKE ? AND m.name = ?""", parameters=['%robot%', 'title'])
+        from periplus.query.search import bind_search
+        binding=bind_search(request.sql,request.parameters,self.service.connection,execute=True,check=lambda:None)
+        expected = self.service.connection.execute(binding.sql,binding.parameters).fetchall()
         evidence = PreparationEvidence()
         prepared = self.service.prepare(request, evidence=evidence)
         self.assertEqual(prepared.sql, request.sql)
@@ -237,10 +244,10 @@ class QueryServiceTests(unittest.TestCase):
         with self.assertRaises(duckdb.BinderException):
             self.service.prepare(QueryRequest(sql=request.sql.replace('m.value', 'm.missing'), parameters=request.parameters))
 
-    def test_joined_prose_stays_unmodified_in_prepare_and_execute(self):
+    def test_joined_search_stays_unmodified_in_prepare_and_execute(self):
         request = QueryRequest(sql="""SELECT c.requested_url AS url, m.value AS title
             FROM html_metadata m JOIN capture c USING (content_id)
-            JOIN search('robot') p USING (content_id) WHERE p.snippet ILIKE ? AND m.name = ?""",
+            JOIN search('robot') p USING (content_id) WHERE p.matches[1].snippet ILIKE ? AND m.name = ?""",
             parameters=['%robot%', 'title'])
         prepared = self.service.prepare(request)
         result = self.service.execute(request)
@@ -256,8 +263,10 @@ class QueryServiceTests(unittest.TestCase):
         request = QueryRequest(sql="""SELECT ? AS marker, c.requested_url AS url, m.value AS title
             FROM search('robot') p JOIN capture c USING (content_id)
             JOIN html_metadata m ON (m.name = ? AND (m.content_id = c.content_id))
-            WHERE p.snippet ILIKE ? ORDER BY title""", parameters=['marker', 'title', '%robot%'])
-        expected = self.service.connection.execute(request.sql, request.parameters).fetchall()
+            WHERE p.matches[1].snippet ILIKE ? ORDER BY title""", parameters=['marker', 'title', '%robot%'])
+        from periplus.query.search import bind_search
+        binding=bind_search(request.sql,request.parameters,self.service.connection,execute=True,check=lambda:None)
+        expected = self.service.connection.execute(binding.sql,binding.parameters).fetchall()
         prepared = self.service.prepare(request)
         result = self.service.execute(request)
         for response in (prepared, result):
@@ -272,7 +281,7 @@ class QueryServiceTests(unittest.TestCase):
     def test_api_never_invokes_research_optimizer_or_plan_inspector(self):
         from periplus.operations.query_history.schemas import PreparationEvidence
         request = QueryRequest(sql="""SELECT m.* FROM search('robot') p JOIN html_metadata m
-            USING(content_id) WHERE p.snippet ILIKE '%robot%' AND m.name='title'""")
+            USING(content_id) WHERE p.matches[1].snippet ILIKE '%robot%' AND m.name='title'""")
         before = self.service.connection.execute("SELECT current_setting('disabled_optimizers')").fetchone()
         with patch('periplus.query.content_scope.content_scope', side_effect=AssertionError('research optimizer invoked')), patch('periplus.query.scope_plan.shared_html_inputs', side_effect=AssertionError('research plan inspector invoked')):
             evidence = PreparationEvidence()
@@ -280,7 +289,7 @@ class QueryServiceTests(unittest.TestCase):
             result = self.service.execute(request)
         self.assertEqual(prepared.sql, request.sql)
         self.assertEqual(result.sql, request.sql)
-        self.assertEqual(evidence.compiler_version, 'public-query-v10:stable')
+        self.assertEqual(evidence.compiler_version, 'public-query-v11:stable')
         self.assertEqual(evidence.plan, prepared.plan)
         self.assertFalse(any(d.code.startswith('content_scope') for d in result.diagnostics))
         self.assertEqual(self.service.connection.execute("SELECT current_setting('disabled_optimizers')").fetchone(), before)

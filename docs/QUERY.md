@@ -76,7 +76,7 @@ SQL preparation and execution remain in the separate Python
 
 Both operations accept SQL and positional parameters and use the same public SQL validation.
 Preparation binds and explains without executing the analytical query, returning SQL, parameters,
-a query ID, diagnostics, and a plan. Compiler `public-query-v10` applies the promoted
+a query ID, diagnostics, and a plan. Compiler `public-query-v11` applies the promoted
 optimizations documented below in both stable and experimental. Responses preserve
 the submitted SQL and parameters and identify applied rewrites.
 The execution-only row-limit wrapper remains a resource control. DuckDB performs native
@@ -136,14 +136,22 @@ increase the server's limits. Administrative SQL retains its separate fixed resu
 
 ### Page discovery and structured text
 
-Use `search('query')` for body-text page discovery, and `html_element.text` or
-`html_node.text` for deterministic structural predicates. Search owns matching,
-ranking, snippets and a 100-content result cap; see [the full contract](SCHEMA.md#public_v1searchquery).
-Internal prose and postings are not public SQL relations. Their body-only index
-coverage cannot safely accelerate arbitrary element predicates. Any future
-candidate optimization must prove complete coverage and reapply the predicate.
-This change is classified as schema/catalogue design. Superseded public-prose
-compiler passes are removed; no DISTINCT-term optimization is introduced.
+Use `search('query')` through the query API for positional page discovery, and
+`html_element.text` / `html_node.text` for deterministic structural SQL. Search
+returns content IDs, matched snippets with node IDs, and scores; see
+[the contract](SCHEMA.md#public_v1searchquery). It is the deliberate API-only
+exception to portable catalogue SQL: the stored macro supplies a typed signature
+and explicitly rejects direct execution. ICU query tokenization and staged lookup
+belong in `query/search.py`, not an extension or a materialization callback.
+
+Vocabulary and one positional posting relation remain private; prose is not
+materialized. All parsed text-node locations are indexed, excluding attributes and
+comments. Arbitrary SQL text predicates are not transparently rewritten. This is
+schema/catalogue and API-contract work, not a semantics-preserving optimizer pass.
+Search resolves only constant literal/parameter calls, binds the outer SQL before
+running discovery, and shares its snapshot, deadline, cancellation and result limits.
+Preparation does not run discovery. Plain and phrase modes are explicit; no public
+term surface or DISTINCT-term optimization is introduced.
 
 ## 2. Python SDK
 
@@ -835,7 +843,7 @@ console links preserve the selected mode with `mode=experimental`. Stable uses
 `/api/query/experimental/exec`, `/api/query/experimental/prep` and
 `/api/query/experimental/helpers`. The SQL assistant validates against the selected mode.
 
-Stable and experimental share compiler `public-query-v10`, with mode suffixes
+Stable and experimental share compiler `public-query-v11`, with mode suffixes
 `:stable` and `:experimental`. Both include the promoted
 `capture_heading_content_scope_v1` optimization.
 Experimental additionally supports the execution-only selected-content rule below.

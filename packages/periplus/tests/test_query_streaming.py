@@ -21,7 +21,7 @@ class StreamingTests(unittest.TestCase):
         app.add_middleware(QueryAccessMiddleware)
         app.state.query_slot = asyncio.Semaphore(1)
         app.state.query_limits = SimpleNamespace(read=AsyncMock(return_value=limits))
-        app.state.query_service = SimpleNamespace(execute=execute, compiler_version='public-query-v10:stable', connection=None)
+        app.state.query_service = SimpleNamespace(execute=execute, compiler_version='public-query-v11:stable', connection=None)
         return app
 
     def test_frames_completion_and_slot_release(self):
@@ -88,7 +88,7 @@ class StreamOwnershipTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 stopped.set()
         state = SimpleNamespace(query_slot=slot, query_service=SimpleNamespace(
-            execute=execute, compiler_version='public-query-v10:stable', connection=None))
+            execute=execute, compiler_version='public-query-v11:stable', connection=None))
         request = SimpleNamespace(app=SimpleNamespace(state=state), state=SimpleNamespace(), headers={})
         response = QueryStreamResponse(request, QueryRequest(sql='SELECT 1'), QueryLimits())
         sending = asyncio.Event()

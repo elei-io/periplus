@@ -1,9 +1,14 @@
+"""Public positional search contract with real ICU, projections and SQL composition."""
+
 import unittest
 from importlib.resources import files
+
 import duckdb
+
 from periplus.materialization.document_projection import VisitBatchContext
 from periplus.materialization.dom.nodes import parse_document
 from periplus.materialization.registry import BY_NAME
+from periplus.query.search import bind_search
 
 
 class SearchContractTests(unittest.TestCase):
@@ -11,14 +16,15 @@ class SearchContractTests(unittest.TestCase):
         self.db = duckdb.connect()
         self.addCleanup(self.db.close)
         self.db.execute("CREATE SCHEMA material; CREATE SCHEMA public_v1")
-        pages = {
-            "a": '<title>MONKEY zoo</title><meta name="description" content="monkey description"><p>mon<strong>key</strong> café 日本語 100% a_b</p>',
+        self.pages = {
+            "a": "<title>monkey zoo</title><p>mon<strong>key</strong> café 日本語 100% a_b monkey monkey</p>",
             "b": '<meta name="description" content="monkey description"><p>Something else</p>',
             "c": "<p>monkey body</p>",
-            "e": '<title>Whitespace</title><meta name=description content="zebra zzz"><meta name=description content="zebra aaa"><p> A\n <b>B\tC</b><!--omit--> D&nbsp;E </p>',
             "d": "<title>Other</title><script>secretmonkey</script><style>stylemonkey</style><p>A<br>B</p><div></div>",
+            "e": "<p>A <b>B C</b><!--omit--> D&nbsp;E</p><template>templateword</template>",
+            "f": "<title>monkey</title><p>zoo</p>",
         }
-        parsed = {k: parse_document(v) for k, v in pages.items()}
+        parsed = {k: parse_document(v) for k, v in self.pages.items()}
         context = VisitBatchContext(
             (),
             (),
@@ -28,70 +34,112 @@ class SearchContractTests(unittest.TestCase):
             {},
             frozenset(parsed),
         )
-        for name in ("html_nodes", "prose"):
+        terms = BY_NAME["term"].rows(context).to_pylist()
+        context.dictionary_ids["term"] = {r["text"]: i for i, r in enumerate(terms, 1)}
+        self.db.execute("CREATE TABLE material.term(text VARCHAR,term_id BIGINT)")
+        self.db.executemany(
+            "INSERT INTO material.term VALUES (?,?)",
+            list(context.dictionary_ids["term"].items()),
+        )
+        for name in ["html_nodes", "posting"]:
             self.db.register("rows", BY_NAME[name].rows(context))
             self.db.execute(f"CREATE TABLE material.{name} AS SELECT * FROM rows")
-        self.db.execute(
-            "CREATE TABLE public_v1.capture(content_id VARCHAR, effective_url VARCHAR, requested_url VARCHAR, captured_at TIMESTAMP, capture_id UUID)"
-        )
-        for i, k in enumerate(pages, 1):
-            self.db.execute(
-                "INSERT INTO public_v1.capture VALUES (?, ?, ?, '2026-01-01', ?::UUID)",
-                [
-                    k,
-                    f"https://{k}",
-                    f"https://{k}",
-                    f"00000000-0000-0000-0000-{i:012d}",
-                ],
-            )
-        self.db.execute(
-            "INSERT INTO public_v1.capture VALUES ('a',NULL,'https://new-a','2026-02-01','00000000-0000-0000-0000-000000000010')"
+        self.db.execute("CREATE TABLE public_v1.capture(content_id VARCHAR)")
+        self.db.executemany(
+            "INSERT INTO public_v1.capture VALUES (?)",
+            [(k,) for k in self.pages] + [("a",)],
         )
         root = files("periplus.platform.catalogue").joinpath("sql/public_v1")
-        for resource in (
+        for resource in [
             "views/html_node.sql",
             "views/html_element.sql",
             "helpers/search.sql",
-        ):
+        ]:
             self.db.execute(root.joinpath(resource).read_text())
 
-    def test_search_grain_ranking_and_literals(self):
-        rows = self.db.execute(
-            "SELECT * FROM public_v1.search('  MoNkEy  ')"
-        ).fetchall()
-        self.assertEqual(
-            [(r[0], r[4]) for r in rows], [("a", 1.0), ("c", 1.0)]
-        )
-        self.assertEqual(rows[0][2], "https://new-a")
-        self.assertEqual(rows[0][1], "MONKEY zoo")
-        self.assertIn("monkey", rows[0][3])
-        for q in ("%", "_", "cafe\u0301", "日本語", "monkey café"):
-            self.assertEqual(
-                self.db.execute(
-                    "SELECT content_id FROM public_v1.search(?)", [q]
-                ).fetchall(),
-                [("a",)],
-            )
-        for q in (
-            None,
-            "",
-            " \t\n ",
-            "secretmonkey",
-            "stylemonkey",
-            "Whitespace",
-            "zebra",
-            "description",
-            "MONKEY zoo",
-            "%monkey%",
-            "' OR true --",
-        ):
-            self.assertEqual(
-                self.db.execute("SELECT * FROM public_v1.search(?)", [q]).fetchall(), []
-            )
-        with self.assertRaisesRegex(duckdb.Error, "at most 256"):
-            self.db.execute("SELECT * FROM public_v1.search(?)", ["a" * 257]).fetchall()
+    def search(self, q, sql="SELECT * FROM search(?) ORDER BY score DESC,content_id"):
+        b = bind_search(sql, [q], self.db, execute=True, check=lambda: None)
+        return self.db.execute(b.sql, b.parameters).fetchall()
 
-    def test_element_text_complete_and_exact(self):
+    def test_coverage_grain_frequency_and_no_attributes(self):
+        rows = self.search("MONKEY")
+        self.assertEqual(
+            [(r[0], r[2]) for r in rows], [("a", 4.0), ("c", 1.0), ("f", 1.0)]
+        )
+        for q, key in [
+            ("secretmonkey", "d"),
+            ("stylemonkey", "d"),
+            ("other", "d"),
+            ("templateword", "e"),
+            ("cafe\u0301", "a"),
+            ("日本語", "a"),
+        ]:
+            self.assertEqual([r[0] for r in self.search(q)], [key])
+        for q in ["description", "secretmon", "😀", None, "", "  ", "%"]:
+            self.assertEqual(self.search(q), [])
+        self.assertEqual([r[0] for r in self.search("%monkey%")], ["a", "c", "f"])
+
+    def test_phrases_boundaries_and_repeated_terms(self):
+        self.assertEqual([r[0] for r in self.search("monkey zoo")], ["a", "f"])
+        self.assertEqual([r[0] for r in self.search('"monkey zoo"')], ["a"])
+        self.assertEqual([r[0] for r in self.search('"monkey monkey"')], ["a"])
+        self.assertEqual(self.search('"zoo monkey"'), [])
+        self.assertEqual([r[0] for r in self.search('"A B C"')], ["e"])
+        self.assertEqual(self.search('"A B"')[0][0], "e")
+
+    def test_provenance_and_composed_join(self):
+        sql = """SELECT s.content_id,m.snippet,n.text FROM search(?) s,
+          unnest(s.matches) AS ms(m),unnest(m.node_indexes) AS ns(node_index)
+          JOIN html_node n ON n.content_id=s.content_id AND n.node_index=ns.node_index
+          ORDER BY s.content_id,n.node_index"""
+        # The direct fixture has no default public schema, so qualify the view.
+        rows = self.search(
+            "monkey", sql.replace("JOIN html_node", "JOIN public_v1.html_node")
+        )
+        self.assertTrue(any(r[2] == "mon" for r in rows))
+        self.assertTrue(any(r[2] == "key" for r in rows))
+        self.assertTrue(all(len(r[1]) <= 240 for r in rows))
+
+    def test_parameters_and_prepare_do_not_discover(self):
+        from unittest.mock import patch
+
+        with patch(
+            "periplus.query.search.discover", side_effect=AssertionError("prep scans")
+        ):
+            b = bind_search(
+                "SELECT * FROM search(?) WHERE score>?",
+                ["monkey", 2],
+                self.db,
+                execute=False,
+                check=lambda: None,
+            )
+            self.assertEqual(self.db.execute(b.sql, b.parameters).fetchall(), [])
+        b = bind_search(
+            "SELECT * FROM search($1) WHERE score>$2",
+            ["monkey", 2],
+            self.db,
+            execute=True,
+            check=lambda: None,
+        )
+        self.assertEqual(
+            [r[0] for r in self.db.execute(b.sql, b.parameters).fetchall()], ["a"]
+        )
+        for q in ["x" * 257, '"unclosed', " ".join(["x"] * 33)]:
+            with self.assertRaises(ValueError):
+                self.search(q)
+        with self.assertRaises(ValueError):
+            bind_search(
+                "SELECT * FROM search(content_id)",
+                [],
+                self.db,
+                execute=True,
+                check=lambda: None,
+            )
+        with self.assertRaisesRegex(duckdb.Error, "query API"):
+            self.db.execute("SELECT * FROM public_v1.search('monkey')").fetchall()
+        self.db.execute("DESCRIBE SELECT * FROM public_v1.search('monkey')").fetchall()
+
+    def test_element_text_preserves_source_values(self):
         rows = dict(
             self.db.execute(
                 "SELECT tag,text FROM public_v1.html_element WHERE content_id='d' AND tag IN ('p','script','style','title','div')"
@@ -107,57 +155,63 @@ class SearchContractTests(unittest.TestCase):
                 "div": "",
             },
         )
-        p = self.db.execute(
-            "SELECT text,text_direct FROM public_v1.html_element WHERE content_id='a' AND tag='p'"
-        ).fetchone()
-        self.assertEqual(p, ("monkey café 日本語 100% a_b", "mon café 日本語 100% a_b"))
         self.assertEqual(
             self.db.execute(
                 "SELECT count(*) FROM public_v1.html_node WHERE node_type<>'text' AND text IS NOT NULL"
             ).fetchone(),
             (0,),
         )
-        self.assertEqual(
+
+    def test_phrase_filter_precedes_result_cap(self):
+        ids = dict(self.db.execute("SELECT text,term_id FROM material.term").fetchall())
+        for i in range(103):
+            key = f"z{i:03}"
+            matches = i >= 101
+            self.db.execute("INSERT INTO public_v1.capture VALUES (?)", [key])
             self.db.execute(
-                "SELECT count(*) FROM public_v1.html_node WHERE node_type='text' AND text IS DISTINCT FROM value"
-            ).fetchone(),
-            (0,),
+                "INSERT INTO material.posting VALUES (?,?,1,[0],[[0]]),(?,?,1,?,[[0]])",
+                [ids["monkey"], key, ids["zoo"], key, [1 if matches else 2]],
+            )
+            self.db.execute(
+                "INSERT INTO material.html_nodes(content_sha256,node_index,node_type,value) VALUES (?,0,'text',?)",
+                [key, "monkey zoo" if matches else "monkey something zoo"],
+            )
+        self.assertEqual(
+            [r[0] for r in self.search('"monkey zoo"')], ["a", "z101", "z102"]
         )
 
-    def test_whitespace_and_source_order(self):
-        self.assertEqual(
-            self.db.execute(
-                "SELECT text,text_direct FROM public_v1.html_element WHERE content_id='e' AND tag='p'"
-            ).fetchone(),
-            (" A\n B\tC D\u00a0E ", " A\n  D\u00a0E "),
-        )
-        self.assertEqual(
-            self.db.execute("SELECT snippet FROM public_v1.search('zebra')").fetchone(),
-            None,
-        )
-        self.assertEqual(
-            self.db.execute(
-                "SELECT content_id FROM public_v1.search('A  B\tC')"
-            ).fetchall(),
-            [("e",)],
-        )
-        self.assertEqual(
-            self.db.execute(
-                "SELECT text FROM public_v1.html_node WHERE node_type='comment'"
-            ).fetchall(),
-            [(None,)],
-        )
+    def test_snippet_preserves_case_and_unicode_offsets(self):
+        from periplus.query.search import _snippet, parse_query
 
-    def test_bound_and_deterministic_ties(self):
-        self.db.execute(
-            "INSERT INTO material.prose SELECT 'z'||lpad(i::VARCHAR,3,'0'),'monkey' FROM range(150) t(i)"
+        text = "prefix " * 50 + "Straße cafe\u0301 end"
+        snippet = _snippet(text, parse_query("STRASSE"))
+        self.assertIn("Straße", snippet)
+        self.assertIn("café", snippet)
+        self.assertLessEqual(len(snippet), 240)
+
+    def test_large_snippets_and_search_inspection(self):
+        from periplus.query.search import _snippet, parse_query
+
+        for prefix in ("padding " * 100000, "😀 café " * 10000):
+            with self.subTest(unicode=not prefix.isascii()):
+                snippet = _snippet(prefix + "Straße target", parse_query("STRASSE"))
+                self.assertIn("Straße", snippet)
+                self.assertLessEqual(len(snippet), 240)
+        for prefix in ("EXPLAIN ", "EXPLAIN ANALYZE ", "SUMMARIZE "):
+            with self.assertRaisesRegex(ValueError, "query preparation"):
+                bind_search(
+                    prefix + "SELECT * FROM search('monkey')",
+                    [],
+                    self.db,
+                    execute=False,
+                    check=lambda: None,
+                )
+        self.assertIsNone(
+            bind_search(
+                "DESCRIBE SELECT * FROM search('monkey')",
+                [],
+                self.db,
+                execute=False,
+                check=lambda: None,
+            )
         )
-        self.db.execute(
-            "INSERT INTO public_v1.capture SELECT 'z'||lpad(i::VARCHAR,3,'0'),'url','url',NULL,uuid() FROM range(150) t(i)"
-        )
-        rows = self.db.execute(
-            "SELECT content_id FROM public_v1.search('monkey')"
-        ).fetchall()
-        self.assertEqual(len(rows), 100)
-        self.assertEqual(rows[:2], [("a",), ("c",)])
-        self.assertEqual(rows[2:], [(f"z{i:03}",) for i in range(98)])

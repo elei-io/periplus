@@ -1,4 +1,4 @@
-"""Page discovery contract; matching and ranking are owned by Periplus."""
+"""Query-API discovery; the stored macro provides only the typed signature."""
 
 from periplus.platform.catalogue.public import CatalogueObject
 
@@ -6,37 +6,42 @@ SEARCH = CatalogueObject(
     kind="table_macro",
     name="search",
     resource="helpers/search.sql",
-    columns=("content_id", "title", "url", "snippet", "score"),
+    columns=("content_id", "matches", "score"),
     arguments_sql="'missing-content'",
     parameters=(("query", "VARCHAR"),),
-    comment="Find up to 100 matching unique contents, with a representative capture URL.",
+    comment="Query-API search: up to 100 unique contents with matched snippets and node IDs.",
     column_comments=(
-        ("content_id", "Retained HTML content identity; one result per content."),
-        ("title", "First parsed HTML title in document order; NULL when absent."),
         (
-            "url",
-            "Effective URL of the newest capture, falling back to requested URL; capture ID breaks time ties.",
+            "content_id",
+            "Retained HTML content identity; one result per content regardless of capture count.",
         ),
         (
-            "snippet",
-            "At most 240 characters from matching body prose, with normalized whitespace; may begin or end mid-word.",
+            "matches",
+            "Up to three {snippet,node_indexes} matches in document order; node IDs identify contributing parsed text nodes.",
         ),
         (
             "score",
-            "Initial body-only matches all score 1; ranking may evolve.",
+            "Plain search: sum of distinct query-term frequencies. Phrase search: matching phrase starts. Ranking may evolve.",
         ),
     ),
-    requires_relations=frozenset({"material.prose", "material.html_nodes"}),
-    notes=(
-        "Initial matching is literal substring search in body prose only. Titles and meta descriptions do not contribute matches; titles are fetched only for display after selecting results. No wildcard syntax: percent, underscore, quotes and backslashes are literal. No stemming, token AND, semantic search or JSON-LD field selection.",
-        "The query collapses ASCII whitespace runs and trims spaces. Body prose already has normalized whitespace. Both normalize NFC and use Unicode lowercasing. This is not full case folding or accent removal. NULL, empty and whitespace-only queries return no rows. Queries longer than 256 characters raise an error.",
-        "Initial scores are 1 for every match; repeated occurrences and captures do not increase the score. Snippets come from body prose, starting up to 60 characters before the first match.",
-        "Results are ordered by score descending, then content_id ascending and limited to 100 before caller joins. Use an outer ORDER BY to retain ordering in composed SQL. Scores and relevance policy may evolve.",
-        "Body coverage uses internal prose and excludes script/style/template/noscript. This discovery scope cannot safely accelerate arbitrary HTML text predicates. Search currently scans body prose; its result cap does not bound scan cost.",
+    requires_relations=frozenset(
+        {"material.term", "material.posting", "material.html_nodes"}
     ),
-    errors=("search query must be at most 256 characters",),
+    notes=(
+        "Executed by the Periplus query API; direct DuckDB execution raises an error. The catalogue macro exposes the typed signature for discovery and DESCRIBE. Ordinary HTML SQL remains portable.",
+        "Query and index use pinned ICU root-locale word boundaries, case folding and NFC. Plain queries require every distinct token. One fully double-quoted query requires consecutive token positions. No stemming, substring, prefix, wildcard or semantic expansion. Punctuation is not a token; percent and underscore are not wildcard operators.",
+        "Every parsed text-node location is indexed, including title, script, style, template and noscript. Attribute values, meta descriptions and comments are excluded. No CSS visibility inference.",
+        "Document positions leave gaps at structural boundaries. A documented set of HTML inline elements is transparent, allowing words split across text nodes. All other elements break token/phrase runs on entry and exit, including custom and foreign elements.",
+        "Snippets preserve case, normalize NFC and collapse whitespace, at most 240 characters. Node IDs identify matching occurrences, not surrounding context. Match lists are representative, not exhaustive.",
+        "NULL, empty and nonword-only queries return no rows. At most 256 characters and 32 tokens per query; at most four constant search calls per SQL request. Row-dependent search arguments are rejected.",
+        "Results rank by score descending then content_id ascending, capped at 100 before caller joins. Apply an outer ORDER BY when composing SQL. Phrase matching happens before this cap. Storage scan cost is not bounded by the result limit.",
+    ),
+    errors=(
+        "search() requires the Periplus query API",
+    ),
     examples=(
-        "SELECT * FROM search('monkeys in the zoo')",
-        "SELECT * FROM search(?) ORDER BY score DESC, content_id",
+        "SELECT * FROM search('monkeys zoo') ORDER BY score DESC, content_id",
+        "SELECT * FROM search('\"monkeys in the zoo\"')",
+        "SELECT s.content_id, m.snippet, m.node_indexes FROM search(?) s, unnest(s.matches) AS matches(m)",
     ),
 )

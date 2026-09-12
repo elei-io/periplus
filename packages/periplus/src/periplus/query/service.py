@@ -28,7 +28,7 @@ from periplus.query.validation import _bounded_query, _one_statement
 from periplus.operations.access.schemas import QueryLimits
 from periplus.operations.query_history.schemas import PreparationEvidence
 
-COMPILER_VERSION = "public-query-v10"
+COMPILER_VERSION = "public-query-v11"
 
 class QueryMode(StrEnum):
     STABLE = "stable"
@@ -185,13 +185,24 @@ class QueryService:
                 plan_sql = payload.sql
             else:
                 plan_sql = "EXPLAIN " + payload.sql
-            plan = "\n".join(str(row[-1]) for row in d.execute(plan_sql, payload.parameters).fetchall())
             execution_parameters = payload.parameters
             optimizations = []
+            from periplus.query.search import bind_search
+            def check_search():
+                if expired.is_set() or (cancelled is not None and cancelled.is_set()):
+                    raise TimeoutError("Query time limit exceeded or cancelled.")
+            search_binding = bind_search(payload.sql, payload.parameters, d, execute=False, check=check_search)
+            if search_binding is not None:
+                execution_parameters = search_binding.parameters
+                executable = f"SELECT * FROM ({search_binding.sql}) AS periplus_console_query LIMIT {limits.max_rows+1}"
+                plan_sql = "EXPLAIN " + search_binding.sql
+                optimizations = ["positional_search_v1"]
+                diagnostics.append(Diagnostic(severity="info", code="search_stages", message="ICU query tokenization, posting selection and bounded snippets execute within the request snapshot; the plan below validates final SQL composition using empty search results, so its cardinality estimates do not describe discovery."))
+            plan = "\n".join(str(row[-1]) for row in d.execute(plan_sql, execution_parameters).fetchall())
             # Promoted baseline shared by both modes. Future candidates are
             # explicitly gated on EXPERIMENTAL after this common selection.
             from periplus.query.content_scope import capture_heading_scope
-            scope = capture_heading_scope(payload.sql, payload.parameters)
+            scope = None if search_binding is not None else capture_heading_scope(payload.sql, payload.parameters)
             optimization = "capture_heading_content_scope_v1"
             if scope is not None:
                 installed = dict(d.execute(
@@ -202,7 +213,7 @@ class QueryService:
                     executable = _bounded_query(scope.sql, max_rows=limits.max_rows)
                     plan = "\n".join(str(row[-1]) for row in d.execute("EXPLAIN " + scope.sql, payload.parameters).fetchall())
                     optimizations = [optimization]
-            if self.mode == QueryMode.EXPERIMENTAL and scope is None:
+            if self.mode == QueryMode.EXPERIMENTAL and scope is None and search_binding is None:
                 from periplus.query.selected_content import selected_content
                 selected = selected_content(payload.sql, payload.parameters)
                 if selected is not None:
@@ -244,6 +255,11 @@ class QueryService:
             if not execute:
                 status = "prepared"
                 return prepared
+            if search_binding is not None:
+                check_search()
+                resolved = bind_search(payload.sql, payload.parameters, d, execute=True, check=check_search)
+                execution_parameters = resolved.parameters
+                executable = f"SELECT * FROM ({resolved.sql}) AS periplus_console_query LIMIT {limits.max_rows+1}"
             cursor = d.execute(executable, execution_parameters)
             columns = [str(col[0]) for col in cursor.description]
             types = [str(col[1]) for col in cursor.description]
