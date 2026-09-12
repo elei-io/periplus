@@ -96,10 +96,22 @@ def validation_statements(catalogue, spec: ProjectionSpec, *, partitions: int = 
                 f"SELECT {projection}, hash(content_sha256) % {partitions} "
                 f"AS __validation_partition FROM material.{name}", snapshot
             )
-            catalogue.trusted_remote_execute(
-                f"COPY ({source}) TO {sql_string(str(destination))} "
-                "(FORMAT PARQUET, COMPRESSION SNAPPY, PARTITION_BY (__validation_partition))"
-            )
+            # PARTITION_BY retains a thread buffer in addition to each Parquet
+            # writer's row group. Both must flush early for nested list columns.
+            flush_threshold = int(catalogue.trusted_remote_rows(
+                "SELECT current_setting('partitioned_write_flush_threshold')"
+            )[0][0])
+            try:
+                catalogue.trusted_remote_execute("SET partitioned_write_flush_threshold=2048")
+                catalogue.trusted_remote_execute(
+                    f"COPY ({source}) TO {sql_string(str(destination))} "
+                    "(FORMAT PARQUET, COMPRESSION SNAPPY, ROW_GROUP_SIZE 2048, "
+                    "PARTITION_BY (__validation_partition))"
+                )
+            finally:
+                catalogue.trusted_remote_execute(
+                    f"SET partitioned_write_flush_threshold={flush_threshold}"
+                )
             for path in destination.rglob('*.parquet'):
                 partition = int(path.parent.name.split('=')[1])
                 paths.setdefault((name, partition), []).append(str(path))

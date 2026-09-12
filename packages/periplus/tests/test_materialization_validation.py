@@ -20,7 +20,7 @@ class PartitionedValidationTests(unittest.TestCase):
             db.execute('CREATE TABLE material.html_nodes(content_sha256 VARCHAR, node_index INTEGER, node_type VARCHAR)')
             db.execute("INSERT INTO material.html_nodes VALUES ('a',1,'text'),('b',2,'text'),('a',3,'element')")
             db.execute("INSERT INTO material.posting VALUES ('one','a',2,[0,1],[[1],[3]]),('two','b',2,[0,1],[[2],[99]]),('three','a',1,[2],[[1]]),('bad','c',1,[0],[[]]),('null','a',1,[0],[NULL]),('descending','a',2,[2,1],[[1],[1]]),('repeated','a',2,[1,1],[[1],[1]]),('null_position','a',1,[NULL],[[1]])")
-            catalogue = SimpleNamespace(trusted_remote_execute=db.execute)
+            catalogue = SimpleNamespace(trusted_remote_execute=db.execute, trusted_remote_rows=lambda sql: db.execute(sql).fetchall())
             expected = [db.execute(sql).fetchone()[0] for sql in spec.validation_queries]
             with patch('periplus.materialization.validation.TemporaryDirectory', side_effect=lambda **kwargs: TemporaryDirectory(dir=root, **kwargs)):
                 with validation_statements(catalogue, spec, partitions=7) as statements:
@@ -34,6 +34,30 @@ class PartitionedValidationTests(unittest.TestCase):
                     with validation_statements(catalogue, spec, partitions=3):
                         raise RuntimeError('cancelled')
                 self.assertEqual(list(Path(root).iterdir()), [])
+
+    def test_nested_staging_with_small_memory_and_setting_restoration(self):
+        spec = next(p for p in PROJECTIONS if p.name == 'posting')
+        spec = replace(spec, validation_queries=(spec.validation_queries[1],))
+        with duckdb.connect() as db:
+            db.execute("SET memory_limit='256MB'")
+            db.execute('SET threads=1')
+            db.execute('SET partitioned_write_flush_threshold=524288')
+            db.execute('CREATE SCHEMA material')
+            db.execute("CREATE VIEW material.posting AS SELECT i::VARCHAR content_sha256, range(128) positions FROM range(300000) t(i)")
+            catalogue = SimpleNamespace(trusted_remote_execute=db.execute,
+                                        trusted_remote_rows=lambda sql: db.execute(sql).fetchall())
+            with validation_statements(catalogue, spec) as statements:
+                self.assertEqual(sum(db.execute(sql).fetchone()[0] for _, _, sql in statements), 0)
+            self.assertEqual(db.execute("SELECT current_setting('partitioned_write_flush_threshold')").fetchone()[0], 524288)
+            def fail_copy(sql):
+                if sql.startswith('COPY'):
+                    raise RuntimeError('staging failed')
+                return db.execute(sql)
+            catalogue.trusted_remote_execute = fail_copy
+            with self.assertRaisesRegex(RuntimeError, 'staging failed'):
+                with validation_statements(catalogue, spec):
+                    self.fail('failed COPY accepted')
+            self.assertEqual(db.execute("SELECT current_setting('partitioned_write_flush_threshold')").fetchone()[0], 524288)
 
     def test_nonexpanding_queries_remain_unchanged(self):
         spec = next(p for p in PROJECTIONS if p.name == 'html_jsonld')
@@ -65,9 +89,10 @@ class SnapshotValidationTests(unittest.TestCase):
         from periplus.materialization.validation import validation_statements
         spec = next(p for p in PROJECTIONS if p.name == 'posting')
         recorded = []
-        catalogue = SimpleNamespace(trusted_remote_execute=recorded.append)
+        catalogue = SimpleNamespace(trusted_remote_execute=recorded.append, trusted_remote_rows=lambda sql: [(524288,)])
         with validation_statements(catalogue, spec, snapshot=123) as statements:
             sqls = list(statements)
+        recorded = [sql for sql in recorded if sql.startswith("COPY") ]
         self.assertEqual(len(recorded), 2)
         self.assertTrue(all('AT (VERSION => 123)' in sql for sql in recorded))
         self.assertTrue(all('AT (VERSION => 123)' in sql for index, _, sql in sqls if index == 0))
@@ -102,7 +127,7 @@ class SnapshotValidationTests(unittest.TestCase):
             db.execute('DELETE FROM material.html_nodes')
             posting = next(p for p in PROJECTIONS if p.name == 'posting')
             self.assertEqual(db.execute(posting.validation_queries[-1]).fetchone()[0], 1)
-            catalogue = SimpleNamespace(trusted_remote_execute=db.execute)
+            catalogue = SimpleNamespace(trusted_remote_execute=db.execute, trusted_remote_rows=lambda sql: db.execute(sql).fetchall())
             for spec in PROJECTIONS:
                 with validation_statements(catalogue, spec, snapshot=snapshot, partitions=3) as statements:
                     for index, partition, sql in statements:
@@ -112,7 +137,7 @@ class SnapshotValidationTests(unittest.TestCase):
     def test_position_sort_check_uses_partitions(self):
         spec = next(p for p in PROJECTIONS if p.name == 'posting')
         recorded = []
-        with validation_statements(SimpleNamespace(trusted_remote_execute=recorded.append), spec, partitions=7) as statements:
+        with validation_statements(SimpleNamespace(trusted_remote_execute=recorded.append, trusted_remote_rows=lambda sql: [(524288,)]), spec, partitions=7) as statements:
             checks = list(statements)
         self.assertEqual(sum(index == 1 for index, _, _ in checks), 7)
         self.assertTrue(any('"positions"' in sql for sql in recorded))

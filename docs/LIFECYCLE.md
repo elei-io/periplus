@@ -101,7 +101,10 @@ each query finish its own transaction. They must not hold one metadata transacti
 across the complete validation, which can exceed the fixed remote transaction
 timeout. Array-sorting and expanding reference checks first
 copy only their required columns into 64 temporary content-hash partitions
-with Snappy compression to reduce staging CPU, then
+with Snappy compression to reduce staging CPU. Staging flushes the partition writer
+thread buffer and Parquet row groups at 2,048 rows, rather than retaining large
+nested-array buffers across all partitions. The prior connection flush setting is
+restored on success and failure. Checks then
 run the original predicates on matching partitions. Equal content identities stay
 together, so missing references and duplicates remain detectable. This avoids a
 global occurrence expansion and repeated lake scans. Temporary files are removed
