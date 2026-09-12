@@ -1054,7 +1054,7 @@ class MaterializationParquetTests(unittest.TestCase):
                 value = '{"value":true}'
             elif data_type.startswith("timestamp"):
                 value = datetime(2026, 1, 1, tzinfo=UTC)
-            elif duckdb_type == "BIGINT[]":
+            elif duckdb_type in {"BIGINT[]", "INTEGER[]"}:
                 value = [index]
             elif duckdb_type == "INTEGER[][]":
                 value = [[index]]
