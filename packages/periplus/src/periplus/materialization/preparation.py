@@ -26,7 +26,7 @@ from periplus.materialization.document_projection import (
     VisitBatchContext,
 )
 from periplus.materialization.dom.nodes import parse_document
-from periplus.materialization.metrics import step
+from periplus.materialization.metrics import preparation_attempt, step
 from periplus.materialization.registry import BY_NAME, PROJECTIONS, ProjectionSpec
 from periplus.platform.config.environment import get_int
 
@@ -41,6 +41,10 @@ BATCH_OUTPUT_BYTES = 8 * 1024**3
 @dataclass(frozen=True)
 class ProjectionFiles:
     directories: tuple[Path, ...]
+
+    @property
+    def size_bytes(self) -> int:
+        return sum(path.stat().st_size for directory in self.directories for path in directory.glob("*.arrow"))
 
     def dictionary_inputs(self) -> dict[str, pa.Table]:
         result = {}
@@ -203,6 +207,7 @@ def prepare_projections(
     document's context, and project remaining visits once in an empty context.
     All result files are ephemeral and removed on success, failure or cancellation.
     """
+    preparation_attempt()
     processes = (
         get_int("PERIPLUS_MATERIALIZER_PARSER_PROCESSES", minimum=1)
         if processes is None

@@ -1,13 +1,12 @@
 """Complete HTML5 tree with one document-wide position space."""
+
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import cast
-from xml.dom import Node
-
-import html5lib
 
 from periplus.materialization.dom.encoder import ElementRow
+from periplus.materialization.dom.lexbor import records
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,68 +22,83 @@ class NodeRow:
     depth: int
 
 
-def parse_document(source: str | bytes) -> tuple[tuple[NodeRow, ...], tuple[ElementRow, ...]]:
-    """Parse once, preserving document, doctype, comment and text nodes.
+@dataclass(slots=True)
+class _Frame:
+    index: int
+    parent: int | None
+    sibling: int
+    depth: int
+    kind: str
+    name: str | None
+    namespace: str | None
+    value: str | None
+    attributes: dict[str, str]
+    element_index: int
+    children: int = 0
+    text: list[str] = field(default_factory=list)
 
-    Attribute namespaces use Clark notation. Positions describe the HTML5 parsed
-    tree, not offsets into source bytes. Adjacent parser text fragments are merged
-    so entity/token boundaries do not create artificial text-node identities.
+
+def parse_document(
+    source: str | bytes,
+) -> tuple[tuple[NodeRow, ...], tuple[ElementRow, ...]]:
+    """Lexbor preorder identities, including explicit template content fragments.
+
+    Subtree ends are exclusive. Comments retain exact parsed character data;
+    text_direct contains only immediate text children, never descendant text.
     """
-    if not isinstance(source, (str, bytes)):
-        raise TypeError("HTML source must be text or bytes")
-    document = html5lib.parse(source, treebuilder="dom", namespaceHTMLElements=True)
-    document.normalize()
-    kinds = {
-        Node.DOCUMENT_NODE: "document",
-        Node.DOCUMENT_TYPE_NODE: "doctype",
-        Node.ELEMENT_NODE: "element",
-        Node.TEXT_NODE: "text",
-        Node.COMMENT_NODE: "comment",
-        Node.PROCESSING_INSTRUCTION_NODE: "processing_instruction",
-    }
     nodes: list[NodeRow | None] = []
     elements: list[ElementRow | None] = []
-    # Reserve preorder positions on entry; construct final records on exit.
-    stack = [(document, None, 0, 0, -1, -1)]
-    while stack:
-        node, parent, sibling, depth, index, element_index = stack.pop()
-        if index < 0:
-            index = len(nodes)
-            nodes.append(None)
-            if node.nodeType == Node.ELEMENT_NODE:
-                element_index = len(elements)
-                elements.append(None)
-            if node.childNodes:
-                stack.append((node, parent, sibling, depth, index, element_index))
-                stack.extend((child, index, position, depth + 1, -1, -1)
-                             for position, child in reversed(list(enumerate(node.childNodes))))
-                continue
-        kind = kinds[node.nodeType]
-        name = (node.localName or node.nodeName) if kind in {"element", "doctype", "processing_instruction"} else None
-        nodes[index] = NodeRow(index, parent, len(nodes), sibling, kind, name,
-                               node.namespaceURI, node.nodeValue, depth)
-        if element_index >= 0:
-            attributes = {}
-            for attribute in node.attributes.values():
-                key = (f"{{{attribute.namespaceURI}}}{attribute.localName}"
-                       if attribute.namespaceURI else attribute.name)
-                attributes[key] = attribute.value
-            elements[element_index] = ElementRow(
-                index, parent, len(nodes), depth, sibling, name,
-                node.namespaceURI, dict(sorted(attributes.items())),
-                # Unlink preserves text data in the direct children retained by
-                # this parent, so text can be copied when the parent closes.
-                "".join(child.data for child in node.childNodes if child.nodeType == Node.TEXT_NODE),
-                "",
+    stack: list[_Frame] = []
+    for record in records(source):
+        if record is not None:
+            kind, name, namespace, value, attributes = record
+            parent = stack[-1] if stack else None
+            frame = _Frame(
+                len(nodes),
+                parent.index if parent else None,
+                parent.children if parent else 0,
+                len(stack),
+                kind,
+                name,
+                namespace,
+                value,
+                attributes,
+                len(elements) if kind == "element" else -1,
             )
-        # HTML5 permits distinct qualified attributes (lang and xml:lang)
-        # that minidom indexes under the same non-namespaced local name.
-        # Records are already copied: detach owners before disposing the entire
-        # element so Attr.unlink need not delete those colliding lookup keys.
-        if node.nodeType == Node.ELEMENT_NODE:
-            for attribute in node.attributes.values():
-                attribute.ownerElement = None
-        # Children have already been detached, keeping cleanup shallow.
-        node.unlink()
-    # Every reserved slot is filled before its closing event completes.
-    return cast(tuple[NodeRow, ...], tuple(nodes)), cast(tuple[ElementRow, ...], tuple(elements))
+            nodes.append(None)
+            if kind == "element":
+                elements.append(None)
+            if parent:
+                parent.children += 1
+                if kind == "text" and parent.kind == "element":
+                    parent.text.append(value or "")
+            stack.append(frame)
+        else:
+            frame = stack.pop()
+            nodes[frame.index] = NodeRow(
+                frame.index,
+                frame.parent,
+                len(nodes),
+                frame.sibling,
+                frame.kind,
+                frame.name,
+                frame.namespace,
+                frame.value,
+                frame.depth,
+            )
+            if frame.element_index >= 0:
+                elements[frame.element_index] = ElementRow(
+                    frame.index,
+                    frame.parent,
+                    len(nodes),
+                    frame.depth,
+                    frame.sibling,
+                    frame.name,
+                    frame.namespace,
+                    frame.attributes,
+                    "".join(frame.text),
+                    "",
+                )
+    return cast(tuple[NodeRow, ...], tuple(nodes)), cast(
+        tuple[ElementRow, ...], tuple(elements)
+    )

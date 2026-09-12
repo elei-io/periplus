@@ -59,6 +59,15 @@ A full rebuild makes a fresh dictionary; internal IDs may differ while terms and
 remain identical. Dictionary rows are not part of content replacement or batch file registration.
 No dictionary cursor, sequence table, second service, or compatibility path is added.
 
+Known dictionary-claim acquisition rejection retains the prepared Arrow files and
+dictionary inputs for at most 120 seconds. Retries use jittered backoff capped at
+two seconds and recheck run/generation validity before continuing. Reservations
+still recheck validity under the acquired claim. Transaction and claim-release
+exceptions are not retried by this loop; uncertain outcomes retain their existing
+catalogue recovery semantics. Success, cancellation, supersession and failure all
+leave the preparation context and clean its temporary files. Retention occupies
+the existing bounded worker lane and its existing 8 GiB Arrow budget.
+
 Generic lifecycle code writes partitioned,
 sorted immutable Parquet outside the commit claim. Under exact generation, observation
 and content claims in Postgres, one lake transaction replaces the batch's visit-owned

@@ -81,7 +81,8 @@ class HtmlMetadataTests(unittest.TestCase):
              AND n.node_index<e.subtree_end_index AND n.node_type='text'
             WHERE e.tag='title' AND e.namespace='http://www.w3.org/1999/xhtml'
             GROUP BY e.content_id,e.node_index,e.text_direct""").fetchall()
-        self.assertEqual(len(rows), 6)
+        # Lexbor retains the title inside select; identities follow its tree.
+        self.assertEqual(len(rows), 7)
         self.assertTrue(all(direct == descendant for direct, descendant in rows))
         self.assertEqual(self.db.execute("SELECT value FROM public_v1.html_metadata WHERE content_id='0'").fetchall(),
                          [('A <em>B</em> & 雪',)])

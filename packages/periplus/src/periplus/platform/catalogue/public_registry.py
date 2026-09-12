@@ -40,7 +40,7 @@ PUBLIC_OBJECTS = (
         ("request_ids", "Sorted unique coverage request IDs supplied with this capture; empty until membership evidence arrives."),
     ), "Acquisitions with retained HTML, including retained HTML HTTP error responses."),
     _view("html_node", (*_TREE_COLUMNS,
-        ("node_type", "document, doctype, element, text, comment or processing_instruction."),
+        ("node_type", "document, document_fragment, doctype, element, text, comment or processing_instruction."),
         ("name", "Local element/doctype name or processing instruction target."),
         ("namespace", "Namespace URI when applicable."),
         ("value", "Text, comment or processing instruction content."),

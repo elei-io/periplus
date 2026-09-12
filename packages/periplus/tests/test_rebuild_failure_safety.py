@@ -118,7 +118,7 @@ class WriteGuardTests(unittest.TestCase):
         prepared = SimpleNamespace(retained_visit_ids=(), retained_content_hashes=())
         held = []
         @contextmanager
-        def claim(_):
+        def claim(_, **kwargs):
             held.append(True)
             try:
                 yield
@@ -141,7 +141,7 @@ class WriteGuardTests(unittest.TestCase):
         run = SimpleNamespace(id=uuid4())
         held = []
         @contextmanager
-        def claim(_):
+        def claim(_, **kwargs):
             held.append(True)
             try:
                 yield
