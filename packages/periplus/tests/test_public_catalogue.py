@@ -63,7 +63,7 @@ class PublicCatalogueTests(unittest.TestCase):
             {(item.schema, item.name) for item in objects if item.kind == "view"},
             EXPECTED_PUBLIC_RELATIONS,
         )
-        self.assertEqual([(item.schema, item.name) for item in objects if item.kind == "table_macro"], [])
+        self.assertEqual([(item.schema, item.name) for item in objects if item.kind == "table_macro"], [("public_v1", "html_search")])
         self.assertTrue(all(not item.requires_functions for item in objects))
 
     def test_installs_and_validates_public_views(self) -> None:
@@ -85,7 +85,7 @@ class PublicCatalogueTests(unittest.TestCase):
         self.assertEqual(views, EXPECTED_PUBLIC_RELATIONS)
         with self.assertRaises(duckdb.CatalogException):
             self.catalogue.connection.execute("SELECT * FROM public_v1.object")
-        self.assertEqual(set(macros), set())
+        self.assertEqual(set(macros), {("html_search",)})
 
     def test_install_removes_superseded_web_and_dom_objects(self) -> None:
         self.catalogue.connection.execute("CREATE SCHEMA web")
@@ -320,7 +320,7 @@ class PublicCatalogueTests(unittest.TestCase):
             {(str(row[0]), str(row[1])) for row in rows},
             EXPECTED_PUBLIC_RELATIONS,
         )
-        self.assertEqual(set(macro_rows), set())
+        self.assertEqual([row[1] for row in macro_rows], ["html_search"])
 
         response = asyncio.run(metadata(_LocalCatalogueControl(self.catalogue)))
         self.assertEqual(response.catalogue_version, PUBLIC_CATALOGUE_VERSION)
@@ -328,7 +328,7 @@ class PublicCatalogueTests(unittest.TestCase):
             {(item.schema_name, item.name) for item in response.relations},
             EXPECTED_PUBLIC_RELATIONS,
         )
-        self.assertEqual([item.name for item in response.macros], [])
+        self.assertEqual([item.name for item in response.macros], ["html_search"])
 
 
 class _LocalCatalogue:

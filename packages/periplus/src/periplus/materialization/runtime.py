@@ -21,7 +21,7 @@ from periplus.materialization.batch import (
     prepare_batch,
 )
 from periplus.materialization import metrics
-from periplus.materialization.validation import at_snapshot, validation_statements
+from periplus.materialization.validation import bound_validation_memory, identity_statements, validation_statements
 from periplus.platform.telemetry import event
 from periplus.materialization.contracts import (
     LiveBatchWork,
@@ -945,22 +945,17 @@ def _verify_active_generation(catalogue, run: MaterializationRun) -> None:
     if current is None or current.id != run.id or current.registry_digest != REGISTRY_DIGEST:
         raise RuntimeError("active generation state does not match this registry")
     validate_public_catalogue(catalogue)
+    bound_validation_memory(catalogue)
     snapshot = catalogue.latest_snapshot()
     if snapshot is None:
         raise RuntimeError("active generation has no lake snapshot")
     for spec in PROJECTIONS:
-        identity = ", ".join(spec.identity_columns)
-        query = (
-            "SELECT count(*) - count(DISTINCT "
-            f"({identity})) FROM {spec.relation.qualified}"
-        )
-        event("materialization_validation_started", operation=spec.name, code="identity")
-        duplicates = int(catalogue.trusted_remote_rows(at_snapshot(query, snapshot))[0][0])
-        event("materialization_validation_finished", operation=spec.name, code="identity", rows=duplicates)
-        if duplicates:
-            raise RuntimeError(
-                f"{spec.name} contains {duplicates} duplicate identities"
-            )
+        for partition, query in identity_statements(spec, snapshot):
+            event("materialization_validation_started", operation=spec.name, code="identity", attempt=partition)
+            duplicates = int(catalogue.trusted_remote_rows(query)[0][0])
+            event("materialization_validation_finished", operation=spec.name, code="identity", attempt=partition, rows=duplicates)
+            if duplicates:
+                raise RuntimeError(f"{spec.name} contains {duplicates} duplicate identities in range {partition}")
         with validation_statements(catalogue, spec, snapshot=snapshot) as statements:
             for query_index, partition, statement in statements:
                 started = monotonic()

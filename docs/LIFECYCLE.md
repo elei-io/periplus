@@ -115,19 +115,17 @@ the current delivery and never bypasses validation.
 Post-activation checks pin physical reads with `AT (VERSION => snapshot)` and let
 each query finish its own transaction. They must not hold one metadata transaction
 across the complete validation, which can exceed the fixed remote transaction
-timeout. Array-sorting and expanding reference checks first
-copy only their required columns into 64 temporary content-hash partitions
-with Snappy compression to reduce staging CPU. Staging flushes the partition writer
-thread buffer and Parquet row groups at 2,048 rows, rather than retaining large
-nested-array buffers across all partitions. The prior connection flush setting is
-restored on success and failure. Checks then
-run the original predicates on matching partitions. Equal content identities stay
-together, so missing references and duplicates remain detectable. This avoids a
-global occurrence expansion and repeated lake scans. Temporary files are removed
-on normal completion and exceptions; they are not registered lake data. Staging
-and each validation query report progress. These partitions reduce intermediate
-size; a single oversized content or skewed partition can still exceed a worker's
-fixed memory or temporary-storage budget and must fail without skipping checks.
+timeout. The dedicated validation connection caps managed memory at 2 GB (or the
+smaller operator setting) to leave room for sibling connections and native string
+buffers. Identity checks use disjoint ranges when the leading sorted string key
+belongs to the identity, keeping equal identities together; other identities use
+the complete original check. Scalar counts of invalid rows in content-sorted projections run in
+64 disjoint lexical content ranges at the same snapshot. This bounds the text
+read scope while checking every row, including null or noncanonical keys. Each
+range reports progress. Joins, grouped checks and relations without the required
+content sort retain their original complete query; they are not partitioned without
+a locality proof. No staging table or registered-file mutation is involved.
+
 
 A registry/schema change cannot be applied to a running or active generation with a different
 digest. Partial activation and per-table repair do not exist.

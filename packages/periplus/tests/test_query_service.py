@@ -364,7 +364,7 @@ class QueryServiceTests(unittest.TestCase):
             self.assertEqual(client.get('/query/helpers').status_code, 401)
             helper_response = client.get('/query/helpers', headers=headers)
             self.assertEqual(helper_response.status_code, 200)
-            self.assertEqual(helper_response.json()['helpers'], [])
+            self.assertEqual([h['name'] for h in helper_response.json()['helpers']], ['public_v1.html_search'])
             self.assertEqual(client.post('/query/helpers', headers=headers).status_code, 404)
             with patch.object(self.service, "execute", side_effect=duckdb.HTTPException("HTTP 404 https://private/file?token=secret")):
                 unavailable = client.post('/query/exec', headers=headers, json={'sql': 'SELECT 1'})

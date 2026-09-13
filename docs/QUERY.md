@@ -153,9 +153,15 @@ increase the server's limits. Administrative SQL retains its separate fixed resu
 ### Page discovery and structured text
 
 Choose captures, then query `html_element.text` and `text_direct` using ordinary
-SQL. Full descendant text is materialized. There is no search macro, vocabulary,
-posting relation or text-specific API rewrite. This is a schema/catalogue change;
-ordinary native optimizer behavior and resource limits remain.
+SQL. Full descendant text is materialized. `html_search(terms)` returns
+`content_id`, sorted distinct `node_indexes`, and a DOUBLE score counting distinct
+requested word keys found per content. Pass up to 32 existing ICU case-folded,
+NFC-normalized keys, for example `html_search(['robot', 'science'])`. It matches
+any requested word; node indexes combine the containing elements. Duplicate query
+keys do not increase score. This is not a phrase parser or BM25 ranking.
+
+Use `ORDER BY score DESC, content_id LIMIT 20` for deterministic top results.
+Empty/null input lists return no rows; query result and execution limits still apply.
 
 ## 2. Python SDK
 
@@ -209,7 +215,8 @@ installs the macros alongside views; `GET /query/helpers` derives documentation 
 manifest. Next.js proxies discovery and loads it into the agent context for each request.
 There is no helper-specific Python execution or prep-time rewrite path.
 
-The current helper registry is empty: descendant text is a stored element column.
+The helper registry declares `html_search(terms)` and derives its signature, score
+semantics, examples and input limit from the same catalogue object.
 
 ### Query failure categories
 
