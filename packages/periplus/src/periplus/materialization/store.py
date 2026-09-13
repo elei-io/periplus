@@ -69,6 +69,14 @@ class MaterializationBatch:
 
 
 class MaterializationRunStore:
+    def completed_activation_ids(self) -> list[UUID]:
+        """Durable swap receipts eligible for cleanup after active validation."""
+        with session_scope() as session:
+            return list(session.scalars(select(MaterializationRunRecord.id).where(
+                MaterializationRunRecord.status == "completed",
+                MaterializationRunRecord.activation_snapshot.is_not(None),
+            )))
+
     def assert_writable(self, run_id: UUID) -> None:
         """Call under the generation claim, before any rebuild lake write."""
         run = self.get(run_id)

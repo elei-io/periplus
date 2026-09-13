@@ -2,6 +2,7 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from uuid import uuid4
 
 from periplus.materialization.registry import PROJECTIONS
 from periplus.platform.catalogue.client import Catalogue
@@ -10,6 +11,26 @@ from periplus.platform.catalogue.public import install_public_catalogue
 
 
 class ProjectionAdditionTests(unittest.TestCase):
+    def test_deferred_cleanup_only_drops_exact_completed_retirement_markers(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            with Catalogue(CatalogueConfig('periplus', str(root/'meta.duckdb'), str(root/'data'), 'ducklake')) as catalogue:
+                completed, pending = uuid4(), uuid4()
+                catalogue.trusted_remote_execute('CREATE SCHEMA material')
+                removed = f'_periplus_retired_removed_projection_{completed.hex[:20]}'
+                untouched = [
+                    f'_periplus_retired_html_elements_{pending.hex[:20]}',
+                    f'_periplus_rebuild_html_elements_{completed.hex[:16]}',
+                    'html_elements',
+                ]
+                for table in [removed, *untouched]:
+                    catalogue.trusted_remote_execute(f'CREATE TABLE material.{table} (id INTEGER)')
+                for _ in range(2):
+                    catalogue.finalize_completed_materialization_activations([completed])
+                    tables = {row[0] for row in catalogue.trusted_remote_rows("SELECT table_name FROM duckdb_tables() WHERE schema_name='material'")}
+                    self.assertNotIn(removed, tables)
+                    self.assertTrue(set(untouched) <= tables)
+
     def test_setup_preserves_old_view_and_activation_is_atomic_and_replayable(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

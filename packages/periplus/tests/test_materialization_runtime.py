@@ -48,6 +48,7 @@ from periplus.materialization.runtime import (
     BatchWork,
     _activate_or_catch_up,
     _execute_batch,
+    _finalize_activation,
     _handle_activation,
     _handle_batch,
     _invalidate_generation,
@@ -349,7 +350,77 @@ class MaterializationRegistryTests(unittest.TestCase):
         catalogue_from_env.assert_not_called()
 
 
+class MaterializationFinalizationTests(unittest.TestCase):
+    def test_cleanup_receipts_require_a_completed_durable_swap(self):
+        from periplus.materialization.models import MaterializationRunRecord
+        from periplus.materialization.store import MaterializationRunStore
+        sessions = operational_state(self)
+        completed = uuid4()
+        with sessions.begin() as session:
+            for identifier, status, snapshot in [
+                (completed, "completed", 12),
+                (uuid4(), "completed", None),
+                (uuid4(), "activating", 12),
+                (uuid4(), "failed", 12),
+            ]:
+                session.add(MaterializationRunRecord(
+                    id=identifier, status=status, activation_snapshot=snapshot,
+                    source_snapshot=10, covered_snapshot=10,
+                    registry_digest="old", batch_size=500,
+                ))
+        self.assertEqual(MaterializationRunStore().completed_activation_ids(), [completed])
+
+    @patch("periplus.materialization.runtime.catalogue_from_env")
+    @patch("periplus.materialization.runtime.state.active_generation")
+    def test_old_registry_releases_activation_lane_without_deleting_tables(self, active, connect):
+        run = SimpleNamespace(id=uuid4(), status="completed", registry_digest="old")
+        active.return_value = SimpleNamespace(id=run.id, registry_digest="old")
+        _finalize_activation(run)
+        connect.assert_not_called()
+
+    @patch("periplus.materialization.runtime.catalogue_from_env")
+    @patch("periplus.materialization.runtime.state.active_generation")
+    def test_superseded_delivery_does_not_validate_or_delete_new_generation(self, active, connect):
+        active.return_value = SimpleNamespace(id=uuid4(), registry_digest=REGISTRY_DIGEST)
+        run = SimpleNamespace(id=uuid4(), status="completed", registry_digest=REGISTRY_DIGEST)
+        _finalize_activation(run)
+        connect.assert_not_called()
+
+    @patch("periplus.materialization.runtime._drop_unregistered_material_relations")
+    @patch("periplus.materialization.runtime.MaterializationRunStore")
+    @patch("periplus.materialization.runtime._verify_active_generation")
+    @patch("periplus.materialization.runtime.catalogue_from_env")
+    @patch("periplus.materialization.runtime.state.active_generation")
+    def test_new_generation_must_pass_checks_before_deferred_cleanup(self, active, connect, verify, store, drop):
+        run = SimpleNamespace(id=uuid4(), status="completed", registry_digest=REGISTRY_DIGEST)
+        active.return_value = run
+        catalogue = connect.return_value.__enter__.return_value
+        completed_ids = [uuid4(), run.id]
+        store.return_value.completed_activation_ids.return_value = completed_ids
+        verify.side_effect = RuntimeError("invalid postings")
+        with self.assertRaisesRegex(RuntimeError, "invalid postings"):
+            _finalize_activation(run)
+        catalogue.finalize_completed_materialization_activations.assert_not_called()
+        drop.assert_not_called()
+        verify.side_effect = None
+        _finalize_activation(run)
+        catalogue.finalize_completed_materialization_activations.assert_called_once_with(completed_ids)
+        drop.assert_called_once_with(catalogue)
+
+
 class MaterializationDeliveryTests(unittest.IsolatedAsyncioTestCase):
+    @patch("periplus.materialization.runtime.state.active_generation")
+    async def test_old_registry_cleanup_is_acked_so_replacement_can_activate(self, active):
+        run = SimpleNamespace(id=uuid4(), status="completed", registry_digest="old")
+        active.return_value = run
+        store = AsyncMock()
+        store.claim_activation.return_value = None
+        store.get.return_value = run
+        message = _message(ActivationWork(run_id=run.id, completed_batches=1).model_dump_json().encode())
+        await _handle_activation(message, AsyncMock(), store)
+        message.ack.assert_awaited_once()
+        message.nak.assert_not_awaited()
+
     @patch("periplus.materialization.runtime._finalize_activation")
     @patch(
         "periplus.materialization.runtime._activate_or_catch_up",

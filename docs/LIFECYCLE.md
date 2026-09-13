@@ -97,6 +97,16 @@ URI. Materialization code does not branch by storage backend.
    Readiness is unknown while activation is in progress.
 6. Retired tables remain until completion is durably recorded and post-activation checks pass.
 
+A completed activation delivery from a different deployed registry or a superseded
+generation is acknowledged without deleting its retired tables. It cannot be validated
+against the new registry, and retrying it would block the single activation lane.
+After the matching current generation passes all post-activation checks, finalization
+also removes retired markers for earlier durably completed swaps. Physical marker names
+select the exact old relations, including projections removed from the registry;
+pending swaps and hidden rebuild tables are excluded. Until a matching replacement
+passes validation, deferred retired tables stay registered. A cleanup failure retries
+the current delivery and never bypasses validation.
+
 Post-activation checks pin physical reads with `AT (VERSION => snapshot)` and let
 each query finish its own transaction. They must not hold one metadata transaction
 across the complete validation, which can exceed the fixed remote transaction
