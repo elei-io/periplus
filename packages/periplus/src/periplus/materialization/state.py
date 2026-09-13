@@ -76,12 +76,13 @@ def record_applied(run_id: UUID, batch_id: UUID, snapshot: int, result) -> None:
         ).on_conflict_do_nothing(index_elements=['batch_id']))
 
 
-def begin_rebuild_write(run, batch) -> bool:
+def begin_rebuild_write(run, batch, *, record_intent: bool = True) -> bool:
     """Durably mark intent under the caller's generation claim before lake I/O.
 
-    Only a first publication in the original, disjoint snapshot plan can append.
+    Only a first publication in the original, disjoint snapshot plan can skip
+    membership checks. Preparation can inspect eligibility without recording intent.
     An uncertain commit of this transaction aborts the caller before lake I/O;
-    a replay sees the intent and conservatively replaces derived identities.
+    a replay sees the intent and checks the native receipt and existing identities.
     """
     with session_scope() as session:
         record = session.get(MaterializationBatchRecord, batch.id, with_for_update=True)
@@ -96,7 +97,7 @@ def begin_rebuild_write(run, batch) -> bool:
                 or current.covered_snapshot != current.source_snapshot):
             return False
         first = record.write_intent_at is None
-        if first:
+        if first and record_intent:
             record.write_intent_at = datetime.now(UTC)
         return first
 

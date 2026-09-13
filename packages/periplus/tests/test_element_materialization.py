@@ -12,7 +12,7 @@ import duckdb
 from sqlalchemy import delete
 
 from operational_state_fixture import operational_state
-from periplus.materialization.batch import prepare_batch, commit_prepared_batch
+from periplus.materialization.batch import PreparedMembershipChanged, prepare_batch, commit_prepared_batch
 from periplus.materialization.document_projection import DocumentProjectionSource
 from periplus.materialization.registry import PROJECTIONS, REGISTRY_DIGEST
 from periplus.materialization.state import publish_generation
@@ -37,7 +37,7 @@ class ElementMaterializationTests(unittest.TestCase):
         self.batch = SimpleNamespace(id=uuid4(), snapshot=self.catalogue.latest_snapshot(), visit_ids=())
         self.html = '<body>Monkeys monkeys in the zoo. Straße STRASSE café café 日本語 中文</body>'
         self.repository = SimpleNamespace(store=None, read=lambda key: self.html, iter_bytes=lambda key: iter([self.html.encode()]))
-        source = DocumentProjectionSource('a'*64, 'objects/a', 'zstd', len(self.html), ())
+        source = DocumentProjectionSource('a'*64, 'objects/a', 'zstd', len(self.html.encode()), ())
         stack = self.enterContext(ExitStack())
         stack.enter_context(patch('periplus.materialization.batch._visit_rows', return_value=[]))
         stack.enter_context(patch('periplus.materialization.batch._document_sources',
@@ -59,7 +59,7 @@ class ElementMaterializationTests(unittest.TestCase):
         with self.sessions.begin() as session:
             session.execute(delete(LakeWriteClaimRecord))
 
-    def test_commit_replay_and_replace_atomically(self):
+    def test_commit_replay_and_repeated_content_append_no_duplicates(self):
         self.html='<p>mon<strong>key</strong> monkey</p>'
         prepared=self.prepare()
         self.assertEqual(self.elements(),[])
@@ -73,16 +73,47 @@ class ElementMaterializationTests(unittest.TestCase):
         self.assertEqual(self.elements(),initial)
         self.assertEqual(self.rows("SELECT term,content_id,node_indexes FROM public_v1.html_term ORDER BY term,content_id"),postings)
         self.batch=SimpleNamespace(id=uuid4(),snapshot=self.batch.snapshot,visit_ids=())
-        self.html='<title>different</title>'
         commit_prepared_batch(self.catalogue,self.run,self.batch,self.prepare())
-        self.assertEqual([r[3] for r in self.elements() if r[2]=='title'],['different'])
-        self.assertNotIn('p',[r[2] for r in self.elements()])
-        self.assertEqual(self.rows("SELECT DISTINCT term FROM public_v1.html_term"), [('different',)])
+        self.assertEqual(self.elements(), initial)
+        self.assertEqual(self.rows("SELECT term,content_id,node_indexes FROM public_v1.html_term ORDER BY term,content_id"),postings)
 
     def test_preparation_failure_has_no_published_rows(self):
         with patch('periplus.materialization.batch._write_partitioned_parquet',side_effect=RuntimeError('encoding failed')):
             with self.assertRaisesRegex(RuntimeError,'encoding failed'):self.prepare()
         self.assertEqual(self.elements(),[])
+
+    def test_overlapping_preparations_recheck_then_append_only_missing_identities(self):
+        first, shared, last = (str(uuid4()) for _ in range(3))
+        now = datetime.now(UTC)
+        def visits(ids):
+            return [(identity, None, 'https://example.com/', now) for identity in ids]
+        with patch('periplus.materialization.batch._visit_rows', return_value=visits([first, shared])):
+            prepared_first = self.prepare()
+        other = SimpleNamespace(id=uuid4(), snapshot=self.batch.snapshot, visit_ids=())
+        with patch('periplus.materialization.batch._visit_rows', return_value=visits([shared, last])):
+            prepared_other = prepare_batch(self.catalogue, self.repository, self.run, other)
+        commit_prepared_batch(self.catalogue, self.run, self.batch, prepared_first)
+        before = self.elements()
+        with self.assertRaises(PreparedMembershipChanged):
+            commit_prepared_batch(self.catalogue, self.run, other, prepared_other)
+        with patch('periplus.materialization.batch._visit_rows', return_value=visits([shared, last])):
+            prepared_other = prepare_batch(self.catalogue, self.repository, self.run, other)
+        with patch.object(self.catalogue, 'trusted_remote_execute', wraps=self.catalogue.trusted_remote_execute) as execute:
+            commit_prepared_batch(self.catalogue, self.run, other, prepared_other)
+            self.assertFalse(any(call.args[0].startswith('DELETE') for call in execute.call_args_list))
+        self.assertEqual(self.elements(), before)
+        self.assertEqual(sorted(str(row[0]) for row in self.rows('SELECT visit_id FROM material.visit_readiness')),
+                         sorted([first, shared, last]))
+
+    def test_runtime_reprepares_when_publication_membership_changes(self):
+        from periplus.materialization.runtime import _commit_retained_batch
+        prepared = self.prepare()
+        result = SimpleNamespace(output_rows=prepared.output_rows)
+        with patch('periplus.materialization.runtime.prepare_batch', return_value=prepared) as prepare, patch(
+            'periplus.materialization.runtime.commit_prepared_batch',
+            side_effect=[PreparedMembershipChanged('concurrent append'), result]):
+            self.assertIs(_commit_retained_batch(self.catalogue, self.repository, self.run, self.batch), result)
+        self.assertEqual(prepare.call_count, 2)
 
     def test_registration_failure_rolls_back(self):
         prepared=self.prepare();original=self.catalogue.trusted_remote_execute
@@ -100,7 +131,9 @@ class ElementMaterializationTests(unittest.TestCase):
         with patch('periplus.materialization.state.record_applied',side_effect=RuntimeError('lost receipt')):
             with self.assertRaises(CatalogueOutcomePending):commit_prepared_batch(self.catalogue,self.run,self.batch,prepared)
         before=self.elements();self.expire_claims()
-        commit_prepared_batch(self.catalogue,self.run,self.batch,self.prepare())
+        recovered = commit_prepared_batch(self.catalogue,self.run,self.batch,self.prepare())
+        self.assertEqual(recovered.output_rows, prepared.output_rows)
+        self.assertEqual(recovered.output_bytes, prepared.output_bytes)
         self.assertEqual(self.elements(),before)
 
     def test_stale_live_preparation_cannot_write_new_generation(self):

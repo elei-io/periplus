@@ -40,7 +40,7 @@ ingest.visits
     -> material.link_occurrences
 ```
 
-Workers acknowledge only after the atomic lake identity replacement/file registration and
+Workers acknowledge only after the atomic lake append/file registration and
 the subsequent control-Postgres receipt both commit. Lost receipts replay safely.
 Rebuild, live CDC, activation, recovery, status, and UI lifecycle iterate the registry; they do not
 branch by relation.
@@ -65,7 +65,7 @@ registrations retain their complete immutable object URI.
 ## Exit criteria
 
 - Repository checks and catalogue validation pass.
-- Ingestion stays append-only; derived batch replacement is bounded to its deterministic identities.
+- Ingestion stays append-only; derived publication appends missing deterministic identities without DELETE.
 - Repeated content and parallel batches produce one DOM projection and distinct
   visit-owned link occurrences.
 - Rebuild and live incremental output are logically equal at the same snapshot.

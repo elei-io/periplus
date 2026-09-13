@@ -538,3 +538,13 @@ ICU 77.1 and validate PyICU 2.16.2 / Unicode 16.0. No additional control migrati
 coherently and trigger a clean registry rebuild. The old active material generation
 remains until atomic activation; normal finalization retires its physical tables.
 See [ELEMENT_LAYOUT.md](ELEMENT_LAYOUT.md). Keep crawler pause unchanged.
+
+### Append-only catch-up publication
+
+Publication uses existing generation tables and control receipts; no schema migration,
+projection digest change or fresh rebuild is required. Stop old materializer replicas
+and let their exact write claims expire before starting append-only writers. This
+avoids mixing delete-and-replace writers with membership-checked append writers.
+Keep the existing run, batches and receipts. Restore the materializer scaler after
+rollout, then verify completed batch counts advance, not merely pod readiness.
+Other process roles and crawler controls need no maintenance pause.

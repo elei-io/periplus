@@ -16,6 +16,7 @@ from periplus.materialization import state
 from periplus.retention.identities import write_claims
 from periplus.materialization.batch import (
     BatchResult,
+    PreparedMembershipChanged,
     commit_prepared_batch,
     prepare_batch,
 )
@@ -631,6 +632,9 @@ def _commit_retained_batch(catalogue, html_repository, run, batch, *, active_gen
             # This is retryable only for a materializer that will reprepare.
             # Ingestion must continue treating retired evidence as terminal.
             raise duckdb.TransactionException("prepared evidence was concurrently retired") from exc
+        except PreparedMembershipChanged as exc:
+            prepared = None
+            raise duckdb.TransactionException("publication membership changed; reprepare") from exc
 
     return run_with_catalogue_retry(commit, description=f"materialization batch {batch.id}",
                                     on_conflict=metrics.conflict)

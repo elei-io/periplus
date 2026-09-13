@@ -1,4 +1,4 @@
-"""First publication, durable uncertainty and replacement recovery in real DuckLake."""
+"""First publication, durable uncertainty and append recovery in real DuckLake."""
 from dataclasses import replace
 from datetime import UTC, datetime
 from contextlib import contextmanager
@@ -24,7 +24,7 @@ class FirstPublicationTests(ElementMaterializationTests):
             session.add(MaterializationBatchRecord(id=self.batch.id, run_id=self.run.id,
                 ordinal=0, snapshot=self.batch.snapshot, visit_ids=[]))
 
-    def test_first_append_then_uncertain_receipt_recovers_by_replacement(self):
+    def test_first_append_then_uncertain_receipt_recovers_without_data_writes(self):
         prepared = replace(self.prepare(), stable_content_ownership=True)
         original = self.catalogue.trusted_remote_execute
         with patch.object(self.catalogue, 'trusted_remote_execute', wraps=original) as execute:
@@ -36,11 +36,26 @@ class FirstPublicationTests(ElementMaterializationTests):
         self.expire_claims()
         with patch.object(self.catalogue, 'trusted_remote_execute', wraps=original) as execute:
             commit_prepared_batch(self.catalogue, self.run, self.batch, prepared)
-            self.assertTrue(any(c.args[0].startswith('DELETE') for c in execute.call_args_list))
+            self.assertFalse(any(c.args[0].startswith(('DELETE', 'CALL ducklake_add_data_files')) for c in execute.call_args_list))
         self.assertEqual(expected, self.elements())
         self.assertTrue(commit_prepared_batch(self.catalogue, self.run, self.batch, prepared).already_applied)
 
-    def test_intent_before_lake_failure_forces_replacement(self):
+    def test_clean_initial_preparation_skips_membership_reads(self):
+        from periplus.materialization.document_projection import DocumentProjectionSource
+        source = DocumentProjectionSource(
+            'a'*64, 'objects/a', 'zstd', len(self.html.encode()), ())
+        def sources(*args, stable_owners, **kwargs):
+            stable_owners.add('a'*64)
+            return (source,), frozenset({'a'*64}), ()
+        from periplus.materialization.batch import prepare_batch
+        with patch('periplus.materialization.batch._document_sources', side_effect=sources), patch(
+            'periplus.materialization.batch._publication_presence', side_effect=AssertionError('initial scan')):
+            prepared = prepare_batch(self.catalogue, self.repository, self.run, self.batch)
+            self.assertFalse(prepared.membership_checked)
+            commit_prepared_batch(self.catalogue, self.run, self.batch, prepared)
+        self.assertTrue(self.elements())
+
+    def test_intent_before_lake_failure_requires_checked_append(self):
         prepared = replace(self.prepare(), stable_content_ownership=True)
         self.assertTrue(begin_rebuild_write(self.run, self.batch))
         self.assertFalse(begin_rebuild_write(self.run, self.batch))
@@ -55,12 +70,12 @@ class FirstPublicationTests(ElementMaterializationTests):
                     commit_prepared_batch(self.catalogue, self.run, self.batch, prepared)
                 transaction.assert_not_called()
 
-    def test_catchup_cannot_append(self):
+    def test_catchup_cannot_skip_membership_checks(self):
         with self.sessions.begin() as session:
             session.get(MaterializationRunRecord, self.run.id).covered_snapshot += 1
         self.assertFalse(begin_rebuild_write(self.run, self.batch))
 
-    def test_rollback_replays_as_replacement(self):
+    def test_rollback_replays_as_checked_append(self):
         prepared = replace(self.prepare(), stable_content_ownership=True)
         transaction = self.catalogue.remote_transaction
         @contextmanager
@@ -77,12 +92,12 @@ class FirstPublicationTests(ElementMaterializationTests):
         commit_prepared_batch(self.catalogue, self.run, self.batch, prepared)
         self.assertTrue(self.elements())
 
-    def test_changed_content_owner_uses_replacement(self):
+    def test_changed_content_owner_uses_checked_append(self):
         prepared = replace(self.prepare(), stable_content_ownership=False)
         original = self.catalogue.trusted_remote_execute
         with patch.object(self.catalogue, 'trusted_remote_execute', wraps=original) as execute:
             commit_prepared_batch(self.catalogue, self.run, self.batch, prepared)
-            self.assertTrue(any(c.args[0].startswith('DELETE') for c in execute.call_args_list))
+            self.assertFalse(any(c.args[0].startswith('DELETE') for c in execute.call_args_list))
 
     def test_superseded_run_cannot_append(self):
         with self.sessions.begin() as session:
