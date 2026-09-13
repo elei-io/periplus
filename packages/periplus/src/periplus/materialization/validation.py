@@ -27,11 +27,10 @@ def at_snapshot(sql: str, snapshot: int | None) -> str:
     return tree.sql(dialect="duckdb")
 
 
-def _content_row_checks(sql: str, spec: ProjectionSpec):
+def _sorted_row_checks(sql: str, spec: ProjectionSpec):
     """Partition only a scalar count of independently invalid rows."""
     tree = parse_one(sql, read="duckdb")
     if (spec.ownership_grain != "content" or not spec.sort_order
-            or spec.sort_order[0] != "content_sha256 ASC"
             or not isinstance(tree, exp.Select)
             or len(tree.expressions) != 1
             or not isinstance(tree.expressions[0], exp.Count)
@@ -44,7 +43,11 @@ def _content_row_checks(sql: str, spec: ProjectionSpec):
     if (not isinstance(table, exp.Table) or table.db != "material"
             or table.name != spec.name or len(list(tree.find_all(exp.Table))) != 1):
         return None
-    return tree, table
+    leading = spec.sort_order[0].removesuffix(" ASC")
+    column = next((column for column in spec.columns if column.name == leading), None)
+    if column is None or column.duckdb_type != "VARCHAR":
+        return None
+    return tree, table, leading
 
 
 def _ranges(column: exp.Column, *, content_hash: bool):
@@ -52,8 +55,14 @@ def _ranges(column: exp.Column, *, content_hash: bool):
               [chr(value) for value in sorted({32, *range(48, 59), *range(65, 92),
                                              *range(97, 124), 256, 1024, 4096,
                                              8192, 16384, 32768, 65536})])
+    if not content_hash:
+        # A combined NULL-or-low-term filter defeats native pruning on the
+        # production word index. Separate disjoint checks preserve every row.
+        yield 0, exp.Is(this=column.copy(), expression=exp.Null())
     for partition in range(len(bounds) + 1):
-        if partition == 0:
+        if partition == 0 and not content_hash:
+            predicate = exp.LT(this=column.copy(), expression=exp.Literal.string(bounds[0]))
+        elif partition == 0:
             predicate = exp.or_(exp.Is(this=column.copy(), expression=exp.Null()),
                                 exp.LT(this=column.copy(), expression=exp.Literal.string(bounds[0])))
         elif partition == len(bounds):
@@ -61,7 +70,7 @@ def _ranges(column: exp.Column, *, content_hash: bool):
         else:
             predicate = exp.and_(exp.GTE(this=column.copy(), expression=exp.Literal.string(bounds[partition-1])),
                                  exp.LT(this=column.copy(), expression=exp.Literal.string(bounds[partition])))
-        yield partition, predicate
+        yield partition + (not content_hash), predicate
 
 
 def identity_statements(spec: ProjectionSpec, snapshot: int | None):
@@ -80,15 +89,15 @@ def identity_statements(spec: ProjectionSpec, snapshot: int | None):
 
 def _checks(spec: ProjectionSpec, snapshot: int | None):
     for index, sql in enumerate(spec.validation_queries):
-        parsed = _content_row_checks(sql, spec)
+        parsed = _sorted_row_checks(sql, spec)
         if parsed is None:
             yield index, 0, at_snapshot(sql, snapshot)
             continue
-        tree, table = parsed
-        key = exp.column("content_sha256", table=table.alias_or_name)
+        tree, table, leading = parsed
+        key = exp.column(leading, table=table.alias_or_name)
         # Ordered ranges exploit the existing content sort. Boundary ranges
         # include NULL and noncanonical strings too: validation omits no rows.
-        for partition, predicate in _ranges(key, content_hash=True):
+        for partition, predicate in _ranges(key, content_hash=leading == "content_sha256"):
             yield index, partition, at_snapshot(tree.copy().where(predicate, append=True).sql(dialect="duckdb"), snapshot)
 
 

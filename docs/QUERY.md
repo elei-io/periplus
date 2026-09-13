@@ -92,7 +92,7 @@ SQL preparation and execution remain in the separate Python
 
 Both operations accept SQL and positional parameters and use the same public SQL validation.
 Preparation binds and explains without executing the analytical query, returning SQL, parameters,
-a query ID, diagnostics, and a plan. Compiler `public-query-v11` applies the promoted
+a query ID, diagnostics, and a plan. Compiler `public-query-v13` applies the promoted
 optimizations documented below in both stable and experimental. Responses preserve
 the submitted SQL and parameters and identify applied rewrites.
 The execution-only row-limit wrapper remains a resource control. DuckDB performs native
@@ -734,10 +734,32 @@ console links preserve the selected mode with `mode=experimental`. Stable uses
 `/api/query/experimental/exec`, `/api/query/experimental/prep` and
 `/api/query/experimental/helpers`. The SQL assistant validates against the selected mode.
 
-Stable and experimental share compiler `public-query-v12`, with mode suffixes.
-Both run ordinary validated SQL and report an empty optimizations list. Previous
-DOM rewrites are removed. Processes retain independent admission and resource
-limits. Experimental failure is never retried through stable.
+Stable and experimental share compiler `public-query-v13`, with mode suffixes.
+Stable runs ordinary validated SQL. Experimental can apply
+`element_text_index_candidates` to literal exact-text predicates on one direct
+`html_element` relation. A complete interior ASCII word surrounded by spaces is a
+safe candidate anchor even when surrounding HTML text joins an element's edge
+words. Single words, unsupported shapes, bound text parameters, collations,
+joins/CTEs and known exact content selections remain unchanged. The original
+text equality always remains; this never substitutes word search for substring
+or exact-string semantics.
+
+Execution first binds the original public SQL, checks the installed view definitions,
+and reads at most 129 term/content posting rows in the request's snapshot and deadline.
+More than 128 contents, 1,024 nodes per content or 16,384 candidate nodes declines
+without truncating matches. A skinny private scan resolves matching element identities
+and exact code-point lengths to native DuckLake row IDs. The final scan uses those IDs
+plus their minimum/maximum range and still evaluates the original exact text predicate.
+Only the canonical public element columns are exposed. Row IDs never leave the request
+or become a public identity, cache or stored index; all stages share one snapshot.
+
+Preparation performs no index lookup and reports eligible execution work with
+`text_index_lookup_deferred`. Execution reports the selected plan and optimization
+while preserving submitted SQL and parameters. Public namespace validation still
+runs before compilation; only generated SQL can read the private physical relation.
+Processes retain independent admission and resource limits. Experimental failure
+is never retried through stable. This narrow candidate has no speed guarantee for
+dispersed row IDs or common words, and is not promoted to stable.
 
 Prepared/executed responses and private history retain mode, compiler version,
 SQL, parameters and plan evidence. Native DuckDB optimizers remain enabled.

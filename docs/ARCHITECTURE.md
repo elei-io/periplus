@@ -54,7 +54,7 @@ service stores Periplus control state only.
 schemas, and transactionally installs the complete persistent `public_v1.*` contract.
 Ordinary Periplus processes validate the installed contract and never repair it.
 
-Element text is stored directly on every materialized HTML element. Ordinary HTML SQL is portable; no search function or persistent node relation is installed.
+Element text is stored directly on every materialized HTML element. Ordinary HTML SQL is portable; `html_search` exposes immutable page-word postings without a persistent node relation.
 
 Periplus uses the standard DuckDB runtime and official storage extensions. The query API owns
 query validation and future optimizations. One DuckLake connection factory owns storage-protocol

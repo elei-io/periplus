@@ -18,6 +18,13 @@ from periplus.query.benchmarking import compare_reports, discover_cases, inspect
 
 
 class QueryBenchmarkingTests(unittest.TestCase):
+    def test_packaged_benchmark_metadata_without_checkout(self):
+        from periplus.query.benchmarking import environment_metadata
+        with patch('periplus.query.benchmarking.__file__', '/tmp/bench.py'):
+            metadata = environment_metadata()
+        self.assertIsNone(metadata['source_revision'])
+        self.assertIsNone(metadata['source_dirty'])
+
     def test_parquet_function_scan_is_reported(self):
         profile = {"operator_name": "READ_PARQUET", "operator_type": "TABLE_SCAN",
                    "operator_cardinality": 3, "operator_rows_scanned": 100,
@@ -130,6 +137,27 @@ class QueryBenchmarkingTests(unittest.TestCase):
         self.assertEqual(len(measured.warm_ms), 1)
         self.assertEqual(measured.cumulative_rows_scanned, ())
         self.assertEqual(measured.scans, ())
+
+    def test_staged_lookup_cost_is_included_in_every_execution(self):
+        case = discover_cases(Path(__file__).resolve().parents[3] / "benchmarks/query/cases")["exact-page-history"]
+        connection = MagicMock()
+        connection.execute.return_value.fetchone.return_value = (42,)
+        clock = [0.0]
+        def transform(conn, sql, parameters):
+            self.assertIs(conn, connection)
+            clock[0] += 1
+            return "SELECT 7 AS n"
+        def execute(conn, sql, parameters):
+            self.assertEqual(sql, "SELECT 7 AS n")
+            clock[0] += 2
+            cursor = MagicMock()
+            cursor.fetchone.side_effect = [(7,), None]
+            cursor.description = [("n", "INTEGER")]
+            return cursor
+        with patch("periplus.query.benchmarking.catalogue_config_from_env", return_value=MagicMock(alias="periplus")), patch("periplus.query.benchmarking._execute", side_effect=execute), patch("periplus.query.benchmarking.perf_counter", side_effect=lambda: clock[0]):
+            measured = _measure(connection, case, None, 1, profile_warm_runs=False, transform=transform)
+        self.assertEqual(measured.normal_ms, 3000)
+        self.assertEqual(measured.warm_ms, (3000,))
 
     def test_ordinary_warm_execution_rejects_changed_results(self):
         root = Path(__file__).resolve().parents[3] / "benchmarks/query/cases"

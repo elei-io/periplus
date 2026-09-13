@@ -247,3 +247,40 @@ contract across schema-only boundaries, including manual commit and filtered DML
   QueryService implementation. Broad synthetic selections regress with redundant
   membership: 100,000 selected contents (entire corpus) 6.23 s → 9.86 s. The engine
   opportunity is cost-aware runtime membership, not unconditional list filtering.
+
+## Required IN filters versus MARK joins on DuckDB 1.5.5
+
+Exact-text candidate extraction exposed the larger-IN rewrite as an access-path
+risk. A standalone reproduction needs no Periplus schema:
+
+```sql
+CREATE TABLE sample AS SELECT i::VARCHAR AS key FROM range(1000) t(i);
+EXPLAIN SELECT * FROM sample WHERE key IN ('10','20','30','40','50','60','70','80','90');
+EXPLAIN SELECT * FROM sample WHERE key IN ('10','20','30','40','50','60','70','80','90',NULL);
+```
+
+The first plan uses a MARK HASH_JOIN and an optional scan IN filter; the second
+keeps a required scan IN filter without the join. These are equivalent as positive
+WHERE predicates (not as projected Boolean expressions or under NOT). The local
+candidate pass adds a NULL sentinel only to its own positive conjunct, retaining
+the exact original text predicate. Regression tests check results and filter shape.
+Production measurements and limitations are tracked in
+`docs/query-investigations/index-text-equality/`. A useful upstream improvement
+would preserve efficient required set filtering for large positive constant IN
+predicates without relying on this three-valued-logic formulation.
+
+## Native DuckLake row-ID membership and extraction cost
+
+On DuckDB 1.5.5 / DuckLake d8a1881e, production element extraction with a four-ID
+`rowid IN (..., NULL)` filter took about 11 seconds. Adding the logically redundant
+`rowid BETWEEN min_candidate AND max_candidate` returned the same four rows in
+1.96 seconds initially and 0.137 seconds on repeat. The query retained the same
+content range and exact text predicate. Complete paired public-query measurements,
+including candidate resolution, are in the index-text-equality investigation.
+
+This is an extraction-path observation, not an established file-pruning metric.
+A small native DuckLake fixture with eight appended files reports eight files for
+both forms; its scan counters do not explain the production difference. An upstream
+investigation should compare Parquet page reads and payload decoding for virtual
+row-ID membership versus its min/max range, and derive safe range restrictions
+automatically where useful. No upstream issue or global optimizer setting is changed.
