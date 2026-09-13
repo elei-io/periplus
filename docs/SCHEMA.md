@@ -87,6 +87,13 @@ canonical page stream. No stemming, substring matching or phrase positions.
 Files use eight term buckets, term/content ordering and 2,048-row groups. Native
 maintenance retains the same row-group setting and never aggregates posting arrays.
 The public `html_term(term, content_id, node_indexes)` view exposes this grain.
+`html_search(terms VARCHAR[])` is a portable table macro over these postings.
+It accepts at most 32 normalized term keys, matches any requested key, and returns
+`content_id VARCHAR`, `node_indexes INTEGER[]` and `score DOUBLE`. Node indexes are
+the sorted distinct union of matching containing elements; score counts distinct
+requested keys matched per content. Duplicate/null/empty keys do not add score;
+empty/null lists return no rows. Ranking and LIMIT belong to the caller. This is
+word coverage, not frequency, phrase relevance or BM25.
 Use exact normalized term keys; unnest `node_indexes` for individual element identities.
 
 ### `material.html_jsonld`

@@ -548,3 +548,14 @@ avoids mixing delete-and-replace writers with membership-checked append writers.
 Keep the existing run, batches and receipts. Restore the materializer scaler after
 rollout, then verify completed batch counts advance, not merely pod readiness.
 Other process roles and crawler controls need no maintenance pause.
+
+### Initial index search and bounded finalization
+
+Install the new `public_v1.html_search` SQL macro after the term generation has
+activated, then roll catalogue 2.2.0. No physical schema,
+projection digest or control migration changes. Pause and drain materializers while
+changing the public helper contract so old post-activation validators do not reject
+it; install the one declared macro in a DuckLake transaction, roll the images,
+then restore one materializer replica and its scaler. Existing public views and
+ingestion continue unchanged. Full setup is unnecessary for this helper-only DDL.
+Verify helpers discovery, nonempty search and successful post-activation validation.

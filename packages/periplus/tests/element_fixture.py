@@ -17,12 +17,13 @@ def catalogue():
     install_public_catalogue(c)
     return c
 
-def seed(connection, html, content='fixture'):
+def seed(connection, html, content='fixture', *, terms=False):
     nodes, elements = parse_document(html)
     context = VisitBatchContext((), (), (), {content: elements}, {content: nodes}, {}, frozenset({content}))
-    connection.register('fixture_elements', BY_NAME['html_elements'].rows(context))
-    try:
-        connection.execute('INSERT INTO material.html_elements SELECT * FROM fixture_elements')
-    finally:
-        connection.unregister('fixture_elements')
+    for name in ('html_elements', 'html_terms') if terms else ('html_elements',):
+        connection.register('fixture_elements', BY_NAME[name].rows(context))
+        try:
+            connection.execute(f'INSERT INTO material.{name} SELECT * FROM fixture_elements')
+        finally:
+            connection.unregister('fixture_elements')
     return nodes, elements
