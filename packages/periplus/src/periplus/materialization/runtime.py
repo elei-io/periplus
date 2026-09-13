@@ -826,11 +826,20 @@ def _activate_or_catch_up(
 
 
 def _finalize_activation(run: MaterializationRun) -> None:
+    current = state.active_generation()
+    if run.status != "completed":
+        raise RuntimeError("only completed activations can be finalized")
+    if run.registry_digest != REGISTRY_DIGEST or (
+        current is not None and current.id != run.id
+    ):
+        # Keep the retired tables until a matching replacement passes validation.
+        # Retrying this old delivery would occupy the sole activation slot forever.
+        event("materialization_finalization_deferred", code="superseded_registry_or_generation")
+        return
     with catalogue_from_env(threads=1, memory_limit="2GB") as catalogue:
         _verify_active_generation(catalogue, run)
-        catalogue.finalize_materialization_activation(
-            (spec.relation for spec in PROJECTIONS),
-            activation_id=run.id.hex,
+        catalogue.finalize_completed_materialization_activations(
+            MaterializationRunStore().completed_activation_ids(),
         )
         _drop_unregistered_material_relations(catalogue)
 

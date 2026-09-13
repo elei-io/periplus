@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from uuid import UUID
 
 import pyarrow as pa
 
@@ -491,6 +492,29 @@ class Catalogue:
                         retired_table,
                     )}"
                 )
+
+    def finalize_completed_materialization_activations(self, activation_ids: Iterable[UUID]) -> None:
+        """Drop only retired markers backed by completed control receipts.
+
+        The caller must first validate the current active generation. Discover
+        actual retired relation names because earlier registries can differ.
+        """
+        completed = {activation_id.hex[:20] for activation_id in activation_ids}
+        retired = self.trusted_remote_rows(
+            "SELECT table_name FROM duckdb_tables() "
+            f"WHERE database_name = {_quote_literal(self.config.alias)} "
+            f"AND schema_name = {_quote_literal(MATERIAL_SCHEMA)} "
+            "AND starts_with(table_name, '_periplus_retired_')"
+        )
+        selected: dict[str, list[RelationName]] = {}
+        for (table,) in retired:
+            match = re.fullmatch(r"_periplus_retired_([a-z0-9_]+)_([a-f0-9]{20})", str(table))
+            if match is not None and match.group(2) in completed:
+                selected.setdefault(match.group(2), []).append(
+                    RelationName(MATERIAL_SCHEMA, match.group(1))
+                )
+        for activation_id, relations in selected.items():
+            self.finalize_materialization_activation(relations, activation_id=activation_id)
 
     def drop_materialization_generations(
         self,
