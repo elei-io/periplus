@@ -75,3 +75,17 @@ class SnapshotValidationTests(unittest.TestCase):
             # NULL and the low lexical range have separate complete checks.
             self.assertEqual([db.execute(sql).fetchone()[0] for _,sql in queries[:2]], [1, 1])
             self.assertEqual(sum(db.execute(sql).fetchone()[0] for _,sql in queries), expected)
+
+    def test_term_array_row_checks_keep_all_invalid_rows(self):
+        with duckdb.connect() as db:
+            db.execute('CREATE SCHEMA material')
+            db.execute('CREATE TABLE material.html_terms(term VARCHAR, node_indexes INTEGER[])')
+            db.executemany('INSERT INTO material.html_terms VALUES (?,?)', [
+                (None, []), ('', [1]), ('0', [1, 1]), ('apple', [-1]),
+                ('日本語', [3, 2]), ('😀', [1, 2]), ('valid', [1, 2])])
+            spec = next(s for s in PROJECTIONS if s.name == 'html_terms')
+            expected = db.execute(spec.validation_queries[0]).fetchone()[0]
+            with validation_statements(SimpleNamespace(), spec) as generated:
+                checks = list(generated)
+            self.assertGreater(len(checks), 1)
+            self.assertEqual(sum(db.execute(sql).fetchone()[0] for _,_,sql in checks), expected)

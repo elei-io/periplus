@@ -121,11 +121,12 @@ buffers. Identity checks use disjoint ranges when the leading sorted string key
 belongs to the identity, keeping equal identities together. Non-content string
 ranges check null keys separately from the low lexical range: combining them with
 OR prevented native pruning on the production term table. Other identities use
-the complete original check. Scalar counts of invalid rows in content-sorted projections run in
-64 disjoint lexical content ranges at the same snapshot. This bounds the text
+the complete original check. Scalar counts of invalid rows use the same sorted-string ranges, including term
+array checks. Content-sorted projections use 64 lexical content ranges at the same
+snapshot. This bounds the text
 read scope while checking every row, including null or noncanonical keys. Each
 range reports progress. Joins, grouped checks and relations without the required
-content sort retain their original complete query; they are not partitioned without
+sorted string key retain their original complete query; they are not partitioned without
 a locality proof. No staging table or registered-file mutation is involved.
 
 
