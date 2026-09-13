@@ -72,4 +72,6 @@ class SnapshotValidationTests(unittest.TestCase):
             expected = db.execute('SELECT count(*)-count(DISTINCT(term,content_sha256)) FROM material.html_terms').fetchone()[0]
             queries = list(identity_statements(spec, None))
             self.assertGreater(len(queries), 1)
+            # NULL and the low lexical range have separate complete checks.
+            self.assertEqual([db.execute(sql).fetchone()[0] for _,sql in queries[:2]], [1, 1])
             self.assertEqual(sum(db.execute(sql).fetchone()[0] for _,sql in queries), expected)

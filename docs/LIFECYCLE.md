@@ -118,7 +118,9 @@ across the complete validation, which can exceed the fixed remote transaction
 timeout. The dedicated validation connection caps managed memory at 2 GB (or the
 smaller operator setting) to leave room for sibling connections and native string
 buffers. Identity checks use disjoint ranges when the leading sorted string key
-belongs to the identity, keeping equal identities together; other identities use
+belongs to the identity, keeping equal identities together. Non-content string
+ranges check null keys separately from the low lexical range: combining them with
+OR prevented native pruning on the production term table. Other identities use
 the complete original check. Scalar counts of invalid rows in content-sorted projections run in
 64 disjoint lexical content ranges at the same snapshot. This bounds the text
 read scope while checking every row, including null or noncanonical keys. Each

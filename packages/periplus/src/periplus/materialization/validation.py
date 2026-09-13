@@ -52,8 +52,14 @@ def _ranges(column: exp.Column, *, content_hash: bool):
               [chr(value) for value in sorted({32, *range(48, 59), *range(65, 92),
                                              *range(97, 124), 256, 1024, 4096,
                                              8192, 16384, 32768, 65536})])
+    if not content_hash:
+        # A combined NULL-or-low-term filter defeats native pruning on the
+        # production word index. Separate disjoint checks preserve every row.
+        yield 0, exp.Is(this=column.copy(), expression=exp.Null())
     for partition in range(len(bounds) + 1):
-        if partition == 0:
+        if partition == 0 and not content_hash:
+            predicate = exp.LT(this=column.copy(), expression=exp.Literal.string(bounds[0]))
+        elif partition == 0:
             predicate = exp.or_(exp.Is(this=column.copy(), expression=exp.Null()),
                                 exp.LT(this=column.copy(), expression=exp.Literal.string(bounds[0])))
         elif partition == len(bounds):
@@ -61,7 +67,7 @@ def _ranges(column: exp.Column, *, content_hash: bool):
         else:
             predicate = exp.and_(exp.GTE(this=column.copy(), expression=exp.Literal.string(bounds[partition-1])),
                                  exp.LT(this=column.copy(), expression=exp.Literal.string(bounds[partition])))
-        yield partition, predicate
+        yield partition + (not content_hash), predicate
 
 
 def identity_statements(spec: ProjectionSpec, snapshot: int | None):
