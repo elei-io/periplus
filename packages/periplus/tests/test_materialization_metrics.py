@@ -83,7 +83,8 @@ class MaterializationTimingTests(unittest.TestCase):
 
         catalogue = MagicMock()
         catalogue.remote_transaction.side_effect = transaction
-        prepared = PreparedBatch(0, 0, 0, 0, 0, 0, {})
+        catalogue.trusted_remote_rows.return_value = []
+        prepared = PreparedBatch(0, 0, 0, 0, 0, 0, {}, membership_checked=True)
         run = SimpleNamespace(id=uuid4())
         batch = SimpleNamespace(id=uuid4(), snapshot=1)
         with patch('periplus.materialization.batch.step', step), \

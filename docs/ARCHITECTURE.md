@@ -107,10 +107,12 @@ Every Python module under `materialization/projections/` is one complete fixed p
 declaration. Discovery is the registry: adding, editing, or deleting a materialization means
 adding, editing, or deleting that one module, followed by redeployment and a complete rebuild.
 Workers build one shared parse context and prepare registry-validated files in parallel.
-Under exact Postgres claims, each batch records durable write intent, appends on a
-proven first clean-snapshot publication or replaces deterministic derived identities on
-recovery, and registers files atomically in DuckLake, then records its applied receipt in control
-Postgres. Lost acknowledgement replays the same replacement without duplicate output.
+Under exact Postgres claims, each batch appends missing immutable identities and
+registers files atomically in DuckLake, then records its applied receipt in control
+Postgres. Existing visit/content membership prevents duplicates across overlapping
+batches. Native DuckLake commit annotations recover output counts after a lost
+Postgres acknowledgement. Proven first clean-snapshot publications skip membership
+reads using durable write intent. Ordinary publication performs no DELETE.
 No Periplus operational tables live in the lake. See [LIFECYCLE.md](LIFECYCLE.md).
 
 Every rebuild creates every discovered hidden material table, catches up visits inserted after the

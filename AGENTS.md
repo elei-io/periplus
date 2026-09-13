@@ -55,7 +55,7 @@ to encode around one accidental optimizer plan.
   Public views and macros belong to the separate public-catalogue registry. A planner pins a source
   snapshot and publishes bounded visit-ID batches to JetStream. Horizontally scalable materializers
   build one shared parse context, register final Parquet using each projection's partition policy,
-  replace deterministic derived identities in one DuckLake transaction, then record the applied
+  append missing deterministic derived identities in one DuckLake transaction, then record the applied
   batch in control Postgres and ACK only after both commits. Exact Postgres claims serialize
   generation commits and protect evidence retirement; no Postgres transaction spans lake I/O. All
   discovered relations belong to one

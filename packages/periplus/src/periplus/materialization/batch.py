@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import json
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from uuid import UUID, uuid4
 
 import pyarrow as pa
+import pyarrow.compute as pc
+from pydantic import BaseModel, ConfigDict
 
 from periplus.ingestion.objects.html import RawHtmlRepository
 from periplus.materialization import state
@@ -21,12 +24,13 @@ from periplus.materialization.metrics import step
 from periplus.materialization.preparation import prepare_projections
 from periplus.materialization.registry import (
     BY_NAME,
+    CONTENT_PRESENCE_PROJECTION,
     PROJECTIONS,
 )
 from periplus.materialization.sql import sql_string, sql_string_list
 from periplus.materialization.store import MaterializationBatch, MaterializationRun
 from periplus.platform.catalogue import Catalogue
-from periplus.platform.catalogue.exceptions import CatalogueOutcomePending
+from periplus.platform.catalogue.exceptions import CatalogueConflictError, CatalogueOutcomePending
 from periplus.platform.catalogue.schema import expected_columns
 from periplus.platform.catalogue.storage import (
     portable_registration_path,
@@ -47,6 +51,13 @@ class BatchResult:
     commit_seconds: float
     already_applied: bool = False
     superseded: bool = False
+
+
+class _CommitReceipt(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    generation_id: UUID
+    source_snapshot: int
+    result: BatchResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +83,45 @@ class PreparedBatch:
     retained_content_hashes: tuple[str, ...] = ()
     owned_content_hashes: tuple[str, ...] = ()
     stable_content_ownership: bool = False
+    membership_checked: bool = False
+    present_visit_ids: frozenset[str] = frozenset()
+    present_content_hashes: frozenset[str] = frozenset()
+    membership_snapshot: int | None = None
+
+
+class PreparedMembershipChanged(CatalogueConflictError):
+    """Another publication changed which immutable identities need appending."""
+
+
+def _publication_presence(
+    catalogue: Catalogue,
+    run: MaterializationRun,
+    visit_ids: Iterable[str],
+    content_hashes: Iterable[str],
+    *,
+    snapshot: int | None = None,
+) -> tuple[frozenset[str], frozenset[str]]:
+    """Read atomic publication markers, not every row in every projection."""
+    visits = frozenset()
+    contents = frozenset()
+    snapshot = catalogue.latest_snapshot() if snapshot is None else snapshot
+    if snapshot is None:
+        raise RuntimeError("publication has no lake snapshot")
+    if visit_ids:
+        table = _quote_identifier(run.generation_tables['visit_readiness'])
+        visits = frozenset(str(row[0]) for row in catalogue.trusted_remote_rows(
+            f"SELECT visit_id::VARCHAR FROM material.{table} AT (VERSION => {snapshot}) "
+            f"WHERE visit_id IN ({sql_string_list(visit_ids)})"))
+    if content_hashes:
+        presence = CONTENT_PRESENCE_PROJECTION
+        if presence is None:
+            raise RuntimeError("content publication requires a presence projection")
+        table = _quote_identifier(run.generation_tables[presence.name])
+        contents = frozenset(str(row[0]) for row in catalogue.trusted_remote_rows(
+            f"SELECT DISTINCT content_sha256 FROM material.{table} AT (VERSION => {snapshot}) "
+            f"WHERE ({presence.content_presence_predicate}) "
+            f"AND content_sha256 IN ({sql_string_list(content_hashes)})"))
+    return visits, contents
 
 
 def prepare_batch(
@@ -107,12 +157,23 @@ def prepare_batch(
             normalized_visits,
             stable_owners=stable_owners,
         )
+        stable_ownership = set(owned_hashes).issubset(stable_owners)
+        membership_checked = not (
+            not active_generation and stable_ownership
+            and state.begin_rebuild_write(run, batch, record_intent=False)
+        )
+        membership_snapshot = catalogue.latest_snapshot() if membership_checked else None
+        present_visits, present_contents = (
+            _publication_presence(catalogue, run, [str(row[0]) for row in visits], owned_hashes,
+                                  snapshot=membership_snapshot)
+            if membership_checked else (frozenset(), frozenset())
+        )
     with prepare_projections(
         html_repository,
         sources,
         visits=tuple(visits),
         documents=documents,
-        content_output_hashes=owned_hashes,
+        content_output_hashes=owned_hashes - present_contents,
     ) as projections:
         source_bytes = sum(source.content_bytes for source in sources)
         project_seconds = time.perf_counter() - project_started
@@ -124,6 +185,9 @@ def prepare_batch(
             project_started = time.perf_counter()
             with step("projection_rows"):
                 output = projections.rows(spec)
+                if spec.ownership_grain == 'visit' and present_visits:
+                    output = output.filter(pc.invert(pc.is_in(
+                        output['visit_id'], value_set=pa.array(sorted(present_visits)))))
             project_seconds += time.perf_counter() - project_started
             output_rows += output.num_rows
             parquet_started = time.perf_counter()
@@ -138,7 +202,11 @@ def prepare_batch(
             parquet_seconds += time.perf_counter() - parquet_started
             del output
         return PreparedBatch(
-            stable_content_ownership=set(owned_hashes).issubset(stable_owners),
+            stable_content_ownership=stable_ownership,
+            membership_checked=membership_checked,
+            present_visit_ids=present_visits,
+            present_content_hashes=present_contents,
+            membership_snapshot=membership_snapshot,
             retained_visit_ids=tuple(str(row[0]) for row in visits),
             retained_content_hashes=tuple(source.content_sha256 for source in sources),
             owned_content_hashes=tuple(sorted(owned_hashes)),
@@ -165,11 +233,7 @@ def commit_prepared_batch(
     active_generation: bool = False,
     assert_writable: Callable[[], None] | None = None,
 ) -> BatchResult:
-    """Append proven first writes or replace identities, then acknowledge in Postgres.
-
-    A crash between the two commits is safe: replay replaces the same rows in
-    one lake transaction. No lake bookkeeping table is needed for deduplication.
-    """
+    """Append missing immutable identities, then acknowledge in Postgres."""
     commit_started = time.perf_counter()
     storage = _catalogue_storage(catalogue)
     with ExitStack() as claims:
@@ -190,15 +254,35 @@ def commit_prepared_batch(
             and state.begin_rebuild_write(run, batch)
             and prepared.stable_content_ownership
         )
+        if not first_write:
+            receipts = catalogue.trusted_remote_rows(
+                "SELECT commit_extra_info FROM ducklake_snapshots("
+                f"{sql_string(catalogue.config.alias)}) "
+                f"WHERE author = 'periplus-materialization' AND commit_message = {sql_string(str(batch.id))}"
+            )
+            if receipts:
+                if len(receipts) != 1:
+                    raise CatalogueOutcomePending('multiple native batch commit receipts')
+                try:
+                    receipt = _CommitReceipt.model_validate_json(receipts[0][0])
+                except ValueError as exc:
+                    raise CatalogueOutcomePending('invalid native batch commit receipt') from exc
+                if receipt.generation_id != run.id or receipt.source_snapshot != batch.snapshot:
+                    raise CatalogueOutcomePending('native batch receipt identity mismatch')
+                result = receipt.result
+                try:
+                    state.record_applied(run.id, batch.id, batch.snapshot, result)
+                except Exception as exc:
+                    raise CatalogueOutcomePending('native commit receipt awaits Postgres acknowledgement') from exc
+                return result
+            unchanged_snapshot = (prepared.membership_snapshot is not None
+                                  and catalogue.latest_snapshot() == prepared.membership_snapshot)
+            if not prepared.membership_checked or (not unchanged_snapshot and _publication_presence(
+                catalogue, run, prepared.retained_visit_ids, prepared.owned_content_hashes
+            ) != (prepared.present_visit_ids, prepared.present_content_hashes)):
+                raise PreparedMembershipChanged('publication membership changed; reprepare')
         with step("lake_transaction"), catalogue.remote_transaction():
             for spec in PROJECTIONS:
-                identities = (prepared.owned_content_hashes if spec.ownership_grain == "content"
-                              else prepared.retained_visit_ids)
-                column = "content_sha256" if spec.ownership_grain == "content" else "visit_id"
-                if identities and not first_write:
-                    catalogue.trusted_remote_execute(
-                        f"DELETE FROM material.{_quote_identifier(run.generation_tables[spec.name])} "
-                        f"WHERE {column} IN ({sql_string_list(set(identities))})")
                 for file in prepared.files[spec.name]:
                     catalogue.trusted_remote_execute(
                         "CALL ducklake_add_data_files("
@@ -206,6 +290,11 @@ def commit_prepared_batch(
                         f"{sql_string(run.generation_tables[spec.name])}, "
                         f"{sql_string(storage.registration_path(file.path))}, "
                         "schema => 'material')")
+            receipt = json.dumps(dict(generation_id=str(run.id), source_snapshot=batch.snapshot,
+                                      result=asdict(_result(prepared, commit_started))))
+            catalogue.trusted_remote_execute(
+                f"CALL ducklake_set_commit_message({sql_string(catalogue.config.alias)}, "
+                f"'periplus-materialization', {sql_string(str(batch.id))}, extra_info => {sql_string(receipt)})")
         result = _result(prepared, commit_started)
         try:
             with step("receipt_write"):
@@ -214,7 +303,7 @@ def commit_prepared_batch(
             raise CatalogueOutcomePending('lake batch committed; Postgres receipt must be retried') from exc
     from periplus.platform.telemetry import event
     event("materialization_batch_committed", operation_id=str(batch.id),
-          publication_mode="append" if first_write else "replace",
+          publication_mode="append",
           rows=result.output_rows, bytes=result.output_bytes,
           elapsed_ms=(result.project_seconds + result.parquet_seconds + result.commit_seconds)*1000)
     return result

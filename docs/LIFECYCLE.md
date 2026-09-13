@@ -52,21 +52,26 @@ text and direct text. Preparation needs no vocabulary allocation, tokenizer or
 lake transaction. Large nested pages can amplify temporary preparation memory;
 worker concurrency and document limits bound admission.
 
-Generic lifecycle code writes partitioned,
-sorted immutable Parquet outside the commit claim. Under exact generation, observation
-and content claims in Postgres, one lake transaction replaces the batch's visit-owned
-and content-owned identities and registers its files. Clean, fixed-snapshot initial
-batches with original minimum-document ownership can omit replacement on their first
-publication. Under the existing claim, a short control transaction durably records
-`materialization_batches.write_intent_at` before lake I/O. An existing intent without
-a completion receipt always uses replacement. Initial plans reject overlapping visit
-IDs; catch-up, live batches and retirement-reassigned owners retain replacement.
-Intent transaction failures abort before lake I/O, including uncertain outcomes. It then records completion in
-Postgres `materialization_applied_batches`, and only then ACKs delivery. A missing receipt
-after a successful lake commit causes the same identity replacement, so replay cannot
-append duplicates. A durable receipt makes redelivery a no-op. Preparation remains
-parallel; commits within one generation are serialized. See [RETENTION.md](RETENTION.md)
-for bounded claim ownership and uncertain-commit handling.
+Generic lifecycle code writes partitioned, sorted immutable Parquet outside the commit
+claim. Catch-up, live and retry preparation check visit readiness and the registry's
+content-presence projection at one lake snapshot, and emit only missing identities.
+Under exact generation, observation and content claims in Postgres, publication
+rechecks that membership when the snapshot changed; changed membership requires
+fresh preparation. One lake transaction appends all projection files. Ordinary
+materialization never deletes existing rows.
+
+Clean, disjoint initial batches with original minimum-document ownership skip the
+membership scan. Their existing durable `write_intent_at` is recorded before lake
+I/O; an existing intent requires the checked publication path. Each file-registration
+transaction also writes a native DuckLake commit annotation identifying the batch,
+generation, source snapshot and output counts. If the following Postgres receipt
+fails, a retry recovers that annotation without rewriting files. When no annotation
+exists, membership checks prevent duplicate appends. Postgres
+`materialization_applied_batches` remains the operational completion authority;
+workers ACK only after that receipt commits. Preparation remains parallel and
+generation claims serialize publication. Native snapshot history is not permanent
+operational state: expired annotations still leave membership checks available.
+See [RETENTION.md](RETENTION.md) for claim and uncertain-commit bounds.
 
 Partition transforms are declared per registry entry; there is no global material partition
 policy. Content-owned HTML currently use eight content-hash buckets because exact
@@ -87,7 +92,7 @@ URI. Materialization code does not branch by storage backend.
 
 1. Periplus Postgres records the source snapshot, registry digest, and visit batch identities.
 2. The planner creates every discovered hidden relation from the registry.
-3. Workers prepare files in parallel, commit deterministic identity replacements, and
+3. Workers prepare files in parallel, append missing deterministic identities, and
    record applied receipts in control Postgres.
 4. Activation checks the exact registry, validates every hidden relation, and catches up visits
    inserted after the pinned snapshot.

@@ -113,10 +113,10 @@ source_url, target_url, relation_scope
 convenience for the normalized directed URL pair. It is not a mutable identity record.
 `relation_scope` is `self`, `same_origin`, `same_host`, `same_site`, or `external`.
 
-Material batches write immutable Parquet and atomically replace their deterministic owned
-identities before registering files. Rebuilds create the complete hidden relation set and
-activate it together. Postgres receipts make completed redelivery a no-op; replacement
-makes a lost receipt safe to replay. There is no head table or stored aggregate.
+Material batches write immutable Parquet and atomically append missing deterministic
+identities after checking existing visit/content membership. Rebuilds create the complete hidden relation set and
+activate it together. Postgres receipts make completed redelivery a no-op; native commit annotations
+and membership checks make a lost receipt safe to replay. There is no head table or stored aggregate.
 
 Each file under `materialization/projections/` declares one relation's ownership grain, identity,
 Arrow and DuckLake schema, partitioning, sort order, projector, validation, and description. One
