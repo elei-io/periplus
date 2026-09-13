@@ -20,6 +20,7 @@ def main() -> None:
     parser.add_argument("--case-root", type=Path, default=DEFAULT_CASE_ROOT)
     parser.add_argument("--case", action="append", dest="case_ids", required=True)
     parser.add_argument("--candidate-first", action="store_true")
+    parser.add_argument("--text-index", action="store_true", help="measure bounded exact-text candidate lookup inside each timed execution")
     parser.add_argument("--seconds", type=int, choices=range(1, 121))
     parser.add_argument("--scale", type=int, action="append", dest="scales")
     parser.add_argument("--ordinary-warm-runs", action="store_true", help="time ordinary executions instead of EXPLAIN ANALYZE; scan metrics are unavailable")
@@ -41,10 +42,14 @@ def main() -> None:
     missing = sorted(set(requested) - set(discovered))
     if missing:
         parser.error("unknown cases: " + ", ".join(missing))
-    if arguments.ordinary_warm_runs and not arguments.sql_override:
+    if arguments.ordinary_warm_runs and not (arguments.sql_override or arguments.text_index):
         parser.error("ordinary warm runs require paired mode")
-    if arguments.sql_override and len(requested) != 1:
+    if (arguments.sql_override or arguments.text_index) and len(requested) != 1:
         parser.error("--sql-override requires exactly one --case")
+    if arguments.text_index and arguments.sql_override:
+        parser.error("choose --text-index or --sql-override")
+    if arguments.text_index and arguments.warm_runs and not arguments.ordinary_warm_runs:
+        parser.error("--text-index requires --ordinary-warm-runs or --warm-runs 0")
     selected = []
     for identifier in requested:
         case = discovered[identifier]
@@ -64,16 +69,27 @@ def main() -> None:
         selected.append(case)
 
     try:
-        if arguments.sql_override:
+        if arguments.sql_override or arguments.text_index:
             case = selected[0]
-            candidate = replace(case, sql=arguments.sql_override.read_text(encoding="utf-8").strip())
+            transform = None
+            candidate = replace(case, sql=arguments.sql_override.read_text(encoding="utf-8").strip()) if arguments.sql_override else case
+            if arguments.text_index:
+                from periplus.platform.catalogue.config import catalogue_config_from_env
+                from periplus.query.text_index import text_index_rewrite
+                from periplus.query.validation import _one_statement
+                alias = catalogue_config_from_env().alias
+                def transform(connection, sql, parameters):
+                    rewrite = text_index_rewrite(connection, _one_statement(sql), alias, parameters)
+                    if rewrite is None:
+                        raise ValueError("query did not select text-index candidates")
+                    return rewrite.sql
             pairs = [measure_pair(case, candidate, scale, warm_runs=arguments.warm_runs,
-                                 candidate_first=arguments.candidate_first, profile_warm_runs=not arguments.ordinary_warm_runs) for scale in case.scales]
+                                 candidate_first=arguments.candidate_first, profile_warm_runs=not arguments.ordinary_warm_runs, candidate_transform=transform) for scale in case.scales]
             payload = {"format_version": 2, "measurements": [p["candidate"] for p in pairs],
                        "paired_baseline": [p["baseline"] for p in pairs],
                        "candidate_first": arguments.candidate_first, "environment": environment_metadata(),
                        "baseline_sql": case.sql, "candidate_sql": candidate.sql,
-                       "optimization": "research_sql"}
+                       "optimization": "element_text_index_candidates" if arguments.text_index else "research_sql"}
             comparisons, pair_failures = compare_reports(
                 {"measurements": payload["paired_baseline"]}, payload)
             for comparison in comparisons:

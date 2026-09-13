@@ -17,6 +17,31 @@ from periplus.query.service import QueryService, QueryRequest, BusyError
 
 
 class QueryServiceTests(unittest.TestCase):
+    def test_experimental_exact_text_rewrite_and_prepare_contract(self):
+        from periplus.query.service import QueryMode
+        from periplus.query.text_index import OPTIMIZATION
+        experimental = QueryService(self.config, mode=QueryMode.EXPERIMENTAL)
+        self.addCleanup(experimental.close)
+        request = QueryRequest(sql="SELECT content_id,node_index,text FROM html_element WHERE text='robot robot robotics careers' ORDER BY content_id,node_index")
+        expected = self.service.execute(request)
+        self.assertTrue(expected.rows)
+        with patch('periplus.query.text_index.text_index_rewrite') as lookup:
+            prepared = experimental.prepare(request)
+            lookup.assert_not_called()
+        self.assertIn('text_index_lookup_deferred', [d.code for d in prepared.diagnostics])
+        actual = experimental.execute(request)
+        self.assertEqual((actual.columns, actual.types, actual.rows), (expected.columns, expected.types, expected.rows))
+        self.assertEqual(actual.sql, request.sql)
+        self.assertEqual(actual.optimizations, [OPTIMIZATION])
+        self.assertEqual(expected.optimizations, [])
+        frames = []
+        streamed = experimental.execute(request, emit=frames.append)
+        self.assertEqual(frames[0]['optimizations'], [OPTIMIZATION])
+        self.assertEqual([row for frame in frames if frame['type']=='rows' for row in frame['rows']], expected.rows)
+        self.assertFalse(streamed.truncated)
+        bounded = experimental.execute(QueryRequest(sql='SELECT content_id FROM html_element WHERE text=?', parameters=['robot robot robotics careers']))
+        self.assertEqual(bounded.optimizations, [])
+
     def test_removed_surfaces_in_both_modes(self):
         from periplus.query.service import QueryMode
         for mode in QueryMode:
@@ -139,7 +164,7 @@ class QueryServiceTests(unittest.TestCase):
         d.execute("UPDATE ingest.visits SET document_id = uuid() WHERE document_id IS NULL")
         d.execute("INSERT INTO ingest.documents (document_id, visit_id, detected_media_type, content_sha256) SELECT document_id, visit_id, 'text/html', visit_id::VARCHAR FROM ingest.visits WHERE requested_url <> 'https://example.com/inline'")
         from element_fixture import seed
-        seed(d, '<title>start</title><p>robot robot robotics careers</p>', 'helper-fixture')
+        seed(d, '<title>start</title><p>robot robot robotics careers</p>', 'helper-fixture', terms=True)
         d.close()
         self.service = QueryService(self.config)
         self.addCleanup(self.service.close)
@@ -161,7 +186,7 @@ class QueryServiceTests(unittest.TestCase):
         self.assertEqual(stable.query_mode, QueryMode.STABLE)
         self.assertEqual(result.query_mode, QueryMode.EXPERIMENTAL)
         self.assertEqual(result.optimizations, [])
-        self.assertEqual(evidence.compiler_version, "public-query-v12:experimental")
+        self.assertEqual(evidence.compiler_version, "public-query-v13:experimental")
         self.assertNotEqual(result.compiler_version, stable.compiler_version)
         with self.assertRaises(ValueError):
             QueryService(self.config, mode="invalid")

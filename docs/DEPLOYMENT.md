@@ -559,3 +559,11 @@ it; install the one declared macro in a DuckLake transaction, roll the images,
 then restore one materializer replica and its scaler. Existing public views and
 ingestion continue unchanged. Full setup is unnecessary for this helper-only DDL.
 Verify helpers discovery, nonempty search and successful post-activation validation.
+
+### Experimental exact-text candidates
+
+Compiler public-query-v13 adds a request-local candidate lookup to experimental
+execution. Stable remains the comparison. It uses the already active element and
+term tables, with no new DDL, projection digest, rebuild, stored row IDs or maintenance
+job. Roll the query images and verify unchanged public SQL through both API modes;
+include all candidate stages in timings and require complete matching results.

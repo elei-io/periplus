@@ -295,8 +295,13 @@ def bounded_rows(cursor, *, max_rows: int = 100_000, max_bytes: int = 32 * 1024 
     return rows
 
 
-def _measure(connection, case: QueryCase, scale: int | None, warm_runs: int, *, profile_warm_runs: bool = True, bound_parameters: dict[str, Any] | None = None) -> Measurement:
+def _measure(connection, case: QueryCase, scale: int | None, warm_runs: int, *, profile_warm_runs: bool = True, bound_parameters: dict[str, Any] | None = None, transform=None) -> Measurement:
     parameters = _parameters(scale) if bound_parameters is None else bound_parameters
+    if transform is not None and warm_runs and profile_warm_runs:
+        raise ValueError("staged candidates require ordinary warm executions")
+    def execute_case():
+        sql = transform(connection, case.sql, parameters) if transform is not None else case.sql
+        return _execute(connection, sql, parameters)
     config = catalogue_config_from_env()
     # One total deadline covers the normal run and all warm profiles.
     with measurement_progress(case, scale) as progress, deadline(connection, case.seconds):
@@ -306,7 +311,7 @@ def _measure(connection, case: QueryCase, scale: int | None, warm_runs: int, *, 
         progress.snapshot = snapshot
         progress.phase = "normal_execution"
         started = perf_counter()
-        cursor = _execute(connection, case.sql, parameters)
+        cursor = execute_case()
         progress.phase = "result_collection"
         rows = bounded_rows(cursor)
         normal_ms = (perf_counter() - started) * 1000
@@ -326,7 +331,7 @@ def _measure(connection, case: QueryCase, scale: int | None, warm_runs: int, *, 
             progress.phase = "warm_profile" if profile_warm_runs else "warm_execution"
             if not profile_warm_runs:
                 started = perf_counter()
-                repeated = bounded_rows(_execute(connection, case.sql, parameters))
+                repeated = bounded_rows(execute_case())
                 warm_ms.append((perf_counter() - started) * 1000)
                 if result_digest(repeated, ordered=case.ordered) != result_digest(rows, ordered=case.ordered):
                     raise ValueError("repeated execution changed results")
@@ -383,7 +388,7 @@ def measure_case(case: QueryCase, scale: int | None, *, warm_runs: int) -> Measu
         connection.close()
 
 
-def measure_pair(case: QueryCase, candidate: QueryCase, scale: int | None, *, warm_runs: int, candidate_first: bool = False, verify_scope=None, profile_warm_runs: bool = True):
+def measure_pair(case: QueryCase, candidate: QueryCase, scale: int | None, *, warm_runs: int, candidate_first: bool = False, verify_scope=None, profile_warm_runs: bool = True, candidate_transform=None):
     """Compare complete results inside one read transaction; never compare partial runs."""
     connection = _connection(case)
     try:
@@ -403,7 +408,8 @@ def measure_pair(case: QueryCase, candidate: QueryCase, scale: int | None, *, wa
         completed = {}
         for label, item in order:
             try:
-                completed[label] = asdict(_measure(connection, item, scale, warm_runs, profile_warm_runs=profile_warm_runs))
+                options = {"transform": candidate_transform} if label == "candidate" and candidate_transform is not None else {}
+                completed[label] = asdict(_measure(connection, item, scale, warm_runs, profile_warm_runs=profile_warm_runs, **options))
             except BenchmarkFailure as exc:
                 exc.variant = label
                 exc.completed_variants = completed
@@ -422,7 +428,7 @@ def environment_metadata() -> dict[str, Any]:
         root = Path(__file__).resolve().parents[5]
         revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True, stderr=subprocess.DEVNULL, timeout=5).strip()
         dirty = bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=root, text=True, stderr=subprocess.DEVNULL, timeout=5).strip())
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError, IndexError):
         revision, dirty = None, None
     return {
         "source_revision": revision,
@@ -524,7 +530,7 @@ def report_payload(
             print(
                 f"case={case.identifier} scale={scale} "
                 f"normal_ms={measurement.normal_ms:.1f} "
-                f"warm_median_ms={measurement.median_warm_ms:.1f} "
+                f"warm_median_ms={measurement.median_warm_ms} "
                 f"peak_bytes={max((v for v in measurement.peak_buffer_bytes if v is not None), default=None)} "
                 f"rows_scanned={max((v for v in measurement.cumulative_rows_scanned if v is not None), default=None)} "
                 f"result_rows={measurement.result_rows}",

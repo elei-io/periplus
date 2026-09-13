@@ -28,7 +28,7 @@ from periplus.query.validation import _bounded_query, _one_statement
 from periplus.operations.access.schemas import QueryLimits
 from periplus.operations.query_history.schemas import PreparationEvidence
 
-COMPILER_VERSION = "public-query-v12"
+COMPILER_VERSION = "public-query-v13"
 
 class QueryMode(StrEnum):
     STABLE = "stable"
@@ -188,6 +188,19 @@ class QueryService:
             execution_parameters = payload.parameters
             optimizations = []
             plan = "\n".join(str(row[-1]) for row in d.execute(plan_sql, execution_parameters).fetchall())
+            if self.mode == QueryMode.EXPERIMENTAL:
+                from periplus.query.text_index import OPTIMIZATION, exact_text_anchor, text_index_rewrite
+                if execute:
+                    rewrite = text_index_rewrite(d, statement, self.alias, execution_parameters)
+                    if rewrite is not None:
+                        # Original public SQL was validated and bound above. Only the
+                        # compiler may introduce this private, read-only scan.
+                        executable = f"SELECT * FROM ({rewrite.sql}) AS periplus_console_query LIMIT {limits.max_rows + 1}"
+                        plan = "\n".join(str(row[-1]) for row in d.execute("EXPLAIN " + rewrite.sql).fetchall())
+                        optimizations.append(OPTIMIZATION)
+                elif exact_text_anchor(statement, execution_parameters) is not None:
+                    diagnostics.append(Diagnostic(severity="info", code="text_index_lookup_deferred",
+                        message="Execution may look up bounded word-index candidates; preparation does not read index rows."))
             if len(plan.encode()) > 64_000:
                 plan = plan.encode()[:64_000].decode(errors="ignore")
                 diagnostics.append(Diagnostic(severity="warning", code="plan_truncated", message="The execution plan preview was truncated."))
