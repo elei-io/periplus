@@ -1,8 +1,8 @@
 import type { Dataset } from "../types/dataset"
 
 export const coverageSql = `WITH sites AS (
-  SELECT split_part(requested_url, '/', 3) AS site,
-         count(DISTINCT requested_url) AS pages,
+  SELECT split_part(page_url, '/', 3) AS site,
+         count(DISTINCT page_url) AS pages,
          count(*) AS captures,
          count(*) FILTER (WHERE captured_at IS NULL) AS undated_captures,
          min(captured_at) AS first_captured,
@@ -26,23 +26,23 @@ export const datasets: Dataset[] = [
     grain: "One row per matching title–price pair, with its product URL.",
     scope: "Books to Scrape is a practice website with fictional commercial data. This query uses the latest dated capture for up to 20 collected product URLs. Prices reflect those captures, not a live shop or a complete catalogue.",
     sql: `WITH pages AS (
-  SELECT requested_url, captured_at, content_id
+  SELECT page_url, captured_at, content_id
   FROM public_v1.capture
-  WHERE split_part(requested_url, '/', 3) = 'books.toscrape.com'
-    AND requested_url LIKE '%/catalogue/%/index.html'
-    AND requested_url NOT LIKE '%/category/%'
+  WHERE split_part(page_url, '/', 3) = 'books.toscrape.com'
+    AND page_url LIKE '%/catalogue/%/index.html'
+    AND page_url NOT LIKE '%/category/%'
     AND content_id IS NOT NULL
   QUALIFY row_number() OVER (
-    PARTITION BY requested_url
+    PARTITION BY page_url
     ORDER BY captured_at DESC NULLS LAST, capture_id DESC
   ) = 1
-  ORDER BY captured_at DESC NULLS LAST, requested_url
+  ORDER BY captured_at DESC NULLS LAST, page_url
   LIMIT 20
 )
 SELECT title.text_direct AS title,
        try_cast(regexp_extract(price.text_direct, '[0-9]+[.][0-9]+')
          AS DECIMAL(10, 2)) AS price_gbp,
-       pages.requested_url AS source_url,
+       pages.page_url AS source_url,
        pages.captured_at AS collected_at
 FROM pages
 JOIN public_v1.html_element title USING (content_id)
@@ -63,17 +63,17 @@ LIMIT 20;`,
     grain: "One row per h1 element in the selected pages; a page may have several.",
     scope: "Uses the latest dated capture for up to 20 distinct URLs. Returns up to 100 headings. Direct text excludes text inside child elements; pages without matching HTML or h1 elements are absent.",
     sql: `WITH pages AS (
-  SELECT requested_url, captured_at, content_id
+  SELECT page_url, captured_at, content_id
   FROM public_v1.capture
   WHERE content_id IS NOT NULL
   QUALIFY row_number() OVER (
-    PARTITION BY requested_url
+    PARTITION BY page_url
     ORDER BY captured_at DESC NULLS LAST, capture_id DESC
   ) = 1
-  ORDER BY captured_at DESC NULLS LAST, requested_url
+  ORDER BY captured_at DESC NULLS LAST, page_url
   LIMIT 20
 )
-SELECT h.text_direct AS heading, pages.requested_url AS source_url,
+SELECT h.text_direct AS heading, pages.page_url AS source_url,
        pages.captured_at AS collected_at
 FROM pages JOIN public_v1.html_element h USING (content_id)
 WHERE h.tag = 'h1' AND trim(h.text_direct) <> ''
@@ -88,21 +88,21 @@ LIMIT 100;`,
     grain: "One row per target URL, ranked by distinct referring page URLs.",
     scope: "Aggregates links from the latest dated capture of each collected URL. Includes internal and external destinations. A link does not mean its target was collected, and distinct links do not establish endorsement or importance across the whole web.",
     sql: `WITH latest AS (
-  SELECT capture_id, effective_url, captured_at
+  SELECT capture_id, page_url, captured_at
   FROM public_v1.capture
   QUALIFY row_number() OVER (
-    PARTITION BY requested_url
+    PARTITION BY page_url
     ORDER BY captured_at DESC NULLS LAST, capture_id DESC
   ) = 1
 )
-SELECT links.resolved_url,
-       count(DISTINCT latest.effective_url) AS referring_pages,
+SELECT links.target_url,
+       count(DISTINCT latest.page_url) AS referring_pages,
        count(*) AS link_occurrences,
        max(latest.captured_at) AS last_captured
 FROM public_v1.link links
 JOIN latest USING (capture_id)
-GROUP BY links.resolved_url
-ORDER BY referring_pages DESC, links.resolved_url
+GROUP BY links.target_url
+ORDER BY referring_pages DESC, links.target_url
 LIMIT 20;`,
   },
   {

@@ -36,7 +36,8 @@ class DuckDBLimitTests(unittest.TestCase):
         from tempfile import TemporaryDirectory
         from periplus.platform.catalogue.config import CatalogueConfig
         from periplus.platform.catalogue.connection import DuckLakeConnectionFactory
-        from periplus.query.service import QueryRequest, QueryService
+        from periplus.query.models import QueryRequest
+        from periplus.query.service import QueryService
         with TemporaryDirectory() as directory:
             root = Path(directory)
             config = CatalogueConfig("periplus", str(root / "metadata.duckdb"), str(root / "data"), "ducklake")

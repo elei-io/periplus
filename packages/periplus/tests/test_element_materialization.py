@@ -65,17 +65,17 @@ class ElementMaterializationTests(unittest.TestCase):
         self.assertEqual(self.elements(),[])
         commit_prepared_batch(self.catalogue,self.run,self.batch,prepared)
         initial=self.elements()
-        postings=self.rows("SELECT term,content_id,node_indexes FROM public_v1.html_term ORDER BY term,content_id")
+        postings=self.rows("SELECT term,content_sha256,node_indexes FROM material.html_terms ORDER BY term,content_sha256")
         self.assertEqual([row[0] for row in postings], ['monkey'])
         self.assertTrue(postings[0][2])
         self.assertEqual([r[3:] for r in initial if r[2]=='p'],[('monkey monkey','mon monkey')])
         self.assertTrue(self.prepare().already_applied)
         self.assertEqual(self.elements(),initial)
-        self.assertEqual(self.rows("SELECT term,content_id,node_indexes FROM public_v1.html_term ORDER BY term,content_id"),postings)
+        self.assertEqual(self.rows("SELECT term,content_sha256,node_indexes FROM material.html_terms ORDER BY term,content_sha256"),postings)
         self.batch=SimpleNamespace(id=uuid4(),snapshot=self.batch.snapshot,visit_ids=())
         commit_prepared_batch(self.catalogue,self.run,self.batch,self.prepare())
         self.assertEqual(self.elements(), initial)
-        self.assertEqual(self.rows("SELECT term,content_id,node_indexes FROM public_v1.html_term ORDER BY term,content_id"),postings)
+        self.assertEqual(self.rows("SELECT term,content_sha256,node_indexes FROM material.html_terms ORDER BY term,content_sha256"),postings)
 
     def test_preparation_failure_has_no_published_rows(self):
         with patch('periplus.materialization.batch._write_partitioned_parquet',side_effect=RuntimeError('encoding failed')):

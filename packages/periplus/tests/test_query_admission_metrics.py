@@ -3,7 +3,8 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from periplus.query.service import BusyError, QueryRequest, QueryService, _active_queries
+from periplus.query.models import QueryRequest
+from periplus.query.service import BusyError, QueryService, _active_queries
 
 
 class QueryAdmissionMetricTests(unittest.TestCase):

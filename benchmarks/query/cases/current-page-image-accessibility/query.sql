@@ -2,7 +2,7 @@ WITH ranked_content AS (
     SELECT
         trim(
             regexp_extract(
-                coalesce(effective_url, requested_url),
+                coalesce(effective_url, page_url),
                 '^https?://(\[[^]]+\]|[^/:]+)',
                 1
             ),

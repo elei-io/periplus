@@ -12,7 +12,8 @@ from fastapi.testclient import TestClient
 from periplus.platform.api_access import ApiAccessMiddleware
 from periplus.platform.catalogue.config import CatalogueConfig
 from periplus.query.admin import AdminSqlService, router
-from periplus.query.service import BusyError, QueryRequest
+from periplus.query.models import QueryRequest
+from periplus.query.service import BusyError
 
 
 class AdminSqlTests(unittest.TestCase):

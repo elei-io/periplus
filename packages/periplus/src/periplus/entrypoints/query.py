@@ -10,7 +10,8 @@ from starlette.concurrency import run_in_threadpool
 
 from periplus.platform.catalogue.config import catalogue_config_from_env
 from periplus.query.server_http import QueryAccessMiddleware, router
-from periplus.query.service import QueryMode, QueryService
+from periplus.query.models import QueryMode
+from periplus.query.service import QueryService
 from periplus.query.limits import QueryLimitsClient
 
 

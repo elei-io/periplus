@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from periplus.query.history import HistoryClient, VERSION, shape, track
-from periplus.query.service import QueryRequest
+from periplus.query.models import QueryRequest
 from periplus.query.server_http import _run
 from periplus.operations.query_history.schemas import Execution
 from periplus.operations.query_history.models import QueryExecution

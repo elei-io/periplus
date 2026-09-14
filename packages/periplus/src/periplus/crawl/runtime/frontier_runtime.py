@@ -14,7 +14,7 @@ from periplus.crawl.acquisition.errors import PlaywrightRuntimeLost
 
 from nats.errors import TimeoutError as NatsTimeoutError
 
-from periplus.query.service import QueryRequest
+from periplus.query.models import QueryRequest
 
 from periplus.crawl.control.collections.discovery import DiscoveryState, DiscoveryUnavailable, SourceDiscovery
 from periplus.crawl.control.collections.schemas import CollectionExecutionSpec, CollectionSpec

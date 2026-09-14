@@ -6,7 +6,7 @@ from unittest.mock import patch
 import httpx
 
 from periplus.crawl.runtime.seed_query import SeedQueryClient, SeedQueryUnavailable
-from periplus.query.service import QueryRequest
+from periplus.query.models import QueryRequest
 
 
 def result(**changes):

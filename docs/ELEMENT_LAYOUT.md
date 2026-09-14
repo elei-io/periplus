@@ -2,17 +2,18 @@
 
 `material.html_elements` stores canonical element text. Links, JSON-LD and readiness
 remain; parser nodes are transient preparation data only. `material.html_terms`
-adds immutable term/content/node-list postings, exposed through `public_v1.html_term`.
+adds private immutable term/content/node-list postings used by `search(terms)`
+in both public schemas. No term relation is exposed.
 ICU segments the parsed page once; element ranges map complete words without a
 word/element interval join. No shared vocabulary allocator or DOM-specific query
-rewrite is used. Public catalogue version is 2.1.0; no compatibility aliases are installed.
+rewrite is used for tokenization. Public catalogue version is 3.0.0; no compatibility aliases are installed.
 
 Full text is exact concatenation of descendant parsed text values. It includes
 explicit template fragments, scripts, styles and titles, preserves whitespace,
 and inserts no separators. Immediate text is stored separately. Local names keep
 foreign-content case. Existing element positions retain gaps, preserving link and
 JSON-LD references. Parents refer to the nearest element; root depth is zero.
-Internal text offsets preserve nested-list/table exclusion in structured views.
+Internal text offsets support exact-text index candidate verification.
 
 Eight content-hash buckets and sorting by content_sha256/node_index are declared
 through the materialization registry. LakeDucktor owns continuous physical merging.

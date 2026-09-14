@@ -1,11 +1,11 @@
 """Process-owned, bounded SQL preparation and execution over a read-only lake."""
+
 from __future__ import annotations
 
 import base64
 import hashlib
 from datetime import date, datetime, time as datetime_time
 from decimal import Decimal
-from enum import StrEnum
 import json
 import logging
 import math
@@ -13,67 +13,34 @@ from pathlib import Path
 import threading
 import time
 from uuid import UUID, uuid4
-from typing import Literal
 from collections.abc import Callable
 from periplus.platform.catalogue.public import PUBLIC_SCHEMA, EXPERIMENTAL_SCHEMA
 
 import duckdb
 from prometheus_client import Gauge
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
-from sqlglot import exp
 
 from periplus.platform.catalogue.config import CatalogueConfig
-from periplus.platform.catalogue.connection import DuckLakeConnectionFactory, _identifier
-from periplus.query.validation import _bounded_query, _one_statement
+from periplus.platform.catalogue.connection import (
+    DuckLakeConnectionFactory,
+    _identifier,
+)
+from periplus.query.compiler import compile_query
+from periplus.query.optimizations import passes_for_mode
+from periplus.query.optimizations.base import OptimizationPass
+from periplus.query.models import (
+    COMPILER_VERSION,
+    QueryMode,
+    QueryRequest,
+    PreparedQuery,
+    QueryResult,
+)
 from periplus.operations.access.schemas import QueryLimits
 from periplus.operations.query_history.schemas import PreparationEvidence
 
-COMPILER_VERSION = "public-query-v14"
-
-class QueryMode(StrEnum):
-    STABLE = "stable"
-    EXPERIMENTAL = "experimental"
-
-
 logger = logging.getLogger(__name__)
-_active_queries = Gauge("periplus_query_active_operations", "Occupied query admission slots.")
-
-
-class QueryRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    sql: str = Field(min_length=1, max_length=1_000_000)
-    schema_version: Literal["public_v1", "experimental"] | None = None
-    parameters: list[JsonValue] = Field(default_factory=list, max_length=100)
-
-
-class Diagnostic(BaseModel):
-    severity: str
-    code: str
-    message: str
-
-
-class PreparedQuery(BaseModel):
-    query_mode: QueryMode = QueryMode.STABLE
-    compiler_version: str = COMPILER_VERSION + ":stable"
-    optimizations: list[str] = Field(default_factory=list)
-    schema_version: Literal["public_v1", "experimental"] = PUBLIC_SCHEMA
-    query_id: str
-    sql: str
-    parameters: list[JsonValue]
-    diagnostics: list[Diagnostic]
-    plan: str
-
-
-class QueryResult(PreparedQuery):
-    columns: list[str]
-    types: list[str]
-    rows: list[list[JsonValue]]
-    truncated: bool
-    elapsed_ms: float
-    source_snapshot: int = Field(ge=0)
-    row_count: int = Field(ge=0)
-    result_bytes: int = Field(ge=0)
-    truncation_reason: Literal["max_rows", "max_result_bytes"] | None = None
+_active_queries = Gauge(
+    "periplus_query_active_operations", "Occupied query admission slots."
+)
 
 
 class BusyError(Exception):
@@ -87,9 +54,21 @@ class ResultLimitError(Exception):
 class QueryService:
     """One connection and admission slot; no unbounded request queue."""
 
-    def __init__(self, config: CatalogueConfig, *, deadline: float | None = None, mode: QueryMode = QueryMode.STABLE):
+    def __init__(
+        self,
+        config: CatalogueConfig,
+        *,
+        deadline: float | None = None,
+        mode: QueryMode = QueryMode.STABLE,
+        passes: tuple[OptimizationPass, ...] | None = None,
+    ):
         self.mode = QueryMode(mode)
-        self.schema = EXPERIMENTAL_SCHEMA if self.mode == QueryMode.EXPERIMENTAL else PUBLIC_SCHEMA
+        self.passes = passes_for_mode(self.mode) if passes is None else passes
+        self.schema = (
+            EXPERIMENTAL_SCHEMA
+            if self.mode == QueryMode.EXPERIMENTAL
+            else PUBLIC_SCHEMA
+        )
         self.compiler_version = f"{COMPILER_VERSION}:{self.mode.value}"
         self.alias = config.alias
         self.deadline = deadline
@@ -99,15 +78,24 @@ class QueryService:
 
     def _connect(self):
         config = self._config
-        d = DuckLakeConnectionFactory(config, duckdb_config={
-            "threads": "2", "memory_limit": "512MB", "max_temp_directory_size": "256MB",
-        }).connect(read_only=True)
+        d = DuckLakeConnectionFactory(
+            config,
+            duckdb_config={
+                "threads": "2",
+                "memory_limit": "512MB",
+                "max_temp_directory_size": "256MB",
+            },
+        ).connect(read_only=True)
         try:
             d.execute(f"USE {_identifier(config.alias)}.{self.schema}")
             # Extensions and credentials are installed before locking the session.
             # Only lake data paths may perform filesystem IO after this point.
-            root = config.data_path if "://" in config.data_path else str(Path(config.data_path).resolve())
-            d.execute("SET allowed_directories = ?", [[root.rstrip('/') + '/']])
+            root = (
+                config.data_path
+                if "://" in config.data_path
+                else str(Path(config.data_path).resolve())
+            )
+            d.execute("SET allowed_directories = ?", [[root.rstrip("/") + "/"]])
             d.execute("SET enable_external_access=false")
             d.execute("SET autoinstall_known_extensions=false")
             d.execute("SET autoload_known_extensions=false")
@@ -127,105 +115,160 @@ class QueryService:
             if self.connection is not None:
                 self.connection.close()
 
-    def prepare(self, payload: QueryRequest, *, limits: QueryLimits = QueryLimits(), evidence: PreparationEvidence | None = None) -> PreparedQuery:
+    def prepare(
+        self,
+        payload: QueryRequest,
+        *,
+        limits: QueryLimits = QueryLimits(),
+        evidence: PreparationEvidence | None = None,
+    ) -> PreparedQuery:
         return self._run(payload, execute=False, limits=limits, evidence=evidence)
 
-    def execute(self, payload: QueryRequest, *, limits: QueryLimits = QueryLimits(), evidence: PreparationEvidence | None = None, emit: Callable[[dict], None] | None = None, cancelled: threading.Event | None = None) -> QueryResult:
-        return self._run(payload, execute=True, limits=limits, evidence=evidence, emit=emit, cancelled=cancelled)
+    def execute(
+        self,
+        payload: QueryRequest,
+        *,
+        limits: QueryLimits = QueryLimits(),
+        evidence: PreparationEvidence | None = None,
+        emit: Callable[[dict], None] | None = None,
+        cancelled: threading.Event | None = None,
+    ) -> QueryResult:
+        return self._run(
+            payload,
+            execute=True,
+            limits=limits,
+            evidence=evidence,
+            emit=emit,
+            cancelled=cancelled,
+        )
 
-    def _run(self, payload: QueryRequest, *, execute: bool, limits: QueryLimits, evidence: PreparationEvidence | None, emit=None, cancelled=None):
+    def _run(
+        self,
+        payload: QueryRequest,
+        *,
+        execute: bool,
+        limits: QueryLimits,
+        evidence: PreparationEvidence | None,
+        emit=None,
+        cancelled=None,
+    ):
         if not self._lock.acquire(blocking=False):
             raise BusyError("Query server is busy. Try again shortly.")
         _active_queries.inc()
         try:
             if self.connection is None:
                 self.connection = self._connect()
-            return self._run_admitted(payload, execute=execute, limits=limits, evidence=evidence, emit=emit, cancelled=cancelled)
+            return self._run_admitted(
+                payload,
+                execute=execute,
+                limits=limits,
+                evidence=evidence,
+                emit=emit,
+                cancelled=cancelled,
+            )
         finally:
             _active_queries.dec()
             self._lock.release()
 
-    def _run_admitted(self, payload: QueryRequest, *, execute: bool, limits: QueryLimits, evidence: PreparationEvidence | None, emit=None, cancelled=None):
+    def _run_admitted(
+        self,
+        payload: QueryRequest,
+        *,
+        execute: bool,
+        limits: QueryLimits,
+        evidence: PreparationEvidence | None,
+        emit=None,
+        cancelled=None,
+    ):
         started = time.monotonic()
         query_id = str(uuid4())
         d = self.connection
         invalidated = False
         expired = threading.Event()
+
         def interrupt():
             expired.set()
             d.interrupt()
-        duration = limits.max_duration_seconds if self.deadline is None else min(self.deadline, limits.max_duration_seconds)
+
+        duration = (
+            limits.max_duration_seconds
+            if self.deadline is None
+            else min(self.deadline, limits.max_duration_seconds)
+        )
         if evidence is not None:
             evidence.duckdb_version = duckdb.__version__
             evidence.compiler_version = self.compiler_version
-            evidence.effective_limits = limits.model_dump() | {"max_duration_seconds": duration}
+            evidence.effective_limits = limits.model_dump() | {
+                "max_duration_seconds": duration
+            }
         timer = threading.Timer(duration, interrupt)
         timer.start()
         from periplus.platform.telemetry import event
-        event("query_submitted", operation_id=query_id, operation="exec" if execute else "prep")
+
+        event(
+            "query_submitted",
+            operation_id=query_id,
+            operation="exec" if execute else "prep",
+        )
         status = "failed"
         rows = []
         truncated = False
         row_count = 0
         try:
-            if payload.schema_version is not None and payload.schema_version != self.schema:
-                raise ValueError(f"This endpoint serves {self.schema}; use its matching schema or omit schema_version.")
-            executable = _bounded_query(payload.sql, max_rows=limits.max_rows, schema=self.schema)
-            statement = _one_statement(payload.sql)
-            diagnostics = []
-            if any(join.args.get("kind") == "CROSS" for join in statement.find_all(exp.Join)):
-                diagnostics.append(Diagnostic(severity="warning", code="cartesian_product", message="A Cartesian product can require substantial work."))
-            if evidence is not None:
-                evidence.diagnostics = [item.model_dump() for item in diagnostics]
+            if (
+                payload.schema_version is not None
+                and payload.schema_version != self.schema
+            ):
+                raise ValueError(
+                    f"This endpoint serves {self.schema}; use its matching schema or omit schema_version."
+                )
             d.execute("BEGIN TRANSACTION")
-            snapshot = int(d.execute("SELECT id FROM ducklake_current_snapshot(?)", [self.alias]).fetchone()[0])
-            # Plain EXPLAIN binds without running EXPLAIN ANALYZE's child.
-            if payload.sql.lstrip().upper().startswith("EXPLAIN"):
-                import re
-                explained = re.sub(r"^\s*EXPLAIN\s+(?:ANALYZE\s+)?", "", payload.sql, flags=re.IGNORECASE)
-                plan_sql = "EXPLAIN " + explained
-            elif isinstance(statement, exp.Show):
-                plan_sql = payload.sql
-            else:
-                plan_sql = "EXPLAIN " + payload.sql
+            snapshot = int(
+                d.execute(
+                    "SELECT id FROM ducklake_current_snapshot(?)", [self.alias]
+                ).fetchone()[0]
+            )
+            compiled = compile_query(
+                d,
+                payload,
+                schema=self.schema,
+                catalogue_alias=self.alias,
+                execute=execute,
+                max_rows=limits.max_rows,
+                passes=self.passes,
+            )
+            executable = compiled.executable_sql
             execution_parameters = payload.parameters
-            optimizations = []
-            plan = "\n".join(str(row[-1]) for row in d.execute(plan_sql, execution_parameters).fetchall())
-            if self.mode == QueryMode.EXPERIMENTAL:
-                from periplus.query.text_index import OPTIMIZATION, exact_text_anchor, text_index_rewrite
-                if execute:
-                    rewrite = text_index_rewrite(d, statement, self.alias, execution_parameters)
-                    if rewrite is not None:
-                        # Original public SQL was validated and bound above. Only the
-                        # compiler may introduce this private, read-only scan.
-                        executable = f"SELECT * FROM ({rewrite.sql}) AS periplus_console_query LIMIT {limits.max_rows + 1}"
-                        plan = "\n".join(str(row[-1]) for row in d.execute("EXPLAIN " + rewrite.sql).fetchall())
-                        optimizations.append(OPTIMIZATION)
-                elif exact_text_anchor(statement, execution_parameters) is not None:
-                    diagnostics.append(Diagnostic(severity="info", code="text_index_lookup_deferred",
-                        message="Execution may look up bounded word-index candidates; preparation does not read index rows."))
-            if execute and self.mode == QueryMode.EXPERIMENTAL:
-                from periplus.query.heading_scope import OPTIMIZATION, heading_scope
-                scope = heading_scope(statement, payload.parameters)
-                if scope is not None:
-                    scoped_sql = scope.resolve(d)
-                    if expired.is_set():
-                        raise TimeoutError("Query time limit exceeded.")
-                    if scoped_sql is not None:
-                        executable = _bounded_query(scoped_sql, max_rows=limits.max_rows, schema=self.schema)
-                        plan = "\n".join(str(row[-1]) for row in d.execute("EXPLAIN " + scoped_sql).fetchall())
-                        optimizations.append(OPTIMIZATION)
-            if len(plan.encode()) > 64_000:
-                plan = plan.encode()[:64_000].decode(errors="ignore")
-                diagnostics.append(Diagnostic(severity="warning", code="plan_truncated", message="The execution plan preview was truncated."))
-            if evidence is not None and not isinstance(statement, exp.Show):
-                evidence.plan = plan
-                evidence.plan_truncated = any(item.code == "plan_truncated" for item in diagnostics)
-                # Exact preview identity, not an operator-shape or regression claim.
-                evidence.plan_fingerprint = None if evidence.plan_truncated else hashlib.sha256(
-                    (self.compiler_version + "\n" + duckdb.__version__ + "\n" + plan).encode()).hexdigest()
-                evidence.diagnostics = [item.model_dump() for item in diagnostics]
-            prepared = PreparedQuery(schema_version=self.schema, optimizations=optimizations, query_mode=self.mode, compiler_version=self.compiler_version, query_id=query_id, sql=payload.sql, parameters=payload.parameters, diagnostics=diagnostics, plan=plan)
+            prepared = PreparedQuery(
+                schema_version=self.schema,
+                optimizations=compiled.optimizations,
+                query_mode=self.mode,
+                compiler_version=self.compiler_version,
+                query_id=query_id,
+                sql=payload.sql,
+                parameters=payload.parameters,
+                diagnostics=compiled.diagnostics,
+                plan=compiled.plan,
+            )
+            if evidence is not None and compiled.record_plan:
+                evidence.plan = compiled.plan
+                evidence.plan_truncated = compiled.plan_truncated
+                evidence.plan_fingerprint = (
+                    None
+                    if compiled.plan_truncated
+                    else hashlib.sha256(
+                        (
+                            self.compiler_version
+                            + "\n"
+                            + duckdb.__version__
+                            + "\n"
+                            + compiled.plan
+                        ).encode()
+                    ).hexdigest()
+                )
+                evidence.diagnostics = [
+                    item.model_dump() for item in compiled.diagnostics
+                ]
             if expired.is_set():
                 raise TimeoutError("Query time limit exceeded.")
             if not execute:
@@ -235,16 +278,30 @@ class QueryService:
             columns = [str(col[0]) for col in cursor.description]
             types = [str(col[1]) for col in cursor.description]
             rows = []
-            size = len(prepared.model_dump_json().encode()) + len(json.dumps([columns, types]).encode()) + 1024
+            size = (
+                len(prepared.model_dump_json().encode())
+                + len(json.dumps([columns, types]).encode())
+                + 1024
+            )
             if size > limits.max_result_bytes:
-                raise ResultLimitError(f"Query metadata exceeds max_result_bytes ({limits.max_result_bytes} bytes).")
+                raise ResultLimitError(
+                    f"Query metadata exceeds max_result_bytes ({limits.max_result_bytes} bytes)."
+                )
             truncated = False
             reason = None
             batch_bytes = 0
             row_payload_bytes = 2
             if emit:
-                emit(dict(type="metadata", **prepared.model_dump(mode="json"), columns=columns, types=types,
-                          source_snapshot=snapshot, limits=limits.model_dump()))
+                emit(
+                    dict(
+                        type="metadata",
+                        **prepared.model_dump(mode="json"),
+                        columns=columns,
+                        types=types,
+                        source_snapshot=snapshot,
+                        limits=limits.model_dump(),
+                    )
+                )
             while True:
                 if cancelled is not None and cancelled.is_set():
                     raise TimeoutError("Query stream was cancelled.")
@@ -255,12 +312,23 @@ class QueryService:
                     break
                 converted = [_json_value(value) for value in row]
                 row_bytes = len(json.dumps(converted, ensure_ascii=False).encode()) + 1
-                if row_count == limits.max_rows or size + row_bytes > limits.max_result_bytes:
+                if (
+                    row_count == limits.max_rows
+                    or size + row_bytes > limits.max_result_bytes
+                ):
                     truncated = True
-                    reason = "max_rows" if row_count == limits.max_rows else "max_result_bytes"
+                    reason = (
+                        "max_rows"
+                        if row_count == limits.max_rows
+                        else "max_result_bytes"
+                    )
                     break
                 size += row_bytes
-                row_payload_bytes += len(json.dumps(converted, ensure_ascii=False, separators=(",", ":")).encode()) + (1 if row_count else 0)
+                row_payload_bytes += len(
+                    json.dumps(
+                        converted, ensure_ascii=False, separators=(",", ":")
+                    ).encode()
+                ) + (1 if row_count else 0)
                 row_count += 1
                 rows.append(converted)
                 batch_bytes += row_bytes
@@ -274,10 +342,18 @@ class QueryService:
                 emit(dict(type="rows", rows=rows))
                 rows = []
             status = "completed"
-            return QueryResult(**prepared.model_dump(), columns=columns, types=types, rows=rows,
-                               row_count=row_count, result_bytes=row_payload_bytes, truncated=truncated,
-                               truncation_reason=reason, source_snapshot=snapshot,
-                               elapsed_ms=(time.monotonic()-started)*1000)
+            return QueryResult(
+                **prepared.model_dump(),
+                columns=columns,
+                types=types,
+                rows=rows,
+                row_count=row_count,
+                result_bytes=row_payload_bytes,
+                truncated=truncated,
+                truncation_reason=reason,
+                source_snapshot=snapshot,
+                elapsed_ms=(time.monotonic() - started) * 1000,
+            )
 
         except (duckdb.FatalException, duckdb.InternalException):
             invalidated = True
@@ -304,11 +380,22 @@ class QueryService:
                     except duckdb.Error:
                         pass
                     logger.warning("query_connection_discarded query_id=%s", query_id)
-                event("query_finished", operation_id=query_id, outcome=status, truncated=truncated, rows=row_count, elapsed_ms=(time.monotonic()-started)*1000)
+                event(
+                    "query_finished",
+                    operation_id=query_id,
+                    outcome=status,
+                    truncated=truncated,
+                    rows=row_count,
+                    elapsed_ms=(time.monotonic() - started) * 1000,
+                )
 
 
 def _json_value(value):
-    if isinstance(value, int) and not isinstance(value, bool) and abs(value) > 2**53-1:
+    if (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and abs(value) > 2**53 - 1
+    ):
         return str(value)
     if isinstance(value, float) and not math.isfinite(value):
         return str(value)

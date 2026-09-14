@@ -223,7 +223,7 @@ commands = new CommandRegistry([
     name: "describe",
     summary: "Describe a catalogue relation or macro.",
     usage: ".describe <object>",
-    examples: [".describe public_v1.capture", ".describe public_v1.html_node"],
+    examples: [".describe public_v1.capture", ".describe public_v1.html_element"],
     async execute(args, context) {
       if (args.length !== 1) throw usageError(".describe <object>")
       const metadata = await context.metadata()

@@ -15,7 +15,7 @@ from periplus.operations.api.access import router as access_router
 from periplus.platform.api_access import ApiAccessMiddleware
 from periplus.query.limits import QueryLimitsClient, QueryLimitsUnavailable
 from periplus.query.server_http import router
-from periplus.query.service import PreparedQuery
+from periplus.query.models import PreparedQuery
 
 
 class LimitsTests(unittest.IsolatedAsyncioTestCase):

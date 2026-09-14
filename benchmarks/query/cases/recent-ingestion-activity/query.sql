@@ -1,6 +1,6 @@
 SELECT
     capture_id,
-    requested_url,
+    page_url,
     effective_url,
     http_status_code,
     captured_at
