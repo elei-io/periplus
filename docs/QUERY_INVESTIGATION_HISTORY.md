@@ -418,4 +418,3 @@ implementation below follows the subsequent scope decision; materializations rem
 Previous postings, vocabulary, prose and content-scoping investigations are historical
 measurements. Their implementations are removed by the canonical element release.
 See the individual reports under query-investigations for original evidence.
-
