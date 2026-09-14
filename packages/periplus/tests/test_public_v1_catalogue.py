@@ -59,7 +59,7 @@ class PublicV1CatalogueTests(unittest.TestCase):
         ).fetchall(), [(capture,), (pending,)])
 
     def test_default_version_and_names(self):
-        self.assertEqual(QueryRequest(sql='SELECT * FROM capture').schema_version, 'public_v1')
+        self.assertIsNone(QueryRequest(sql='SELECT * FROM capture').schema_version)
         for sql in ('SELECT * FROM capture', 'SELECT * FROM public_v1.html_element',
                     'WITH chosen AS (SELECT * FROM capture) SELECT * FROM chosen',
                     "SELECT text FROM html_element"):

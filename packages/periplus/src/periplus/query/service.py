@@ -15,7 +15,7 @@ import time
 from uuid import UUID, uuid4
 from typing import Literal
 from collections.abc import Callable
-from periplus.platform.catalogue.public import PUBLIC_SCHEMA
+from periplus.platform.catalogue.public import PUBLIC_SCHEMA, EXPERIMENTAL_SCHEMA
 
 import duckdb
 from prometheus_client import Gauge
@@ -28,7 +28,7 @@ from periplus.query.validation import _bounded_query, _one_statement
 from periplus.operations.access.schemas import QueryLimits
 from periplus.operations.query_history.schemas import PreparationEvidence
 
-COMPILER_VERSION = "public-query-v13"
+COMPILER_VERSION = "public-query-v14"
 
 class QueryMode(StrEnum):
     STABLE = "stable"
@@ -42,7 +42,7 @@ _active_queries = Gauge("periplus_query_active_operations", "Occupied query admi
 class QueryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     sql: str = Field(min_length=1, max_length=1_000_000)
-    schema_version: Literal["public_v1"] = PUBLIC_SCHEMA
+    schema_version: Literal["public_v1", "experimental"] | None = None
     parameters: list[JsonValue] = Field(default_factory=list, max_length=100)
 
 
@@ -56,7 +56,7 @@ class PreparedQuery(BaseModel):
     query_mode: QueryMode = QueryMode.STABLE
     compiler_version: str = COMPILER_VERSION + ":stable"
     optimizations: list[str] = Field(default_factory=list)
-    schema_version: Literal["public_v1"] = PUBLIC_SCHEMA
+    schema_version: Literal["public_v1", "experimental"] = PUBLIC_SCHEMA
     query_id: str
     sql: str
     parameters: list[JsonValue]
@@ -89,6 +89,7 @@ class QueryService:
 
     def __init__(self, config: CatalogueConfig, *, deadline: float | None = None, mode: QueryMode = QueryMode.STABLE):
         self.mode = QueryMode(mode)
+        self.schema = EXPERIMENTAL_SCHEMA if self.mode == QueryMode.EXPERIMENTAL else PUBLIC_SCHEMA
         self.compiler_version = f"{COMPILER_VERSION}:{self.mode.value}"
         self.alias = config.alias
         self.deadline = deadline
@@ -102,7 +103,7 @@ class QueryService:
             "threads": "2", "memory_limit": "512MB", "max_temp_directory_size": "256MB",
         }).connect(read_only=True)
         try:
-            d.execute(f"USE {_identifier(config.alias)}.{PUBLIC_SCHEMA}")
+            d.execute(f"USE {_identifier(config.alias)}.{self.schema}")
             # Extensions and credentials are installed before locking the session.
             # Only lake data paths may perform filesystem IO after this point.
             root = config.data_path if "://" in config.data_path else str(Path(config.data_path).resolve())
@@ -167,7 +168,9 @@ class QueryService:
         truncated = False
         row_count = 0
         try:
-            executable = _bounded_query(payload.sql, max_rows=limits.max_rows)
+            if payload.schema_version is not None and payload.schema_version != self.schema:
+                raise ValueError(f"This endpoint serves {self.schema}; use its matching schema or omit schema_version.")
+            executable = _bounded_query(payload.sql, max_rows=limits.max_rows, schema=self.schema)
             statement = _one_statement(payload.sql)
             diagnostics = []
             if any(join.args.get("kind") == "CROSS" for join in statement.find_all(exp.Join)):
@@ -211,7 +214,7 @@ class QueryService:
                 evidence.plan_fingerprint = None if evidence.plan_truncated else hashlib.sha256(
                     (self.compiler_version + "\n" + duckdb.__version__ + "\n" + plan).encode()).hexdigest()
                 evidence.diagnostics = [item.model_dump() for item in diagnostics]
-            prepared = PreparedQuery(optimizations=optimizations, query_mode=self.mode, compiler_version=self.compiler_version, query_id=query_id, sql=payload.sql, parameters=payload.parameters, diagnostics=diagnostics, plan=plan)
+            prepared = PreparedQuery(schema_version=self.schema, optimizations=optimizations, query_mode=self.mode, compiler_version=self.compiler_version, query_id=query_id, sql=payload.sql, parameters=payload.parameters, diagnostics=diagnostics, plan=plan)
             if expired.is_set():
                 raise TimeoutError("Query time limit exceeded.")
             if not execute:

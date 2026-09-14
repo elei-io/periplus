@@ -77,10 +77,11 @@ when their target passes the same public-namespace validation, plus `SHOW TABLES
 schema. The shared shell derives `.tables`, `.describe`, and context-aware completion through that
 same query operation; `.completion reload` refreshes the derived information explicitly.
 
-The query API defaults `schema_version` to `public_v1`, rejects unsupported versions,
-and selects that namespace before locking the connection. Responses report the
+Stable defaults to `public_v1`; Experimental defaults to `experimental`.
+An omitted or null `schema_version` selects the endpoint namespace; an explicit
+value must match it. Each connection selects its namespace before locking configuration. Responses report the
 resolved version; saved queries should preserve it separately from `source_snapshot`.
-The public contract has one versioned namespace, with no old-schema aliases.
+Stable has one released versioned namespace. Experimental has independent definitions and no cross-schema aliases.
 
 ### Query server boundary
 
@@ -153,10 +154,10 @@ increase the server's limits. Administrative SQL retains its separate fixed resu
 ### Page discovery and structured text
 
 Choose captures, then query `html_element.text` and `text_direct` using ordinary
-SQL. Full descendant text is materialized. `html_search(terms)` returns
+SQL. Full descendant text is materialized. `search(terms)` returns
 `content_id`, sorted distinct `node_indexes`, and a DOUBLE score counting distinct
 requested word keys found per content. Pass up to 32 existing ICU case-folded,
-NFC-normalized keys, for example `html_search(['robot', 'science'])`. It matches
+NFC-normalized keys, for example `search(['robot', 'science'])`. It matches
 any requested word; node indexes combine the containing elements. Duplicate query
 keys do not increase score. This is not a phrase parser or BM25 ranking.
 
@@ -215,7 +216,7 @@ installs the macros alongside views; `GET /query/helpers` derives documentation 
 manifest. Next.js proxies discovery and loads it into the agent context for each request.
 There is no helper-specific Python execution or prep-time rewrite path.
 
-The helper registry declares `html_search(terms)` and derives its signature, score
+The helper registry declares `search(terms)` and derives its signature, score
 semantics, examples and input limit from the same catalogue object.
 
 ### Query failure categories
@@ -734,7 +735,25 @@ console links preserve the selected mode with `mode=experimental`. Stable uses
 `/api/query/experimental/exec`, `/api/query/experimental/prep` and
 `/api/query/experimental/helpers`. The SQL assistant validates against the selected mode.
 
-Stable and experimental share compiler `public-query-v13`, with mode suffixes.
+Stable serves only `public_v1.*`; Experimental serves only `experimental.*`.
+Qualified cross-schema reads and inspection are rejected. Unqualified `search(['robot'])`
+resolves in the endpoint's namespace. Requests cannot change endpoints through `schema_version`.
+Helper discovery includes `schema_version` and registry-derived `relations`; the explorer,
+editor completion and SQL assistant use that endpoint's definitions.
+
+Experimental declarations live in `experimental_registry.py`, `experimental_helpers.py`
+and `sql/experimental/`. They start with the same view shapes as public_v1 but are
+independent SQL over the existing physical evidence, not aliases of stable views.
+Change these declarations to experiment without editing `public_registry.py` or
+`sql/public_v1/`. Install both catalogues transactionally through the existing installer;
+ordinary processes do not create or repair schemas. View-only changes need no corpus rebuild.
+
+Promotion is a reviewed release: copy the selected experimental contract into a new
+`sql/public_vN/` and its versioned manifest, update the stable schema selection and client
+contract, then install and deploy together. Do not point a released version at mutable
+experimental views. Physical projection changes still follow the full rebuild lifecycle.
+
+Stable and experimental share compiler `public-query-v14`, with mode suffixes.
 Stable runs ordinary validated SQL. Experimental can apply
 `element_text_index_candidates` to literal exact-text predicates on one direct
 `html_element` relation. A complete interior ASCII word surrounded by spaces is a

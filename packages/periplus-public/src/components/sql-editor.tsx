@@ -5,21 +5,10 @@ import { sql, StandardSQL } from "@codemirror/lang-sql"
 import { EditorView } from "@codemirror/view"
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language"
 import { tags } from "@lezer/highlight"
-import { memo } from "react"
-import { schemaReference } from "@/lib/schema-reference"
+import { memo, useMemo } from "react"
+import type { QueryHelpers } from "@/types/query-helpers"
 
 const extensions = [
-  sql({
-    dialect: StandardSQL,
-    upperCaseKeywords: true,
-    defaultSchema: "public_v1",
-    schema: {
-      public_v1: Object.fromEntries(schemaReference.map(relation => [
-        relation.name.split(".")[1],
-        relation.columns.map(column => column[0]),
-      ])),
-    },
-  }),
   EditorView.lineWrapping,
   EditorView.theme({
     "&": { backgroundColor: "var(--editor-background)", color: "#e3eee7", fontSize: "14px" },
@@ -45,11 +34,15 @@ const extensions = [
   ])),
 ]
 
-const editableExtensions = [...extensions, EditorView.contentAttributes.of({ "aria-label": "SQL query" })]
-const readonlyExtensions = [...extensions, EditorView.contentAttributes.of({ "aria-label": "SQL statement", tabindex: "0" })]
+const emptyRelations: QueryHelpers["relations"] = []
 const editableSetup = { foldGutter: false, highlightActiveLine: true, autocompletion: true, bracketMatching: true }
 const readonlySetup = { ...editableSetup, highlightActiveLine: false, autocompletion: false }
 
-export const SqlEditor = memo(function SqlEditor({ value, onChange, onSelectionChange, readOnly = false }: { value: string; onChange?: (value: string) => void; onSelectionChange?: (value: string) => void; readOnly?: boolean }) {
-  return <CodeMirror value={value} onChange={onChange} onUpdate={update => { if (update.selectionSet || update.docChanged) { const { from, to } = update.state.selection.main; onSelectionChange?.(update.state.sliceDoc(from, to)) } }} extensions={readOnly ? readonlyExtensions : editableExtensions} readOnly={readOnly} editable={!readOnly} height={readOnly ? "auto" : "340px"} maxHeight={readOnly ? "320px" : undefined} theme="none" indentWithTab={false} basicSetup={readOnly ? readonlySetup : editableSetup} />
+export const SqlEditor = memo(function SqlEditor({ value, onChange, onSelectionChange, readOnly = false, namespace = "public_v1", relations = emptyRelations }: { value: string; onChange?: (value: string) => void; onSelectionChange?: (value: string) => void; readOnly?: boolean; namespace?: string; relations?: QueryHelpers["relations"] }) {
+  const editorExtensions = useMemo(() => [
+    sql({ dialect: StandardSQL, upperCaseKeywords: true, defaultSchema: namespace,
+      schema: { [namespace]: Object.fromEntries(relations.map(relation => [relation.name.split(".")[1], relation.columns.map(column => column.name)])) } }),
+    ...extensions, EditorView.contentAttributes.of(readOnly ? { "aria-label": "SQL statement", tabindex: "0" } : { "aria-label": "SQL query" }),
+  ], [namespace, relations, readOnly])
+  return <CodeMirror value={value} onChange={onChange} onUpdate={update => { if (update.selectionSet || update.docChanged) { const { from, to } = update.state.selection.main; onSelectionChange?.(update.state.sliceDoc(from, to)) } }} extensions={editorExtensions} readOnly={readOnly} editable={!readOnly} height={readOnly ? "auto" : "340px"} maxHeight={readOnly ? "320px" : undefined} theme="none" indentWithTab={false} basicSetup={readOnly ? readonlySetup : editableSetup} />
 })

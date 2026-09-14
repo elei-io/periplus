@@ -10,9 +10,6 @@ from pydantic import BaseModel, Field
 from periplus.platform.catalogue.control import CatalogueControl, get_catalogue_control
 from periplus.platform.catalogue.public import (
     PUBLIC_CATALOGUE_VERSION,
-    PUBLIC_SCHEMAS,
-    installed_public_objects,
-    known_public_objects,
     public_objects,
 )
 
@@ -123,7 +120,7 @@ async def metadata(
                 for column in macro_rows.get((item.schema, item.name), ())
             ],
         )
-        for item in known_public_objects()
+        for item in public_objects()
         if item.kind in {"macro", "table_macro"}
         and item.exposed
         and (
@@ -167,7 +164,7 @@ def _public_metadata(
         raise RuntimeError("catalogue runtime metadata query returned no value")
     duckdb_version, catalogue_bytes = runtime_rows[0]
     macro_rows: dict[tuple[str, str], list[tuple]] = {}
-    for item in installed_public_objects(catalogue):
+    for item in public_objects():
         if item.kind != "table_macro" or not item.exposed:
             continue
         if item.arguments_sql is None:

@@ -51,10 +51,12 @@ service stores Periplus control state only.
 ## Installation and client lifecycle
 
 `periplus-setup` is the only catalogue installer. It attaches DuckLake, reconciles the physical
-schemas, and transactionally installs the complete persistent `public_v1.*` contract.
+schemas, and transactionally installs the persistent `public_v1.*` and independent `experimental.*` contracts.
+Separate query endpoints select and validate only their own namespace. Experimental definitions
+can change without changing released views; reviewed contracts are promoted to a new `public_vN`.
 Ordinary Periplus processes validate the installed contract and never repair it.
 
-Element text is stored directly on every materialized HTML element. Ordinary HTML SQL is portable; `html_search` exposes immutable page-word postings without a persistent node relation.
+Element text is stored directly on every materialized HTML element. Ordinary HTML SQL is portable; `search` exposes immutable page-word postings without a persistent node relation.
 
 Periplus uses the standard DuckDB runtime and official storage extensions. The query API owns
 query validation and future optimizations. One DuckLake connection factory owns storage-protocol

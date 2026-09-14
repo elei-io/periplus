@@ -8,7 +8,7 @@ from periplus.materialization.registry import BY_NAME
 from periplus.query.helpers import query_helpers, safe_helper_error
 
 
-class HtmlSearchTests(unittest.TestCase):
+class SearchTests(unittest.TestCase):
     def setUp(self):
         self.catalogue = catalogue()
         self.addCleanup(self.catalogue.connection.close)
@@ -27,7 +27,7 @@ class HtmlSearchTests(unittest.TestCase):
             self.db.unregister('postings')
 
     def search(self, terms):
-        return self.db.execute('SELECT * FROM public_v1.html_search(?) ORDER BY score DESC,content_id', [terms]).fetchall()
+        return self.db.execute('SELECT * FROM public_v1.search(?) ORDER BY score DESC,content_id', [terms]).fetchall()
 
     def test_any_word_score_and_union_are_exact(self):
         rows = self.search(['robot', 'science', 'robot', None, ''])
@@ -44,7 +44,7 @@ class HtmlSearchTests(unittest.TestCase):
         self.assertTrue(self.search(['robot'] * 32))
         with self.assertRaises(Exception) as raised:
             self.search(['robot'] * 33)
-        self.assertEqual(safe_helper_error(str(raised.exception)), 'html_search accepts at most 32 term keys')
+        self.assertEqual(safe_helper_error(str(raised.exception)), 'search accepts at most 32 term keys')
 
     def test_page_word_boundaries_and_unicode_keys(self):
         self.assertEqual(self.search(['fish']), [])
@@ -52,15 +52,15 @@ class HtmlSearchTests(unittest.TestCase):
         self.assertEqual([(r[0], r[2]) for r in self.search(['catfish', 'strasse'])], [('c', 2.0)])
 
     def test_discovery_and_return_types(self):
-        helper = next(h for h in query_helpers().helpers if h.name == 'public_v1.html_search')
+        helper = next(h for h in query_helpers().helpers if h.name == 'public_v1.search')
         self.assertEqual([c.name for c in helper.columns], ['content_id', 'node_indexes', 'score'])
-        self.db.execute("SELECT * FROM public_v1.html_search(['robot'])")
+        self.db.execute("SELECT * FROM public_v1.search(['robot'])")
         self.assertEqual([str(c[1]) for c in self.db.description], ['VARCHAR', 'INTEGER[]', 'DOUBLE'])
-        plan = self.db.execute("EXPLAIN SELECT * FROM public_v1.html_search(['robot'])").fetchone()[1]
+        plan = self.db.execute("EXPLAIN SELECT * FROM public_v1.search(['robot'])").fetchone()[1]
         self.assertIn('Filters:', plan)
         self.assertIn('EMPTY_RESULT', plan)
         self.assertEqual(plan.count('SEQ_SCAN'), 1)
         self.assertNotIn('HASH_JOIN', plan)
         full = ['robot', *[str(i) for i in range(31)]]
-        plan = self.db.execute('EXPLAIN SELECT * FROM public_v1.html_search(?)', [full]).fetchone()[1]
+        plan = self.db.execute('EXPLAIN SELECT * FROM public_v1.search(?)', [full]).fetchone()[1]
         self.assertNotIn('HASH_JOIN', plan)

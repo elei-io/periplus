@@ -45,7 +45,7 @@ def exact_text_anchor(statement: exp.Expression, parameters=()) -> TextAnchor | 
     table = source.this if source is not None else None
     if not isinstance(table, exp.Table) or not isinstance(table.this, exp.Identifier):
         return None
-    if table.name.lower() != "html_element" or table.catalog or table.db.lower() not in ("", "public_v1"):
+    if table.name.lower() != "html_element" or table.catalog or table.db.lower() not in ("", "experimental"):
         return None
     alias = table.args.get("alias")
     if alias is not None and alias.args.get("columns"):
@@ -106,7 +106,9 @@ def _index_contract_matches(connection: duckdb.DuckDBPyConnection, alias: str) -
         return False
     installed = dict(connection.execute(
         "SELECT view_name, sql FROM duckdb_views() WHERE database_name=? "
-        "AND schema_name='public_v1' AND view_name IN ('html_element','html_term')", [alias]).fetchall())
+        "AND schema_name='experimental' AND view_name IN ('html_element','html_term')", [alias]).fetchall())
+    # This optimization is proven only for the released element/posting shape.
+    # Changing experimental SQL must decline it until separately reviewed.
     root = files("periplus.platform.catalogue").joinpath("sql/public_v1/views")
     for name in ("html_element", "html_term"):
         if name not in installed:
@@ -128,7 +130,7 @@ def text_index_rewrite(connection: duckdb.DuckDBPyConnection, statement: exp.Exp
     quoted_alias = '"' + alias.replace('"', '""') + '"'
     rows = connection.execute(
         f"SELECT content_id, CASE WHEN len(node_indexes)<={MAX_NODES_PER_CONTENT} "
-        f"THEN node_indexes ELSE NULL END FROM {quoted_alias}.public_v1.html_term WHERE term=? "
+        f"THEN node_indexes ELSE NULL END FROM {quoted_alias}.experimental.html_term WHERE term=? "
         f"LIMIT {MAX_CANDIDATE_CONTENTS + 1}", [anchor.term]).fetchall()
     if (len(rows) > MAX_CANDIDATE_CONTENTS
             or any(not isinstance(row[0], str) or row[1] is None for row in rows)

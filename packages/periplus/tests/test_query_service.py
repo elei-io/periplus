@@ -10,7 +10,7 @@ import duckdb
 
 from periplus.platform.catalogue.config import CatalogueConfig
 from periplus.platform.catalogue.connection import DuckLakeConnectionFactory, _literal
-from periplus.platform.catalogue.public import public_objects
+from periplus.platform.catalogue.public import known_public_objects
 from periplus.platform.catalogue.schema import expected_columns
 from periplus.platform.catalogue.client import _column_type
 from periplus.query.service import QueryService, QueryRequest, BusyError
@@ -41,6 +41,25 @@ class QueryServiceTests(unittest.TestCase):
         self.assertFalse(streamed.truncated)
         bounded = experimental.execute(QueryRequest(sql='SELECT content_id FROM html_element WHERE text=?', parameters=['robot robot robotics careers']))
         self.assertEqual(bounded.optimizations, [])
+
+    def test_endpoint_schema_isolation(self):
+        from periplus.query.service import QueryMode
+        from periplus.query.helpers import query_helpers
+        experimental = QueryService(self.config, mode=QueryMode.EXPERIMENTAL)
+        self.addCleanup(experimental.close)
+        for service, schema, other in ((self.service, "public_v1", "experimental"), (experimental, "experimental", "public_v1")):
+            for execute in (service.prepare, service.execute):
+                result = execute(QueryRequest(sql="SELECT * FROM search(['robot'])"))
+                self.assertEqual(result.schema_version, schema)
+                for sql in (f"SELECT * FROM {other}.capture", f"SELECT * FROM {other}.search(['robot'])",
+                            f"DESCRIBE {other}.html_element", f"SHOW TABLES FROM {other}",
+                            f"EXPLAIN SELECT * FROM {other}.capture"):
+                    with self.subTest(schema=schema, sql=sql), self.assertRaises(ValueError):
+                        execute(QueryRequest(sql=sql))
+                with self.assertRaises(ValueError):
+                    execute(QueryRequest(sql="SELECT 1", schema_version=other))
+            self.assertEqual([item.name for item in query_helpers(schema).helpers], [f"{schema}.search"])
+            self.assertTrue(all(item.name.startswith(schema + ".") for item in query_helpers(schema).relations))
 
     def test_removed_surfaces_in_both_modes(self):
         from periplus.query.service import QueryMode
@@ -142,7 +161,7 @@ class QueryServiceTests(unittest.TestCase):
             f"ATTACH {_literal('ducklake:' + self.config.metadata_path)} AS periplus (DATA_PATH {_literal(self.config.data_path)}, METADATA_SCHEMA 'ducklake')"
         )
         d.execute("USE periplus")
-        for schema in ("ingest", "material", "public_v1"):
+        for schema in ("ingest", "material", "public_v1", "experimental"):
             d.execute(f"CREATE SCHEMA {schema}")
         for relation, columns in expected_columns().items():
             definitions = ", ".join(
@@ -151,7 +170,7 @@ class QueryServiceTests(unittest.TestCase):
             d.execute(f"CREATE TABLE {relation.qualified} ({definitions})")
         base = files("periplus.platform.catalogue").joinpath("sql")
         from periplus.platform.catalogue.public_registry import INTERNAL_OBJECTS
-        for item in (*INTERNAL_OBJECTS, *public_objects()):
+        for item in (*INTERNAL_OBJECTS, *known_public_objects()):
             d.execute(base.joinpath(item.schema, item.resource).read_text())
         d.execute(
             "INSERT INTO ingest.visits (visit_id, requested_url, outcome) SELECT uuid(), 'https://example.com/' || i, 'success' FROM range(20) t(i)"
@@ -186,7 +205,7 @@ class QueryServiceTests(unittest.TestCase):
         self.assertEqual(stable.query_mode, QueryMode.STABLE)
         self.assertEqual(result.query_mode, QueryMode.EXPERIMENTAL)
         self.assertEqual(result.optimizations, [])
-        self.assertEqual(evidence.compiler_version, "public-query-v13:experimental")
+        self.assertEqual(evidence.compiler_version, "public-query-v14:experimental")
         self.assertNotEqual(result.compiler_version, stable.compiler_version)
         with self.assertRaises(ValueError):
             QueryService(self.config, mode="invalid")
@@ -389,7 +408,7 @@ class QueryServiceTests(unittest.TestCase):
             self.assertEqual(client.get('/query/helpers').status_code, 401)
             helper_response = client.get('/query/helpers', headers=headers)
             self.assertEqual(helper_response.status_code, 200)
-            self.assertEqual([h['name'] for h in helper_response.json()['helpers']], ['public_v1.html_search'])
+            self.assertEqual([h['name'] for h in helper_response.json()['helpers']], ['public_v1.search'])
             self.assertEqual(client.post('/query/helpers', headers=headers).status_code, 404)
             with patch.object(self.service, "execute", side_effect=duckdb.HTTPException("HTTP 404 https://private/file?token=secret")):
                 unavailable = client.post('/query/exec', headers=headers, json={'sql': 'SELECT 1'})

@@ -1,4 +1,4 @@
-CREATE OR REPLACE MACRO public_v1.html_search(terms) AS TABLE
+CREATE OR REPLACE MACRO public_v1.search(terms) AS TABLE
 -- One word already has exactly one row per content; do not regroup its postings.
 SELECT content_id, node_indexes, 1.0::DOUBLE AS score
 FROM public_v1.html_term
@@ -11,7 +11,7 @@ FROM public_v1.html_term AS posting
 -- Fixed slots preserve literal term filters for DuckLake pruning. IN also
 -- prevents duplicate query keys from multiplying postings or their score.
 WHERE len(terms::VARCHAR[]) <> 1 AND CASE WHEN len(terms::VARCHAR[]) > 32
-    THEN error('html_search accepts at most 32 term keys')
+    THEN error('search accepts at most 32 term keys')
     ELSE posting.term IN (
         (terms::VARCHAR[])[1], (terms::VARCHAR[])[2], (terms::VARCHAR[])[3], (terms::VARCHAR[])[4], (terms::VARCHAR[])[5], (terms::VARCHAR[])[6], (terms::VARCHAR[])[7], (terms::VARCHAR[])[8],
         (terms::VARCHAR[])[9], (terms::VARCHAR[])[10], (terms::VARCHAR[])[11], (terms::VARCHAR[])[12], (terms::VARCHAR[])[13], (terms::VARCHAR[])[14], (terms::VARCHAR[])[15], (terms::VARCHAR[])[16],

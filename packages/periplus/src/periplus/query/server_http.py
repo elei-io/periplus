@@ -139,8 +139,8 @@ async def execute(payload: QueryRequest, request: Request):
 
 
 @router.get("/helpers", response_model=QueryHelpers)
-async def helpers():
-    return query_helpers()
+async def helpers(request: Request):
+    return query_helpers(request.app.state.query_service.schema)
 
 
 def _input_denial(request, payload, limits):

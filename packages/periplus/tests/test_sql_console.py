@@ -53,8 +53,8 @@ class SqlConsoleValidationTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            _bounded_query("DESCRIBE public_v1.html_node;"),
-            "DESCRIBE public_v1.html_node",
+            _bounded_query("DESCRIBE public_v1.html_element;"),
+            "DESCRIBE public_v1.html_element",
         )
 
     def test_rejects_describe_for_physical_relation(self):

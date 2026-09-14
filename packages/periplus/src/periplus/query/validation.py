@@ -3,18 +3,21 @@ import re
 from sqlglot import exp, parse
 from sqlglot.errors import ParseError
 from sqlglot.dialects.duckdb import DuckDB
-from periplus.platform.catalogue.public import PUBLIC_SCHEMAS, public_objects
+from periplus.platform.catalogue.public import PUBLIC_SCHEMA, public_objects
 
 class _QueryDuckDB(DuckDB):
     # SQLGlot's shared keyword table treats ?:: as a distinct operator. DuckDB
     # treats it as an anonymous parameter followed by a cast. Correct lexical
     # recognition only; the original SQL and parameters still execute unchanged.
+    class Parser(DuckDB.Parser):
+        # SEARCH is a catalogue macro, not SQLGlot's two-argument search expression.
+        FUNCTIONS = {key: value for key, value in DuckDB.Parser.FUNCTIONS.items() if key != "SEARCH"}
+
     class Tokenizer(DuckDB.Tokenizer):
         KEYWORDS = {key: value for key, value in DuckDB.Tokenizer.KEYWORDS.items() if key != "?::"}
 
 
 _MAX_ROWS = 10_000
-_READABLE_SCHEMAS = frozenset(PUBLIC_SCHEMAS)
 _EXPLAIN_PREFIX = re.compile(r"^EXPLAIN\s+(?:ANALYZE\s+)?", re.IGNORECASE)
 _FORBIDDEN_FUNCTIONS = frozenset(
     {
@@ -50,7 +53,7 @@ _FORBIDDEN_RELATION_PREFIXES = (
 )
 
 
-def _bounded_query(sql: str, *, max_rows: int = _MAX_ROWS) -> str:
+def _bounded_query(sql: str, *, max_rows: int = _MAX_ROWS, schema: str = PUBLIC_SCHEMA) -> str:
     source = sql.strip()
     normalized = source.removesuffix(";").rstrip()
     explain_prefix = _EXPLAIN_PREFIX.match(normalized)
@@ -59,12 +62,12 @@ def _bounded_query(sql: str, *, max_rows: int = _MAX_ROWS) -> str:
         statement = _one_statement(explained)
         if not isinstance(statement, exp.Query):
             raise ValueError("EXPLAIN accepts one read-only query")
-        _validate_catalogue_access(statement)
+        _validate_catalogue_access(statement, schema=schema)
         return normalized
 
     statement = _one_statement(source)
     if isinstance(statement, exp.Query):
-        _validate_catalogue_access(statement)
+        _validate_catalogue_access(statement, schema=schema)
         return (
             f"SELECT * FROM ({normalized}) AS periplus_console_query "
             f"LIMIT {max_rows + 1}"
@@ -76,7 +79,7 @@ def _bounded_query(sql: str, *, max_rows: int = _MAX_ROWS) -> str:
                 f"{statement.key.upper()} requires a public relation "
                 "or read-only query"
             )
-        _validate_catalogue_access(statement)
+        _validate_catalogue_access(statement, schema=schema)
         return normalized
     if isinstance(statement, exp.Show):
         source_schema = statement.args.get("from_")
@@ -84,11 +87,11 @@ def _bounded_query(sql: str, *, max_rows: int = _MAX_ROWS) -> str:
             str(statement.this).upper() == "TABLES"
             and isinstance(source_schema, exp.Table)
             and not source_schema.db
-            and source_schema.name.lower() in _READABLE_SCHEMAS
+            and source_schema.name.lower() == schema
         ):
             return normalized
         raise ValueError(
-            "SHOW is limited to SHOW TABLES FROM public_v1"
+            f"SHOW is limited to SHOW TABLES FROM {schema}"
         )
     raise ValueError(
         "SQL console accepts one read-only query or public inspection statement"
@@ -105,7 +108,7 @@ def _one_statement(sql: str) -> exp.Expression:
     return statements[0]
 
 
-def _validate_catalogue_access(statement: exp.Expression) -> None:
+def _validate_catalogue_access(statement: exp.Expression, *, schema: str = PUBLIC_SCHEMA) -> None:
     ctes = {
         cte.alias_or_name.lower()
         for cte in statement.find_all(exp.CTE)
@@ -114,15 +117,21 @@ def _validate_catalogue_access(statement: exp.Expression) -> None:
     for table in statement.find_all(exp.Table):
         if table.catalog:
             raise ValueError("SQL console does not accept explicit catalog names")
-        if table.db and table.db.lower() not in _READABLE_SCHEMAS:
-            raise ValueError("SQL console may only read public_v1.*")
+        if table.db and table.db.lower() != schema:
+            raise ValueError(f"SQL console may only read {schema}.*")
         name = (table.this.name if isinstance(table.this, exp.Func) else table.name).lower()
-        if name in ctes:
+        if not table.db and name in ctes:
             continue
         if name.startswith(_FORBIDDEN_RELATION_PREFIXES):
             raise ValueError("SQL console may not read system relations")
-        if not table.db and name not in {item.name for item in public_objects()}:
-            raise ValueError("Unknown public_v1 relation; use a documented public relation")
+        if name not in {item.name for item in public_objects(schema)}:
+            raise ValueError(f"Unknown {schema} relation; use a documented public relation")
+    for dot in statement.find_all(exp.Dot):
+        if isinstance(dot.expression, exp.Func):
+            if not isinstance(dot.this, exp.Identifier) or dot.this.name.lower() != schema:
+                raise ValueError(f"SQL console may only call helpers in {schema}.*")
+            if dot.expression.name.lower() not in {item.name for item in public_objects(schema)}:
+                raise ValueError(f"Unknown {schema} helper")
     for function in statement.find_all(exp.Func):
         if function.name.lower() in _FORBIDDEN_FUNCTIONS:
             raise ValueError(f"SQL console may not call {function.name}")

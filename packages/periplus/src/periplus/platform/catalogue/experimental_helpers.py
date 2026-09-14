@@ -3,7 +3,7 @@ from periplus.platform.catalogue.public import CatalogueObject
 
 HELPERS = (
     CatalogueObject(
-        kind="table_macro", name="search", resource="helpers/search.sql",
+        schema="experimental", kind="table_macro", name="search", resource="helpers/search.sql",
         columns=("content_id", "node_indexes", "score"), arguments_sql="['robot']",
         parameters=(("terms", "VARCHAR[]: at most 32 Unicode case-folded, NFC-normalized word keys"),),
         comment="Find content matching any requested page word, with containing elements and a simple word-coverage score.",

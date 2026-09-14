@@ -17,14 +17,15 @@ import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
-import { schemaReference } from "@/lib/schema-reference"
+import { useQuery } from "@tanstack/react-query"
+import type { QueryHelpers } from "@/types/query-helpers"
 import { Separator } from "@/components/ui/separator"
 import { QueryExport } from "@/components/query-export"
 import { QueryTable } from "@/components/query-table"
 import { useQueryExecution } from "@/hooks/use-query-execution"
 import Link from "next/link"
 import { consumeQueryLaunch } from "@/lib/query-launch"
-import { extractApiError } from "@/lib/api"
+import { extractApiError, responseJson } from "@/lib/api"
 import { useSqlAssistant } from "@/hooks/use-sql-assistant"
 import { SqlAssistant } from "@/components/sql-assistant"
 import { captureAnalytics } from "@/lib/analytics"
@@ -35,6 +36,17 @@ const SqlEditor = dynamic(() => import("@/components/sql-editor").then(module =>
 
 export function QueryWorkbench({ initialSql, initialParameters, autoRun = false, initialMode = "stable" }: { initialMode?: QueryMode; initialSql?: string; initialParameters?: string; autoRun?: boolean }) {
   const [mode, setMode] = useState<QueryMode>(initialMode)
+  const namespace = mode === "experimental" ? "experimental" : "public_v1"
+  const catalogue = useQuery({
+    queryKey: ["query-catalogue", mode],
+    queryFn: async ({ signal }) => {
+      const result = await responseJson<QueryHelpers>(await fetch(
+        mode === "experimental" ? "/api/query/experimental/helpers" : "/api/query/helpers", { signal }))
+      if (result.schema_version !== namespace) throw new Error("The query endpoint returned the wrong schema.")
+      return result
+    },
+  })
+  const relations = catalogue.data?.relations ?? []
   const [sql, setSql] = useState(initialSql ?? "")
   const [parameters, setParameters] = useState(initialParameters ?? "[]")
   const [selection, setSelection] = useState("")
@@ -84,22 +96,22 @@ export function QueryWorkbench({ initialSql, initialParameters, autoRun = false,
   }
   return <section aria-label="SQL workspace" className="sql-workbench flex flex-col gap-4">
     <div className={assistant.open ? "grid items-start gap-4 lg:grid-cols-[220px_minmax(0,1fr)] xl:grid-cols-[220px_minmax(0,1fr)_380px]" : "grid items-start gap-4 lg:grid-cols-[280px_minmax(0,1fr)]"}>
-      <SchemaExplorer onLoadSql={loadSql} />
+      <div className="flex min-w-0 flex-col gap-3">{catalogue.error && <Alert variant="destructive"><AlertDescription>{extractApiError(catalogue.error)}</AlertDescription></Alert>}<SchemaExplorer onLoadSql={loadSql} namespace={namespace} relations={relations} /></div>
       <div id="explore" className="flex min-w-0 scroll-mt-6 flex-col gap-4">
         <Card size="sm" className="sql-input-surface gap-0 py-0">
           <div className="flex flex-wrap items-center gap-2 p-3"><Button className="min-w-28" disabled={!query.access.enabled || query.isPending || !sql.trim()} onClick={run}>{query.isPending ? <Spinner aria-hidden="true" /> : <Play />}{query.isPending ? "Running…" : "Run query"}</Button><Button variant="outline" onClick={share}><Share2 />Share</Button><QuerySettings value={parameters} onChange={setParameters} /><Button variant="ghost" className="ml-auto" aria-expanded={assistant.open} aria-controls="sql-assistant" onClick={() => { if (assistant.open) { assistant.setOpen(false) } else { assistant.show(); captureAnalytics("sql_assistant_opened") } }}>{assistant.isPending ? <Spinner aria-hidden="true" /> : <MessageSquare />}Ask SQL</Button></div>
-          <div ref={editor} onKeyDownCapture={event => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); event.stopPropagation(); if (!query.isPending && sql.trim()) run() } }}><SqlEditor value={sql} onChange={setSql} onSelectionChange={setSelection} /></div>
+          <div ref={editor} onKeyDownCapture={event => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); event.stopPropagation(); if (!query.isPending && sql.trim()) run() } }}><SqlEditor namespace={namespace} relations={relations} value={sql} onChange={setSql} onSelectionChange={setSelection} /></div>
           {!sql.trim() && !assistant.open && <div className="px-3"><Button variant="ghost" size="sm" onClick={() => assistant.show()}>Describe what you want to query…</Button></div>}
           <div className="flex flex-wrap items-center justify-between gap-2 p-3"><div className="flex flex-wrap items-center gap-3"><CardDescription role="status">{query.access.message ?? query.phase}</CardDescription><DropdownMenu>
-            <DropdownMenuTrigger disabled={query.isPending} aria-label={`Query execution mode: public_v1 - ${mode}`} render={<Badge variant="secondary" render={<button type="button" />} />}>public_v1 - {mode}<ChevronDown data-icon="inline-end" /></DropdownMenuTrigger>
+            <DropdownMenuTrigger disabled={query.isPending} aria-label={`Query execution mode: ${namespace} - ${mode}`} render={<Badge variant="secondary" render={<button type="button" />} />}>{namespace} - {mode}<ChevronDown data-icon="inline-end" /></DropdownMenuTrigger>
             <DropdownMenuContent side="top" align="start" className="w-max">
               <DropdownMenuRadioGroup value={mode} onValueChange={value => { if (value === "stable" || value === "experimental") setMode(value) }} aria-label="Query execution mode">
                 <DropdownMenuRadioItem value="stable" disabled={query.isPending}>public_v1 - stable</DropdownMenuRadioItem>
-                <DropdownMenuRadioItem value="experimental" disabled={query.isPending}>public_v1 - experimental</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="experimental" disabled={query.isPending}>experimental</DropdownMenuRadioItem>
               </DropdownMenuRadioGroup>
             </DropdownMenuContent>
           </DropdownMenu></div><CardDescription>{query.access.data ? `${query.access.data.sql.max_rows.toLocaleString()} rows / ${query.access.data.sql.max_result_bytes / (1024 * 1024)} MiB · ${query.access.data.sql.max_duration_seconds}s limit` : query.access.message === "Checking availability…" ? "Loading query limits…" : "Query limits unavailable"}</CardDescription></div>
-          {mode === "experimental" && <CardDescription className="px-3 pb-3">Experimental execution. Same SQL semantics; performance may vary.</CardDescription>}
+          {mode === "experimental" && <CardDescription className="px-3 pb-3">Experimental schema and execution. Names, columns and behavior may change.</CardDescription>}
         </Card>
         <Card size="sm" aria-label="Query output" className="sql-output-surface min-h-72" aria-busy={query.isPending}>
           {query.data && <CardDescription className="px-3 py-2">{query.data.query_mode === "experimental" ? "Experimental" : "Stable"} result</CardDescription>}
@@ -127,7 +139,7 @@ export function QueryWorkbench({ initialSql, initialParameters, autoRun = false,
   </section>
 }
 
-const SchemaExplorer = memo(function SchemaExplorer({ onLoadSql }: { onLoadSql: (sql: string) => void }) {
+const SchemaExplorer = memo(function SchemaExplorer({ onLoadSql, namespace, relations: schemaReference }: { onLoadSql: (sql: string) => void; namespace: string; relations: QueryHelpers["relations"] }) {
   const [filter, setFilter] = useState("")
   function inspectTable(tableName: string) {
     onLoadSql(`DESCRIBE ${tableName};`)
@@ -138,24 +150,24 @@ const SchemaExplorer = memo(function SchemaExplorer({ onLoadSql }: { onLoadSql: 
         <CardHeader><CardTitle className="flex items-center gap-2"><Database className="size-4" />Explorer</CardTitle><Input aria-label="Filter tables and columns" placeholder="Filter schema…" value={filter} onChange={event => setFilter(event.target.value)} /></CardHeader>
         <CardContent className="max-h-96 overflow-auto lg:max-h-[640px]">
           <TooltipProvider>
-            {["public_v1"].map(namespace => {
-              const relations = schemaReference.filter(relation => relation.name.startsWith(`${namespace}.`) && `${relation.name} ${relation.columns.map(column => column[0]).join(" ")}`.toLowerCase().includes(filter.toLowerCase()))
+            {[namespace].map(namespace => {
+              const relations = schemaReference.filter(relation => relation.name.startsWith(`${namespace}.`) && `${relation.name} ${relation.columns.map(column => column.name).join(" ")}`.toLowerCase().includes(filter.toLowerCase()))
               relations.sort((a, b) => a.name.length - b.name.length || a.name.localeCompare(b.name))
               if (!relations.length) return null
               return <div key={namespace} className="pb-4">
                 {relations.map(relation => <div key={relation.name} className="relative"><details open={filter ? true : undefined} className="py-1">
-                  <summary className="cursor-pointer py-1 pr-8" title={relation.grain}><span className="inline-flex items-center gap-2"><Table2 className="size-3.5" /><span>{relation.name.slice(namespace.length + 1)}</span></span></summary>
+                  <summary className="cursor-pointer py-1 pr-8" title={relation.description}><span className="inline-flex items-center gap-2"><Table2 className="size-3.5" /><span>{relation.name.slice(namespace.length + 1)}</span></span></summary>
                   <div className="flex min-w-0 flex-col gap-1 py-2 pl-5">
-                    {relation.columns.map(([name, type, description]) => <Tooltip key={name}>
+                    {relation.columns.map(({name, description}) => <Tooltip key={name}>
                       <TooltipTrigger render={<span tabIndex={0} className="block truncate py-1 font-mono text-xs text-muted-foreground" />}>{name}</TooltipTrigger>
-                      <TooltipContent side="right"><div className="flex flex-col gap-1"><code>{name} · {type}</code><span>{description}</span></div></TooltipContent>
+                      <TooltipContent side="right"><div className="flex flex-col gap-1"><code>{name}</code><span>{description}</span></div></TooltipContent>
                     </Tooltip>)}
                   </div>
                 </details><Tooltip><TooltipTrigger render={<Button variant="ghost" size="icon-sm" className="absolute top-1 right-0" aria-label={`Inspect schema of ${relation.name}`} onClick={() => inspectTable(relation.name)} />}><ListTree /></TooltipTrigger><TooltipContent>Inspect schema</TooltipContent></Tooltip></div>)}
               </div>
             })}
           </TooltipProvider>
-          {!schemaReference.some(relation => `${relation.name} ${relation.columns.map(column => column[0]).join(" ")}`.toLowerCase().includes(filter.toLowerCase())) && <CardDescription>No tables or columns match.</CardDescription>}
+          {!schemaReference.some(relation => `${relation.name} ${relation.columns.map(column => column.name).join(" ")}`.toLowerCase().includes(filter.toLowerCase())) && <CardDescription>No tables or columns match.</CardDescription>}
         </CardContent>
         <Separator />
         <CardContent><Link href="/docs#schema">Schema reference ↗</Link></CardContent>

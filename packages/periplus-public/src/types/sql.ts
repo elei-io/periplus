@@ -4,7 +4,7 @@ export type PreparedQuery = {
   query_mode: QueryMode
   compiler_version: string
   optimizations: string[]
-  schema_version: "public_v1"
+  schema_version: "public_v1" | "experimental"
   query_id: string
   sql: string
   parameters: unknown[]

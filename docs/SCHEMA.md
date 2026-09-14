@@ -87,7 +87,7 @@ canonical page stream. No stemming, substring matching or phrase positions.
 Files use eight term buckets, term/content ordering and 2,048-row groups. Native
 maintenance retains the same row-group setting and never aggregates posting arrays.
 The public `html_term(term, content_id, node_indexes)` view exposes this grain.
-`html_search(terms VARCHAR[])` is a portable table macro over these postings.
+`search(terms VARCHAR[])` is a portable table macro over these postings.
 It accepts at most 32 normalized term keys, matches any requested key, and returns
 `content_id VARCHAR`, `node_indexes INTEGER[]` and `score DOUBLE`. Node indexes are
 the sorted distinct union of matching containing elements; score counts distinct
@@ -134,7 +134,7 @@ or delete requires redeployment and a complete rebuild.
 
 ## Public catalogue: `public_v1`
 
-The single public namespace is `public_v1`. Query API requests default to this
+The stable public namespace is `public_v1`. Stable query API requests default to this
 version, so `SELECT * FROM capture` and `SELECT * FROM public_v1.capture` are
 identical. Explicit unsupported `schema_version` values are rejected. Preparation
 and execution report `schema_version`; execution additionally reports
@@ -150,7 +150,7 @@ inserted. Comments and attributes contribute no text. `text_direct` contains onl
 immediate child text; template fragments are not immediate text children. These
 values describe the parsed document, not browser visibility or original byte spelling.
 Use ordinary SQL predicates; corpus-wide text discovery scans text until a separate
-acceleration layer is introduced. There is no public search macro.
+acceleration layer is introduced. Use `search(terms VARCHAR[])` for exact page-word lookup.
 
 ### `public_v1.capture`
 
@@ -764,3 +764,13 @@ continues. After dependencies are complete and evidence committed, `acquisition_
 selection context become null. `completed_status` and `completed_evidence` preserve current
 request progress; URL keys still enforce request-local deduplication. These compact rows
 are operational state, not a historical corpus, and retire with the parent request.
+
+
+## Experimental catalogue: `experimental`
+
+The separate experimental query endpoint selects only `experimental.*`. Its views and
+`search()` macro are independently declared over the same physical evidence as Stable.
+The initial columns match public_v1; subsequent experiments may change them freely.
+The endpoint's discovery response is authoritative for its current relation names and columns.
+A successful experiment is released as a new `public_vN` contract; released views never
+alias mutable experimental views. See [QUERY.md](QUERY.md#stable-and-experimental-execution).

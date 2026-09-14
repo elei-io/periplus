@@ -72,7 +72,7 @@ provide a shared snapshot or rollback. The adapter makes no transaction requests
 
 A complete notebook is in `examples/notebook.py`. The integration is tested with
 marimo 0.24.1 and SQLAlchemy 2.x. SQLAlchemy is included in the standard SDK install; the `notebook` extra adds
-marimo. Existing marimo environments only need `uv add "periplus-python-sdk>=0.7.0"`.
+marimo. Existing marimo environments only need `uv add "periplus-python-sdk>=0.8.0"`.
 The returned object is a standard SQLAlchemy Engine, also usable with pandas and
 ordinary Python scripts. Engine creation is lazy; the first query opens a connection.
 
@@ -181,7 +181,7 @@ Use `aclose()` when managing an async client's lifetime explicitly.
 Install the public-v1 client from PyPI:
 
 ```sh
-python -m pip install "periplus-python-sdk>=0.7.0"
+python -m pip install "periplus-python-sdk>=0.8.0"
 ```
 
 Version 0.6.1 supports the current public-v1 contract. For production, configure
@@ -210,7 +210,7 @@ that GitHub environment with required reviewers before the first release.
 
 ## Public v1
 
-Install the updated SDK from PyPI with `python -m pip install "periplus-python-sdk>=0.7.0"`. The previously published 0.2.0 release predates this contract. `prepare` and `execute` accept keyword-only `schema_version="public_v1"` (the default); responses preserve `schema_version` separately from `source_snapshot`. Unavailable versions are rejected by the server.
+Install the updated SDK from PyPI with `python -m pip install "periplus-python-sdk>=0.8.0"`. The previously published 0.2.0 release predates this contract. `prepare` and `execute` accept optional keyword-only `schema_version`; omission selects the client mode's schema (`public_v1` for Stable, `experimental` for Experimental); responses preserve `schema_version` separately from `source_snapshot`. Unavailable versions are rejected by the server.
 
 ## License
 
@@ -302,3 +302,12 @@ script, style and title text. `text_direct` preserves immediate text children.
 There is no search function or public node relation. Text predicates remain ordinary
 SQL; corpus-wide predicates scan text. Join elements to captures by content ID and
 to their parent using content ID plus parent_index = node_index.
+
+
+### Experimental schemas
+
+`Client(url, mode="experimental")`, `AsyncClient`, `connect`, and `create_engine`
+use the experimental endpoint and default to `experimental`. Stable defaults to `public_v1`.
+An explicit `schema_version` must match the selected endpoint. Use unqualified
+`SELECT * FROM search(['robot'])` or qualify with that endpoint's schema.
+Experimental definitions can change; reviewed layouts become a new `public_vN` release.

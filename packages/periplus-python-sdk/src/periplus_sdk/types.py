@@ -51,4 +51,6 @@ class QueryHelper(BaseModel):
 
 class QueryHelpers(BaseModel):
     catalogue_version: str
+    schema_version: str
+    relations: list[QueryHelper]
     helpers: list[QueryHelper]
