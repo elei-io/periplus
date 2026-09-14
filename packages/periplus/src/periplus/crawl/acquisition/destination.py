@@ -56,7 +56,8 @@ async def public_destination_url(value: str) -> str:
         try:
             resolved = await _resolve(host)
         except socket.gaierror as exc:
-            reason = ("destination_dns_not_found" if exc.errno == socket.EAI_NONAME
+            negative_results = {socket.EAI_NONAME, getattr(socket, "EAI_NODATA", socket.EAI_NONAME)}
+            reason = ("destination_dns_not_found" if exc.errno in negative_results
                       else "destination_dns_unavailable")
             raise DestinationUnavailable("Destination DNS is unavailable.", reason=reason) from exc
         except TimeoutError as exc:

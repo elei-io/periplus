@@ -9,6 +9,7 @@ from periplus.crawl.acquisition.destination import public_destination_url, Desti
 class PublicDestinationTests(unittest.IsolatedAsyncioTestCase):
     async def test_dns_errors_have_distinct_recovery_semantics(self):
         cases = ((socket.gaierror(socket.EAI_NONAME, 'not found'), 'destination_dns_not_found'),
+                 (socket.gaierror(getattr(socket, 'EAI_NODATA', socket.EAI_NONAME), 'no address'), 'destination_dns_not_found'),
                  (socket.gaierror(socket.EAI_AGAIN, 'temporary'), 'destination_dns_unavailable'),
                  (TimeoutError(), 'destination_dns_timeout'))
         for failure, reason in cases:
