@@ -6,6 +6,7 @@ import argparse
 from dataclasses import replace
 import json
 from pathlib import Path
+from time import perf_counter
 
 from periplus.query.benchmarking import (
     compare_reports,
@@ -115,19 +116,35 @@ def main() -> None:
                 optimization = registered[arguments.optimization]
 
                 def transform(connection, sql, parameters):
+                    from sqlglot import exp
+
+                    statement = _one_statement(sql)
+                    schemas = {
+                        table.db.lower()
+                        for table in statement.find_all(exp.Table)
+                        if table.db.lower() in {"public_v1", "experimental"}
+                    }
+                    if len(schemas) > 1:
+                        raise ValueError(
+                            "benchmark optimization cannot mix public schemas"
+                        )
+                    schema = next(iter(schemas), "public_v1")
                     context = PassContext(
-                        _one_statement(sql),
+                        statement,
                         parameters or [],
-                        "public_v1",
+                        schema,
                         alias,
                         connection,
                     )
+                    optimization_started = perf_counter()
                     decision = optimization.run(context)
+                    optimization_ms = (perf_counter() - optimization_started) * 1000
                     optimization_decisions.append(
                         {
                             "status": decision.status,
                             "reason": decision.reason,
                             "counts": decision.counts,
+                            "lookup_and_rewrite_ms": optimization_ms,
                         }
                     )
                     if decision.status != "applied":

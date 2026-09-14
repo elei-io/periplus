@@ -37,7 +37,7 @@ class QueryCompilerTests(unittest.TestCase):
         self.assertEqual(passes_for_mode(QueryMode.STABLE), ())
         self.assertEqual(
             [p.name for p in passes_for_mode(QueryMode.EXPERIMENTAL)],
-            ["element_text_index_candidates"],
+            ["element_text_index_candidates", "capture_link_scope"],
         )
         native = self.compile()
         self.assertEqual(native.optimizations, [])

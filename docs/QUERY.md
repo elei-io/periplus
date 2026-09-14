@@ -339,7 +339,7 @@ Promotion is a reviewed release: copy the selected experimental contract into a 
 contract, then install and deploy together. Do not point a released version at mutable
 experimental views. Physical projection changes still follow the full rebuild lifecycle.
 
-Stable and experimental share compiler `public-query-v16`, with mode suffixes.
+Stable and experimental share compiler `public-query-v17`, with mode suffixes.
 Stable runs ordinary validated SQL. Experimental can apply
 `element_text_index_candidates` to literal exact-text predicates on one direct
 `html_element` relation. A complete interior ASCII word surrounded by spaces is a
@@ -367,6 +367,23 @@ runs before compilation; only generated SQL can read the private physical relati
 Processes retain independent admission and resource limits. Experimental failure
 is never retried through stable. This narrow candidate has no speed guarantee for
 dispersed row IDs or common words, and is not promoted to stable.
+
+Experimental also registers `capture_link_scope` for one CTE selecting capture IDs
+from literal page URLs, ordered by `captured_at DESC, capture_id DESC` with a literal
+limit, then one inner capture-ID join to `link`. It resolves at most 128 captures
+and their normalized effective source URLs in the existing snapshot and deadline.
+Each URL is limited to 8 KiB and total keys to 128 KiB; overflow declines without
+truncating the answer. Installed capture/link views and private column types must
+match the reviewed contract. Preparation defers lookup.
+
+The pass reuses the selected IDs, preserving duplicates, and filters private link
+occurrences by literal capture IDs and source URLs. The original join, aggregation,
+filters and ordering remain. Selected capture membership makes the public link
+view's additional membership check redundant in this shape. The source key uses
+`normalize_url(coalesce(effective_url, page_url))`, including redirects. This pass
+adds no storage or public schema and remains experimental. See the
+[case 10 evidence](query-investigations/single-capture-links/README.md) for measured
+gains and the limits of the scaling claim.
 
 Prepared/executed responses and private history retain mode, compiler version,
 SQL, parameters and plan evidence. Native DuckDB optimizers remain enabled.
@@ -419,5 +436,5 @@ The [query developer guide](../packages/periplus/src/periplus/query/README.md) m
 the implementation and gives the add/remove/promote workflow. `models.py` owns
 API types; `compiler.py` owns binding, ordered pass alternatives and diagnostics;
 `service.py` owns admission, snapshots, deadlines, result delivery and cleanup.
-The explicit registry has no stable passes and one experimental pass. First applied
+The explicit registry has no stable passes and two experimental passes. First applied
 pass wins; there is no implicit rewrite chaining or dynamic discovery.

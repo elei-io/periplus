@@ -13,7 +13,12 @@ compatibility layer, or abstraction. Read [docs/QUERY.md](docs/QUERY.md) before 
 changing the DuckLake CDC extension.
 
 For query performance work, follow [docs/QUERY_OPTIMIZATION.md](docs/QUERY_OPTIMIZATION.md)
-and use the shared `benchmarks/query/` bench.
+and use the shared `benchmarks/query/` bench. That playbook owns the optimization
+implementation standard: explicit typed functions, one coherent optimization per module,
+separate bounded lookups from SQL transformation, and service-owned execution lifecycle.
+Keep the original business query as the acceptance case; review code simplicity alongside
+correctness, physical work and resource bounds. Route availability/admission failures first;
+leave performance causes provisionally unclassified when evidence is insufficient.
 
 For every query performance issue, first classify it as schema/catalogue design, compiler/optimizer
 behavior, or both, using the evidence and decision rules in [docs/QUERY.md](docs/QUERY.md).

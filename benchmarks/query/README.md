@@ -1,3 +1,5 @@
+# Query optimization bench
+
 The current contract has six graph/content views and `search()` in both query
 schemas. Heading cases now filter `html_element` directly. Heading-section cases
 and the old key-domain probe moved to `retired/` because their public relations
@@ -7,29 +9,65 @@ were removed. Their old measurements do not benchmark the new primitives.
 Current element-text cases exercise ordinary SQL over stored elements. Old search
 experiments are historical and are not part of current case discovery.
 
-# Query optimization bench
-
-The current append-only element text index comparison is documented in
-[append-only-index/results.md](../../docs/query-investigations/append-only-index/results.md).
-It compares three posting shapes with page-once ICU tokenization in disposable lakes.
-
-The disposable vocabulary/term-stat materialization experiment is documented in
-[`docs/query-investigations/vocabulary-materialization/`](../../docs/query-investigations/vocabulary-materialization/README.md).
-It builds only a temporary local lake and uses this bench's paired measurement
-runner; it does not install production projections.
-The proposed public `term` surface and real local HTML experiment are documented
-in [term-surface.md](../../docs/query-investigations/vocabulary-materialization/term-surface.md).
-The controlled literal-versus-term extraction growth test and join-planning
-diagnostics are in [extraction-pruning.md](../../docs/query-investigations/vocabulary-materialization/extraction-pruning.md).
-The experimental API rewrite and its benchmark results are documented in
-[query-api-barrier.md](../../docs/query-investigations/vocabulary-materialization/query-api-barrier.md).
-The 10/100/1,000 fixed-match growth, row-group and set-filter cutoff tests are in
-[multikey-extraction.md](../../docs/query-investigations/vocabulary-materialization/multikey-extraction.md).
-
 The process and decision matrix live in [QUERY_OPTIMIZATION.md](../../docs/QUERY_OPTIMIZATION.md).
 This directory is the workload home. The runner is
 `packages/periplus/src/periplus/query/benchmarking.py`; it runs standard DuckDB
-against `public_v1.*`. No custom query extension is used.
+against `public_v1.*` or `experimental.*`. No custom query extension is used.
+
+## Quick start
+
+Start with one case and one proposed change. Read the
+[optimization playbook](../../docs/QUERY_OPTIMIZATION.md) for triage and acceptance rules.
+These commands use existing CLI options; they do not provision a lake or grant access.
+
+**Setup once:** run `make sync` from the repository root. Configure the existing disposable
+local lake or approved lake-reader environment using the access sections below. Run the
+following commands from `packages/periplus/`. No custom DuckDB query extension is required.
+
+**Reproduce one case:**
+
+```sh
+uv run python scripts/query_benchmark.py --case exact-page-history \
+  --warm-runs 1 --seconds 30 --report ../../.artifacts/query-benchmarks/baseline.json
+```
+
+**Compare a research SQL candidate against the original on one snapshot:**
+
+```sh
+uv run python scripts/query_benchmark.py --case exact-page-history \
+  --sql-override /absolute/path/candidate.sql --warm-runs 1 --seconds 60 \
+  --report ../../.artifacts/query-benchmarks/pair.json
+```
+
+Repeat the comparison with `--candidate-first` and a different report filename. Compare
+complete answers first, then elapsed time and physical work. A failed or incomplete pair
+is evidence to investigate, not an accepted fix. The runner records snapshot, engine,
+settings and catalogue metadata; retain unavailable metrics as unknown.
+
+**Compare the implemented first business-case treatment, including key lookup:**
+
+```sh
+uv run python scripts/query_benchmark.py --case single-capture-links \
+  --optimization capture_link_scope --ordinary-warm-runs --warm-runs 1 \
+  --seconds 60 --report ../../.artifacts/query-benchmarks/capture-links.json
+```
+
+Repeat with `--candidate-first`. The runner infers the pass namespace from the
+original SQL and records `lookup_and_rewrite_ms` inside the complete measured time.
+This exercises the registered pass on the reader; service tests separately check
+activation, snapshot ownership and result limits.
+
+**Before shipping:** run targeted tests and `make check` after Python changes, review the
+playbook's four acceptance questions, and verify the unchanged query through the ordinary
+query service after deployment. The direct-reader commands above do not exercise service
+optimizations or prove production-service latency. Use the existing SDK/service path for
+that final check; do not add another verification runner.
+
+For a new issue, add `query.sql` and `case.toml` under `cases/` and use the
+[investigation template](../../docs/query-investigations/TEMPLATE.md) for acceptance
+criteria and evidence. Business-report cases retain their original SQL and selection;
+smaller diagnostic queries are separate experiments. Setup failures must be resolved
+before interpreting query performance.
 
 ## Local development
 
@@ -154,32 +192,12 @@ focused benchmark tests. Reports remain ignored local artifacts.
 
 ## Default optimizer experiment: production snapshot, off versus on
 
-Use the production corpus directly. A single read transaction freezes the snapshot
-for both variants while ingestion continues. For the general research content-scoping candidate (runtime activation is separately restricted):
-
-```sh
-uv run python scripts/query_benchmark.py --case gov-heading-sections \
-  --content-scope --warm-runs 1 --seconds 120 \
-  --report ../../.artifacts/query-benchmarks/scope-pair.json
-```
-
-Pass the same arguments to `query_benchmark_production.py` through the homelab
-operator wrapper for production reader access. The baseline executes original SQL;
-the candidate applies our content-scope transformation after verifying the installed
-catalogue supports it. All native DuckDB optimizer settings remain identical.
-An ineligible case fails rather than silently comparing the query to itself.
-
-Require complete equal results first, then evaluate latency and physical-work
-improvement. Repeat with `--candidate-first` to check cache/order bias. Neither a
-partial result nor a timeout is a correctness pass. A separate isolated corpus is
-needed only for controlled corpus-growth or physical-write experiments, not for
-this normal optimizer development loop.
-
-`--content-scope` exits unsuccessfully if results differ, measurement is incomplete,
-or the candidate's measured warm median is not lower than the baseline's. The
-report retains both timings and their ratio. Treat one speedup as provisional until
-reverse-order measurements corroborate it; this is an experiment gate, not a noisy
-wall-time assertion in unit tests.
+Use `--optimization` for a registered pass, as described under
+[Comparing a registered optimization](#comparing-a-registered-optimization).
+Use `--sql-override` for research SQL. Both compare within one read transaction;
+repeat with `--candidate-first`, require complete equal answers, and check the
+recorded activation decisions before claiming a pass improved performance.
+Retired content-scoping switches and cases are historical, not current CLI options.
 
 Interrupted measurements retain a safe `progress` record: case/scale, snapshot,
 failing phase, completed normal-execution timing and row count, and completed warm
@@ -203,25 +221,6 @@ null and acceptance uses `normal_time_ratio`; repeat the pair in reverse order.
 This mode is useful when one baseline finishes within the measurement deadline
 but a baseline plus a repeat cannot. It does not establish a warm-cache speedup.
 
-### Experimental selected-content execution
-
-With the normal lake-reader environment, use the shared measurement/result checks
-and include execution-time key selection in each candidate measurement:
-
-```sh
-  --case selected-content-headings --report ../../.artifacts/selected-forward.json
-  --case selected-content-headings --candidate-first \
-  --report ../../.artifacts/selected-reverse.json
-```
-
-Each pair pins one transaction and checks installed definitions. These are ordinary
-executions, not profiles; no files/bytes metrics are claimed. Reports contain
-bounded result digests and metadata, not SQL or keys. An incomplete original query
-is recorded as failure, never equality. For private incident SQL, create the case
-under ignored `.artifacts/` with a matching case.toml and pass `--case-root`; remove
-it after the investigation. Public-service activation and limits still require
-separate QueryService validation.
-
 ## Positional search acceptance
 
 The current all-text layout and query-API search experiment is documented in
@@ -244,3 +243,26 @@ query compiler; adding a pass needs no benchmark CLI branch. The report includes
 Lookup cost remains inside each timed execution in the shared snapshot. Repeat
 with `--candidate-first` and verify result equality. See the
 [developer guide](../../packages/periplus/src/periplus/query/README.md).
+
+## Historical investigations
+
+These links provide supporting evidence, not extra setup steps. Check each investigation's
+catalogue and runtime version before reusing its SQL. Retired cases are excluded from
+current case discovery.
+
+The current append-only element text index comparison is documented in
+[append-only-index/results.md](../../docs/query-investigations/append-only-index/results.md).
+It compares three posting shapes with page-once ICU tokenization in disposable lakes.
+
+The disposable vocabulary/term-stat materialization experiment is documented in
+[`docs/query-investigations/vocabulary-materialization/`](../../docs/query-investigations/vocabulary-materialization/README.md).
+It builds only a temporary local lake and uses this bench's paired measurement
+runner; it does not install production projections.
+The proposed public `term` surface and real local HTML experiment are documented
+in [term-surface.md](../../docs/query-investigations/vocabulary-materialization/term-surface.md).
+The controlled literal-versus-term extraction growth test and join-planning
+diagnostics are in [extraction-pruning.md](../../docs/query-investigations/vocabulary-materialization/extraction-pruning.md).
+The experimental API rewrite and its benchmark results are documented in
+[query-api-barrier.md](../../docs/query-investigations/vocabulary-materialization/query-api-barrier.md).
+The 10/100/1,000 fixed-match growth, row-group and set-filter cutoff tests are in
+[multikey-extraction.md](../../docs/query-investigations/vocabulary-materialization/multikey-extraction.md).

@@ -1,0 +1,9 @@
+id = "single-capture-links"
+title = "Outbound links from one latest capture"
+use_case = "Production business case 10: inventory destinations from the latest IC3 landing-page capture."
+classification = "optimizer"
+ordered = true
+memory_limit = "512MB"
+# User guidance: under 5 seconds is great; prioritize unrelated-corpus scaling.
+max_warm_ms = 5000
+seconds = 60

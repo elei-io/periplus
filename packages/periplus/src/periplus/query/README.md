@@ -1,8 +1,8 @@
 # Developing the query API
 
 Both endpoints expose the same six public primitives and `search(terms)`. Stable
-uses native DuckDB execution. Experimental adds one bounded exact-text candidate
-pass. Neither endpoint owns a separate compiler or execution engine.
+uses native DuckDB execution. Experimental adds bounded exact-text and selected-capture link
+passes. Neither endpoint owns a separate compiler or execution engine.
 
 ## Where to work
 
@@ -14,6 +14,8 @@ pass. Neither endpoint owns a separate compiler or execution engine.
 | `optimizations/__init__.py` | Explicit ordered stable and experimental pass lists |
 | `optimizations/base.py` | Pass input and typed decision |
 | `optimizations/element_text.py` | The exact-text candidate algorithm |
+| `optimizations/capture_links.py` | Selected capture lookup and scoped link scan |
+| `optimizations/_catalogue.py` | Shared installed-view AST comparison |
 | `service.py` | One connection, admission, snapshot, deadline, result limits and cleanup |
 | `benchmarking.py` | Same-snapshot result and performance comparison; never request handling |
 
@@ -85,10 +87,19 @@ Use fixed messages and counts only: never include query literals, URLs, content
 IDs, row IDs, native errors or credentials in diagnostic messages. These messages
 also enter private query history. No new telemetry or persistence path is added.
 
-The current pass deliberately declines single words such as `text = 'robot'`,
+The exact-text pass deliberately declines single words such as `text = 'robot'`,
 parameters, joins and collations. Its safe interior-word anchor is narrower than
 search semantics. `search(['robot'])` is a public catalogue macro, not a compiler
 pass; it works in both modes independently of pass registration.
+
+The capture-link pass recognizes one deterministic, limited capture CTE for literal
+page URLs and one inner capture-ID join to links. Its named functions match syntax,
+check the installed contract, fetch bounded keys and rewrite the scan. It resolves
+at most 128 captures (8 KiB per source URL, 128 KiB total keys), then reuses the IDs
+in the CTE, retaining duplicate IDs. Literal visit and normalized source-URL filters
+use the existing physical sort key. Redirects use effective URL, falling back to
+page URL. Unsupported shapes and over-budget selections keep native execution.
+See [the investigation](../../../../../docs/query-investigations/single-capture-links/README.md).
 
 ## Running checks and comparisons
 
@@ -104,10 +115,11 @@ uv run python scripts/query_benchmark.py --case index-text-equality \
 ```
 
 Use an existing eligible case from `benchmarks/query/cases/`; benchmark SQL uses
-`public_v1` against the portable contract. `--optimization` selects a registered
+`public_v1` or `experimental` against the portable contract. The runner infers the
+pass namespace from qualified case tables and rejects mixed schemas. `--optimization` selects a registered
 pass directly for a controlled comparison, regardless of its production mode.
 Candidate lookup is included in measured time. The report records decision status,
-reason and counts even when the pass declines. Repeat with `--candidate-first` to
+reason, counts and `lookup_and_rewrite_ms` even when the pass declines. Repeat with `--candidate-first` to
 check run-order bias. Do not compare rewritten SQL alone and omit its lookup cost.
 Production acceptance must additionally exercise the unchanged user SQL through
 the actual service. Run `make check` from the repository root before pushing.
