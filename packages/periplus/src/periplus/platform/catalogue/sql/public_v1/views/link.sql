@@ -1,4 +1,4 @@
 CREATE OR REPLACE VIEW public_v1.link AS
-SELECT visit_id AS capture_id, element_index AS node_index, raw_href, target_url AS resolved_url
+SELECT visit_id AS capture_id, element_index AS node_index, target_url, raw_href
 FROM material.link_occurrences occurrence
 WHERE EXISTS (SELECT 1 FROM public_v1.capture capture WHERE capture.capture_id = occurrence.visit_id);

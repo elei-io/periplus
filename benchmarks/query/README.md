@@ -1,3 +1,9 @@
+The current contract has six graph/content views and `search()` in both query
+schemas. Heading cases now filter `html_element` directly. Heading-section cases
+and the old key-domain probe moved to `retired/` because their public relations
+were removed. Their old measurements do not benchmark the new primitives.
+`word-search-captures` exercises word discovery joined to page/capture provenance.
+
 Current element-text cases exercise ordinary SQL over stored elements. Old search
 experiments are historical and are not part of current case discovery.
 

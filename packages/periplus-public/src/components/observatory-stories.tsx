@@ -5,7 +5,7 @@ import Link from "next/link"
 import { memo, useEffect, useLayoutEffect, useRef } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { ArrowUpRight, Check } from "lucide-react"
-import { Button, buttonVariants } from "@/components/ui/button"
+import { Button } from "@/components/ui/button"
 import { Table, TableBody, TableRow, TableCell } from "@/components/ui/table"
 import { useRequestObservationTail } from "@/hooks/use-request-observation-tail"
 import { Alert, AlertDescription } from "@/components/ui/alert"
@@ -21,7 +21,7 @@ function title(item: Collection) { return item.specification.seed_description ||
 function site(url: string) { try { return new URL(url).hostname } catch { return url } }
 function queryUrl(id: string) {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) return null
-  return datasetSqlUrl({sql: `SELECT o.requested_url, o.captured_at, o.http_status_code\nFROM public_v1.capture o\nWHERE list_contains(o.request_ids, '${id}'::UUID)\nORDER BY o.captured_at DESC NULLS LAST LIMIT 100;`})
+  return datasetSqlUrl({sql: `SELECT o.page_url, o.captured_at, o.http_status_code, o.content_id\nFROM public_v1.capture o\nWHERE o.capture_id = '${id}'::UUID\nORDER BY o.captured_at DESC NULLS LAST LIMIT 100;`})
 }
 function ReadError({ error }: {error: unknown}) { return <Alert variant="destructive"><AlertDescription>{extractApiError(error)}</AlertDescription></Alert> }
 function progress(item: Collection) {
@@ -59,7 +59,7 @@ function RequestObservationTail({id, playing}: {id:string;playing:boolean}) {
     {query.error && <p role="alert">{query.data ? "Showing the last received captures. " : "Captures unavailable. "}{extractApiError(query.error)}<Button variant="link" size="sm" onClick={()=>void query.refetch()}>Retry</Button></p>}
     {query.isPending && <p role="status">Loading captures…</p>}
     {query.data && !items.length && <p>Captures will appear here as this request’s results are recorded.</p>}
-    {items.length > 0 && <Table aria-label="Recent pages connected to this request"><TableBody>{items.map(item=><TableRow key={item.observation_id} data-observation-id={item.observation_id} className="request-observation-row"><TableCell><a href={item.requested_url} target="_blank" rel="noopener noreferrer" title={`${item.requested_url} (opens in a new tab)`}><span>{item.requested_url.replace(/^https?:\/\//, "")}</span><ArrowUpRight size={13}/></a></TableCell><TableCell>{item.observed_at ? <time dateTime={item.observed_at} title={new Date(item.observed_at).toLocaleString()}>{age(item.observed_at, query.data?.as_of ?? item.observed_at)}</time> : <span>{item.observation_committed ? "Time unknown" : "Recording"}</span>}{item.outcome && item.outcome !== "succeeded" ? <small>Unsuccessful</small> : item.mode !== "acquired" ? <small>{item.mode === "reused" ? "Reused" : "Shared"}</small> : null}</TableCell></TableRow>)}</TableBody></Table>}
+    {items.length > 0 && <Table aria-label="Recent pages connected to this request"><TableBody>{items.map(item=><TableRow key={item.observation_id} data-observation-id={item.observation_id} className="request-observation-row"><TableCell><a href={item.requested_url} target="_blank" rel="noopener noreferrer" title={`${item.requested_url} (opens in a new tab)`}><span>{item.requested_url.replace(/^https?:\/\//, "")}</span><ArrowUpRight size={13}/></a></TableCell><TableCell>{item.observed_at ? <time dateTime={item.observed_at} title={new Date(item.observed_at).toLocaleString()}>{age(item.observed_at, query.data?.as_of ?? item.observed_at)}</time> : <span>{item.observation_committed ? "Time unknown" : "Recording"}</span>}{item.outcome && item.outcome !== "succeeded" ? <small>Unsuccessful</small> : item.mode !== "acquired" ? <small>{item.mode === "reused" ? "Reused" : "Shared"}</small> : null}{queryUrl(item.observation_id) && <Link href={queryUrl(item.observation_id)!} target="_blank" rel="noopener noreferrer">Query capture <ArrowUpRight size={13}/></Link>}</TableCell></TableRow>)}</TableBody></Table>}
     <p className="request-tail-note">Newest added first · times show when pages were observed. Latest results may still be arriving.</p>
   </section>
 }
@@ -74,7 +74,6 @@ export function RequestStory({id, playing}: {id:string;playing:boolean}) {
   const state=item.retention_expired ? "Retention expired" : finished ? "Finished" : paused ? "Paused" : item.source === "history" ? "Outcome pending" : !item.seeds_settled ? "Finding starting pages" : "In progress"
   const seed=item.specification.seed_urls[0]
   const name=item.specification.seed_description || (seed ? site(seed) : "Coverage request")
-  const sql=queryUrl(id)
   const depth=item.specification.max_depth
   return <section className="observatory-request-story">
     {query.error && <ReadError error={query.error}/>}
@@ -90,7 +89,7 @@ export function RequestStory({id, playing}: {id:string;playing:boolean}) {
       {item.source === "current" && (item.shared_pages > 0 || item.reused_pages > 0) && <p>{item.shared_pages.toLocaleString()} shared connections · {item.reused_pages.toLocaleString()} earlier captures reused. These counts can overlap with the pages captured total.</p>}
     </div>
     </div><RequestObservationTail key={id} id={id} playing={playing}/></div>
-    <footer className="request-summary-footer"><p>{item.query_ready === true ? "Ready to explore in SQL" : item.supplied_pages === null ? "Explore any results recorded so far" : item.supplied_pages === 0 ? "No captures recorded yet" : "Newest captures may still be arriving"}</p>{sql && <Link className={buttonVariants({variant:"default"})} href={sql} target="_blank" rel="noopener noreferrer">Query captures <ArrowUpRight size={14}/></Link>}</footer>
+    <footer className="request-summary-footer"><p>{item.query_ready === true ? "Ready to explore in SQL" : item.supplied_pages === null ? "Explore any results recorded so far" : item.supplied_pages === 0 ? "No captures recorded yet" : "Newest captures may still be arriving"}</p></footer>
   </section>
 }
 

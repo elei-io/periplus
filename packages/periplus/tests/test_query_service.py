@@ -189,53 +189,31 @@ class QueryServiceTests(unittest.TestCase):
         self.addCleanup(self.service.close)
 
 
-    def test_experimental_heading_scope_uses_original_sql_and_recovers(self):
+
+    def test_search_and_graph_primitives_on_both_read_only_services(self):
         from periplus.query.service import QueryMode
-        from periplus.query.heading_scope import HeadingScope, OPTIMIZATION
-        self.service.close()
-        writer = DuckLakeConnectionFactory(self.config).connect()
-        try:
-            writer.execute('USE periplus')
-            writer.execute('DELETE FROM material.html_elements')
-            from element_fixture import seed
-            seed(writer, '<h1>Light</h1><h2>Daylight</h2>', 'helper-fixture')
-        finally:
-            writer.close()
-        self.service.connection = self.service._connect()
+        from periplus.query.helpers import query_helpers
         experimental = QueryService(self.config, mode=QueryMode.EXPERIMENTAL)
         self.addCleanup(experimental.close)
-        request = QueryRequest(sql="SELECT h.level,h.text,c.effective_url AS url FROM html_heading h JOIN capture c USING(content_id) WHERE requested_url LIKE '%inline' AND h.text ILIKE '%Light%' ORDER BY h.level LIMIT 10")
-        with patch.object(HeadingScope, 'resolve', side_effect=AssertionError('prep or stable performed selection')):
-            self.assertEqual(experimental.prepare(request).optimizations, [])
-            baseline = self.service.execute(request)
-        selected_snapshots = []
-        original = HeadingScope.resolve
-        def resolve(scope, connection):
-            selected_snapshots.append(connection.execute("SELECT id FROM ducklake_current_snapshot('periplus')").fetchone()[0])
-            return original(scope, connection)
-        with patch.object(HeadingScope, 'resolve', resolve):
-            result = experimental.execute(request)
-        self.assertEqual(result.rows, baseline.rows)
-        self.assertEqual(result.row_count, 2)
-        self.assertEqual(result.types, baseline.types)
-        self.assertEqual(result.sql, request.sql)
-        self.assertEqual(result.optimizations, [OPTIMIZATION])
-        self.assertEqual(selected_snapshots, [result.source_snapshot])
-        self.assertIn('_query_scoped_headings', result.plan)
-        with patch.object(HeadingScope, 'resolve', side_effect=TimeoutError('selection deadline')):
-            with self.assertRaises(TimeoutError):
-                experimental.execute(request)
-        self.assertEqual(experimental.execute(QueryRequest(sql='SELECT 42')).rows, [[42]])
-        def slow_selection(scope, connection):
-            connection.execute('SELECT sum(i) FROM range(10000000000) t(i)').fetchall()
-        experimental.deadline = 0.1
-        try:
-            with patch.object(HeadingScope, 'resolve', slow_selection):
-                with self.assertRaises(TimeoutError):
-                    experimental.execute(request)
-        finally:
-            experimental.deadline = None
-        self.assertEqual(experimental.execute(QueryRequest(sql='SELECT 42')).rows, [[42]])
+        sql = """SELECT p.url, c.content_id, s.score
+            FROM search(?) s JOIN capture c USING (content_id)
+            JOIN page p ON p.url=c.page_url ORDER BY p.url"""
+        for service in (self.service, experimental):
+            with self.subTest(schema=service.schema):
+                payload = QueryRequest(sql=sql, parameters=[['robot', 'careers']])
+                prepared = service.prepare(payload)
+                result = service.execute(payload)
+                self.assertEqual(result.rows, [['https://example.com/inline', 'helper-fixture', 2.0]])
+                self.assertEqual(result.types, ['VARCHAR', 'VARCHAR', 'DOUBLE'])
+                self.assertEqual(prepared.schema_version, service.schema)
+                self.assertEqual(result.schema_version, service.schema)
+                metadata = query_helpers(service.schema)
+                self.assertEqual([h.name for h in metadata.helpers], [service.schema + '.search'])
+                self.assertEqual({r.name.split('.')[-1] for r in metadata.relations},
+                    {'page', 'capture', 'link', 'html_element', 'html_metadata', 'html_jsonld'})
+                for removed in ('html_term', 'html_heading', 'material.html_terms'):
+                    with self.assertRaises(ValueError):
+                        service.execute(QueryRequest(sql=f'SELECT * FROM {removed}'))
 
     def test_modes_preserve_results_and_have_separate_admission(self):
         from periplus.query.service import QueryMode
@@ -253,7 +231,7 @@ class QueryServiceTests(unittest.TestCase):
         self.assertEqual(stable.query_mode, QueryMode.STABLE)
         self.assertEqual(result.query_mode, QueryMode.EXPERIMENTAL)
         self.assertEqual(result.optimizations, [])
-        self.assertEqual(evidence.compiler_version, "public-query-v14:experimental")
+        self.assertEqual(evidence.compiler_version, "public-query-v15:experimental")
         self.assertNotEqual(result.compiler_version, stable.compiler_version)
         with self.assertRaises(ValueError):
             QueryService(self.config, mode="invalid")
@@ -262,7 +240,7 @@ class QueryServiceTests(unittest.TestCase):
 
     def test_unmodified_preparation_execution_and_reuse(self):
         from periplus.operations.query_history.schemas import PreparationEvidence
-        request = QueryRequest(sql="""SELECT c.requested_url AS url, m.value AS title
+        request = QueryRequest(sql="""SELECT c.page_url AS url, m.value AS title
             FROM html_element p JOIN capture c USING (content_id)
             JOIN html_metadata m USING (content_id)
             WHERE p.tag = 'p' AND p.text ILIKE ? AND m.name = ?""", parameters=['%robot%', 'title'])
@@ -287,7 +265,7 @@ class QueryServiceTests(unittest.TestCase):
             self.service.prepare(QueryRequest(sql=request.sql.replace('m.value', 'm.missing'), parameters=request.parameters))
 
     def test_joined_search_stays_unmodified_in_prepare_and_execute(self):
-        request = QueryRequest(sql="""SELECT c.requested_url AS url, m.value AS title
+        request = QueryRequest(sql="""SELECT c.page_url AS url, m.value AS title
             FROM html_metadata m JOIN capture c USING (content_id)
             JOIN html_element p USING (content_id) WHERE p.tag = 'p' AND p.text ILIKE ? AND m.name = ?""",
             parameters=['%robot%', 'title'])
@@ -302,7 +280,7 @@ class QueryServiceTests(unittest.TestCase):
         self.assertEqual(result.parameters, request.parameters)
 
     def test_compound_join_stays_unmodified_and_preserves_parameter_positions(self):
-        request = QueryRequest(sql="""SELECT ? AS marker, c.requested_url AS url, m.value AS title
+        request = QueryRequest(sql="""SELECT ? AS marker, c.page_url AS url, m.value AS title
             FROM html_element p JOIN capture c USING (content_id)
             JOIN html_metadata m ON (m.name = ? AND (m.content_id = c.content_id))
             WHERE p.tag = 'p' AND p.text ILIKE ? ORDER BY title""", parameters=['marker', 'title', '%robot%'])
@@ -319,27 +297,6 @@ class QueryServiceTests(unittest.TestCase):
         self.assertEqual(reused.rows, result.rows)
 
 
-    def test_heading_section_query_unmodified_on_read_only_lake(self):
-        self.service.close()
-        writer = DuckLakeConnectionFactory(self.config).connect()
-        try:
-            writer.execute('USE periplus')
-            writer.execute('DELETE FROM material.html_elements')
-            from element_fixture import seed
-            seed(writer, '<h1>Heading</h1><h2>Child</h2>', 'helper-fixture')
-        finally:
-            writer.close()
-        self.service.connection = self.service._connect()
-        request = QueryRequest(sql="""SELECT h.text AS heading, s.* FROM capture c
-            JOIN html_heading h USING(content_id) JOIN html_section s
-            ON s.content_id=h.content_id AND s.heading_node_index=h.node_index
-            WHERE c.requested_url LIKE '%inline' ORDER BY h.node_index""")
-        prepared = self.service.prepare(request)
-        result = self.service.execute(request)
-        for response in (prepared, result):
-            self.assertEqual(response.sql, request.sql)
-            self.assertFalse(any(d.code.startswith('content_scope') for d in response.diagnostics))
-        self.assertEqual([row[0] for row in result.rows], ['Heading', 'Child'])
 
     def test_anonymous_parameter_cast_matches_duckdb_without_rewriting_sql(self):
         sql = "SELECT ?::INTEGER AS value, '?::UUID' AS marker /* ?:: is literal comment text */"
@@ -395,7 +352,7 @@ class QueryServiceTests(unittest.TestCase):
         self.assertEqual(oversized.diagnostics[0]['code'], 'plan_truncated')
 
     def test_prepare_execute_and_reuse(self):
-        payload = QueryRequest(sql="SELECT requested_url FROM public_v1.capture WHERE requested_url=?", parameters=["https://example.com/inline"])
+        payload = QueryRequest(sql="SELECT page_url FROM public_v1.capture WHERE page_url=?", parameters=["https://example.com/inline"])
         self.assertEqual(self.service.prepare(payload).sql, payload.sql)
         self.assertEqual(self.service.execute(payload).rows, [["https://example.com/inline"]])
         self.assertEqual(self.service.execute(QueryRequest(sql="SELECT count(*) FROM public_v1.capture")).rows, [[21]])
@@ -477,7 +434,7 @@ class QueryServiceTests(unittest.TestCase):
         self.assertEqual(result.rows, [])
 
     def test_operator_limits_apply_per_operation(self):
-        payload = QueryRequest(sql="SELECT requested_url FROM public_v1.capture ORDER BY requested_url")
+        payload = QueryRequest(sql="SELECT page_url FROM public_v1.capture ORDER BY page_url")
         for count in (2, 7):
             result = self.service.execute(payload, limits=QueryLimits(max_rows=count))
             self.assertEqual(len(result.rows), count)

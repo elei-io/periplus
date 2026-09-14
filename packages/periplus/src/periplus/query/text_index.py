@@ -106,19 +106,17 @@ def _index_contract_matches(connection: duckdb.DuckDBPyConnection, alias: str) -
         return False
     installed = dict(connection.execute(
         "SELECT view_name, sql FROM duckdb_views() WHERE database_name=? "
-        "AND schema_name='experimental' AND view_name IN ('html_element','html_term')", [alias]).fetchall())
-    # This optimization is proven only for the released element/posting shape.
-    # Changing experimental SQL must decline it until separately reviewed.
-    root = files("periplus.platform.catalogue").joinpath("sql/public_v1/views")
-    for name in ("html_element", "html_term"):
-        if name not in installed:
-            return False
-        try:
-            if _view_select(installed[name]) != _view_select(root.joinpath(name + ".sql").read_text()):
-                return False
-        except (ValueError, AttributeError):
-            return False
-    return True
+        "AND schema_name='experimental' AND view_name='html_element'", [alias]).fetchall())
+    # The primitive view must still match the reviewed element shape. Postings
+    # are read directly from the private, startup-validated physical relation;
+    # there is no independently mutable public posting view to inspect.
+    expected = files("periplus.platform.catalogue").joinpath("sql/public_v1/views/html_element.sql")
+    if "html_element" not in installed:
+        return False
+    try:
+        return _view_select(installed["html_element"]) == _view_select(expected.read_text())
+    except (ValueError, AttributeError):
+        return False
 
 
 def text_index_rewrite(connection: duckdb.DuckDBPyConnection, statement: exp.Expression,
@@ -129,8 +127,8 @@ def text_index_rewrite(connection: duckdb.DuckDBPyConnection, statement: exp.Exp
         return None
     quoted_alias = '"' + alias.replace('"', '""') + '"'
     rows = connection.execute(
-        f"SELECT content_id, CASE WHEN len(node_indexes)<={MAX_NODES_PER_CONTENT} "
-        f"THEN node_indexes ELSE NULL END FROM {quoted_alias}.experimental.html_term WHERE term=? "
+        f"SELECT content_sha256 AS content_id, CASE WHEN len(node_indexes)<={MAX_NODES_PER_CONTENT} "
+        f"THEN node_indexes ELSE NULL END FROM {quoted_alias}.material.html_terms WHERE term=? "
         f"LIMIT {MAX_CANDIDATE_CONTENTS + 1}", [anchor.term]).fetchall()
     if (len(rows) > MAX_CANDIDATE_CONTENTS
             or any(not isinstance(row[0], str) or row[1] is None for row in rows)

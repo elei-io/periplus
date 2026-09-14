@@ -2,19 +2,11 @@
 
 The canonical element replacement is specified in [ELEMENT_LAYOUT.md](ELEMENT_LAYOUT.md).
 
-Exact page-word lookup uses `public_v1.html_term`, an immutable term/content row
-with a sorted node-index list. For example:
-
-```sql
-SELECT content_id, unnest(node_indexes) AS node_index
-FROM public_v1.html_term
-WHERE term = 'catfish';
-```
-
-The term key must already be Unicode case folded and NFC-normalized; it is not a
-free-text query parser. This access path does not replace `element.text ILIKE`
-substring semantics. Page words crossing inline elements belong only to elements
-containing the complete word. Title is page text; metadata attributes are not.
+Exact page-word lookup uses `search(terms)` in both `public_v1` and `experimental`.
+The term/content postings remain private in `material.html_terms`. Search accepts
+up to 32 case-folded, NFC-normalized word keys and returns matching content IDs,
+containing element indexes and distinct-word coverage scores. Join `capture` for
+page identities and observation times. See [SCHEMA.md](SCHEMA.md) for exact semantics.
 
 Periplus delivers its query interface in three layers, in this order.
 
@@ -316,6 +308,12 @@ The isolated public query service retains its read-only credentials and namespac
 table in control Postgres, bounded best-effort recording, janitor cleanup and the
 `observatory/queries` dashboard. This is explicitly approved product analytics;
 no query results or crawl history are added to control Postgres.
+
+### Historical validation of removed HTML views
+
+The following dated measurements describe the superseded catalogue. Specialized
+HTML views are no longer installed in either query schema. They are retained here
+as historical investigation evidence, not current query examples.
 
 ### HTML table view validation (2026-09-08)
 
@@ -753,7 +751,7 @@ Promotion is a reviewed release: copy the selected experimental contract into a 
 contract, then install and deploy together. Do not point a released version at mutable
 experimental views. Physical projection changes still follow the full rebuild lifecycle.
 
-Stable and experimental share compiler `public-query-v14`, with mode suffixes.
+Stable and experimental share compiler `public-query-v15`, with mode suffixes.
 Stable runs ordinary validated SQL. Experimental can apply
 `element_text_index_candidates` to literal exact-text predicates on one direct
 `html_element` relation. A complete interior ASCII word surrounded by spaces is a
@@ -821,10 +819,6 @@ the configured body size, streaming without response buffering, and 610-second t
 ceiling. Assistant and crawler clients may retain shorter caller deadlines.
 
 
-Experimental also applies `capture_heading_exact_scope_v1` to supported capture/heading
-inner joins. It selects at most 1,024 distinct non-null content IDs (128 KiB), materializes
-exact-membership-filtered experimental headings, and preserves the original join and text
-predicates. Both stages share the request snapshot and deadline. Prep does not select keys;
-unsupported SQL and oversized selections retain native execution. See
-[the heading-scan investigation](query-investigations/heading-key-scans/README.md) for
-measurements and limits. Both optimizations use compiler `public-query-v14:experimental`.
+The former capture/heading-specific compiler pass was removed with html_heading.
+Use html_element tag predicates for heading analysis. The catalogue simplification
+is a schema-contract change, not an optimizer performance promotion.

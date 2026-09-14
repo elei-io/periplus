@@ -35,25 +35,24 @@ class CanonicalElementsTests(unittest.TestCase):
             self.assertEqual(r['text_end']-r['text_start'],len(expected))
             if r['parent_index'] is not None:self.assertEqual(r['depth'],by_index[r['parent_index']]['depth']+1)
         self.assertEqual(self.c.connection.execute("SELECT text,text_direct FROM public_v1.html_element WHERE tag='p'").fetchone(),(' monkey\n café 😀',' mon\n café 😀'))
-        self.assertEqual(self.c.connection.execute("SELECT text FROM public_v1.html_select_option").fetchone(),('United Kingdom',))
+        self.assertEqual(self.c.connection.execute("SELECT text FROM public_v1.html_element WHERE tag='option'").fetchone(),('United Kingdom',))
         self.assertIn('clipPath',{r['tag'] for r in rows})
 
-    def test_nested_list_exclusion_preserves_tail_order(self):
+    def test_nested_list_text_preserves_all_descendants(self):
         self.seed('<ol><li>A<b>B</b>C<ul><li>hidden<ol><li>deeper</li></ol></li></ul>D<i>E</i>F</li><li></li></ol>')
-        rows=self.c.connection.execute('SELECT text FROM public_v1.html_list_item ORDER BY node_index').fetchall()
-        self.assertEqual(rows,[('ABCDEF',),('hidden',),('deeper',),('',)])
+        rows=self.c.connection.execute("SELECT text FROM public_v1.html_element WHERE tag='li' ORDER BY node_index").fetchall()
+        self.assertEqual(rows,[('ABChiddendeeperDEF',),('hiddendeeper',),('deeper',),('',)])
 
-    def test_nested_table_exclusion_and_empty_cells(self):
+    def test_nested_table_text_and_empty_cells(self):
         self.seed('<table><caption>Caption<b> bold</b></caption><tr><td>before<table><tr><td>inner</td></tr></table>after</td><td></td></tr></table>')
-        self.assertEqual(self.c.connection.execute('SELECT caption FROM public_v1.html_table ORDER BY node_index').fetchall(),[('Caption bold',),(None,)])
-        self.assertEqual(self.c.connection.execute('SELECT text FROM public_v1.html_table_cell ORDER BY node_index').fetchall(),[('beforeafter',),('inner',),('',)])
+        self.assertEqual(self.c.connection.execute("SELECT text FROM public_v1.html_element WHERE tag='caption' ORDER BY node_index").fetchall(),[('Caption bold',)])
+        self.assertEqual(self.c.connection.execute("SELECT text FROM public_v1.html_element WHERE tag='td' ORDER BY node_index").fetchall(),[('beforeinnerafter',),('inner',),('',)])
 
-    def test_direct_text_views_and_section_end(self):
+    def test_heading_code_and_textarea_text(self):
         self.seed('<h1>A<b>B</b></h1><pre><code> x\n<b>y</b></code></pre><form><textarea>A&amp;B</textarea></form><h2>last</h2><p>end</p>')
-        self.assertEqual(self.c.connection.execute('SELECT text FROM public_v1.html_heading ORDER BY node_index').fetchall(),[('AB',),('last',)])
-        self.assertEqual(self.c.connection.execute('SELECT block,text FROM public_v1.html_code').fetchone(),(True,' x\ny'))
-        self.assertEqual(self.c.connection.execute("SELECT value FROM public_v1.html_form_control WHERE tag='textarea'").fetchone(),('A&B',))
-        self.assertEqual(self.c.connection.execute('SELECT count(*) FROM public_v1.html_section').fetchone(),(2,))
+        self.assertEqual(self.c.connection.execute("SELECT text FROM public_v1.html_element WHERE tag IN ('h1','h2') ORDER BY node_index").fetchall(),[('AB',),('last',)])
+        self.assertEqual(self.c.connection.execute("SELECT text FROM public_v1.html_element WHERE tag='code'").fetchone(),(' x\ny',))
+        self.assertEqual(self.c.connection.execute("SELECT text FROM public_v1.html_element WHERE tag='textarea'").fetchone(),('A&B',))
 
     def test_removed_surfaces_and_internal_text(self):
         self.seed('<p>one</p>')

@@ -71,8 +71,7 @@ count projected elements. The null-parent row proves content presence.
 
 Every element stores exact descendant text in parsed order, including template
 fragments and script/style/title text. No whitespace normalization or separators.
-Internal code-point offsets support excluding nested lists/tables from structured
-views without storing text nodes. Elements use eight content buckets and sort by
+Internal code-point offsets support exact-text index candidate verification without storing text nodes. Elements use eight content buckets and sort by
 content_sha256, node_index. Public html_element exposes text directly.
 
 ### `material.html_terms`
@@ -86,7 +85,7 @@ canonical page stream. No stemming, substring matching or phrase positions.
 
 Files use eight term buckets, term/content ordering and 2,048-row groups. Native
 maintenance retains the same row-group setting and never aggregates posting arrays.
-The public `html_term(term, content_id, node_indexes)` view exposes this grain.
+Postings are private physical data; there is no public term relation.
 `search(terms VARCHAR[])` is a portable table macro over these postings.
 It accepts at most 32 normalized term keys, matches any requested key, and returns
 `content_id VARCHAR`, `node_indexes INTEGER[]` and `score DOUBLE`. Node indexes are
@@ -132,15 +131,37 @@ marker. File discovery is the only material registry. Its digest is frozen into 
 active-generation state and includes each projection file's implementation source; any add, edit,
 or delete requires redeployment and a complete rebuild.
 
-## Public catalogue: `public_v1`
+## Public catalogue: `public_v1` and `experimental`
 
-The stable public namespace is `public_v1`. Stable query API requests default to this
-version, so `SELECT * FROM capture` and `SELECT * FROM public_v1.capture` are
-identical. Explicit unsupported `schema_version` values are rejected. Preparation
-and execution report `schema_version`; execution additionally reports
-`source_snapshot`. A schema version specifies semantics, not a data snapshot or a
-promise that an expired snapshot can be replayed. Physical layout is private.
-There are no `web` or `content` compatibility namespaces.
+Both independently declared schemas expose exactly six views: `page`, `capture`,
+`link`, `html_element`, `html_metadata`, and `html_jsonld`, plus `search(terms)`.
+`public_v1` is the default. Experimental definitions remain independently editable;
+neither schema forwards to the other. The descriptions below apply to both.
+
+Catalogue contract version: `3.0.0`. This directly replaces the previous surface:
+`capture.page_url` replaces `requested_url`, `link.target_url` replaces `resolved_url`,
+and request membership and specialized HTML extraction views are removed. There
+are no aliases. Setup replaces both catalogues transactionally; no physical schema
+change or materialization rebuild is required for this public-only change. Deploy
+query services and clients with the matching catalogue. Existing saved SQL must be
+updated directly. Readiness and request progress remain in operational APIs.
+
+Query responses report the resolved `schema_version`; execution also reports
+`source_snapshot`. Keys below describe logical identity, not enforced view keys.
+A snapshot reference does not retain that snapshot indefinitely.
+
+### `public_v1.page`
+
+One row per normalized URL, with one non-null `url VARCHAR` column as its logical
+key. It is the distinct union of requested and non-null effective capture URLs,
+and link destinations from retained HTML captures. It contains uncaptured linked
+destinations, but does not expose pending frontier work or acquisition failures
+without HTML. URLs disappear when no retained public evidence references them.
+
+Redirects, canonical declarations and identical bytes never merge URL identities.
+A requested URL and a different effective URL are separate pages. Normalization
+follows the ingestion URL rules above. This is a derived view, not a new page
+store, mutable head, or persistence lifecycle.
 
 ### Deterministic HTML text
 
@@ -161,14 +182,13 @@ HTML; non-HTML documents and attempts without content do not appear. `capture_id
 | Column | SQL type | Meaning |
 | --- | --- | --- |
 | capture_id | UUID | Acquisition identity |
-| requested_url | VARCHAR | Normalized requested URL |
+| page_url | VARCHAR | Requested URL; references page.url |
 | effective_url | VARCHAR | Final URL when known |
 | captured_at | TIMESTAMPTZ | Capture time |
 | http_status_code | INTEGER | Response status when known |
 | content_id | VARCHAR | SHA-256 identity of retained logical bytes, non-null |
 | byte_length | BIGINT | Length of retained logical bytes before storage compression, non-null |
 | encoding | VARCHAR | Detected character encoding when meaningful, otherwise null |
-| request_ids | UUID[] | Sorted unique coverage request IDs, non-null; empty when no membership evidence is visible |
 
 Media type and representation remain private acquisition evidence. Captured HTML
 may reflect browser rendering and is not necessarily the original HTTP response
@@ -205,196 +225,6 @@ A parser change requires rebuilding all dependent projections together.
 
 HTML materialization is asynchronous. A missing document element can mean pending
 materialization. Use LEFT JOIN when retaining captures without structure matters.
-
-### `public_v1.html_form`, `html_form_control`, and `html_select_option`
-
-These content-owned views describe captured HTML form structure. They add no
-stored projections, downloads, browser execution, or submissions. All three keys
-are `(content_id, node_index)`. Only HTML-namespace elements are included.
-
-`html_form` has these columns, in order: `content_id VARCHAR`, `node_index INTEGER`,
-`id VARCHAR`, `name VARCHAR`, `action VARCHAR`, `method VARCHAR`, `enctype VARCHAR`,
-`target VARCHAR`. Each row represents a form. Values are declared parsed attributes;
-missing attributes are null, empty ones remain empty, case is preserved, and
-relative actions stay relative. Missing method is not replaced by get.
-
-`html_form_control` has these columns, in order:
-
-| Column | SQL type | Meaning |
-| --- | --- | --- |
-| content_id | VARCHAR | Source content identity |
-| node_index | INTEGER | Source control node |
-| form_node_index | INTEGER | Reconstructed owner; null when unowned |
-| tag | VARCHAR | input, button, select, textarea, fieldset, output or object |
-| type | VARCHAR | Declared type; no default or tag-derived value |
-| name | VARCHAR | Declared name |
-| value | VARCHAR | Textarea child text, otherwise declared value attribute |
-| required | BOOLEAN | Attribute present on this element |
-| disabled | BOOLEAN | Attribute present on this element |
-| readonly | BOOLEAN | Attribute present on this element |
-| multiple | BOOLEAN | Attribute present on this element |
-
-Ownership is reconstructed from the parsed source tree: an explicit nonempty form
-attribute targets the first element with that exact ID in the content. It must be
-an HTML form; a preceding non-form with that ID blocks association. An empty or
-unresolved explicit reference leaves the control unowned, with no ancestor fallback.
-Without the form attribute, the nearest ancestor HTML form owns the control.
-Controls without owners remain rows. Serialized HTML cannot preserve JavaScript
-state, shadow-tree ownership, custom form-associated elements, or parser-history
-associations for malformed markup; these views do not claim to reconstruct those.
-
-Textarea value is its parsed child text, including an empty string for an empty
-textarea. Other value fields are only declared attributes: no checkbox default
-"on", select chosen value, output computation, selected file, or live input value
-is synthesized. Boolean attributes report presence, even when spelled "false".
-They do not infer inherited fieldset disabling, applicability, validation rules,
-or effective browser state. Labels and additional attributes remain in primitives.
-
-`html_select_option` has `content_id VARCHAR`, `node_index INTEGER`,
-`select_node_index INTEGER`, `option_index INTEGER`, `value VARCHAR`, `text VARCHAR`,
-`selected BOOLEAN`, `disabled BOOLEAN`, in that order. It includes options with
-an ancestor HTML select; the nearest select owns each option. Positions start at
-zero in source order across optgroups. Datalist and orphan options are excluded.
-Value is the declared attribute: absence is null, without a text fallback. Text
-concatenates descendant text nodes in order, excluding comments but with no
-whitespace normalization or inserted separators. Selected and disabled report
-attributes on the option itself; optgroup disabling and live selectedness are
-not inferred. Multiple selected declarations remain visible.
-
-```sql
-SELECT f.node_index AS form_node_index, f.action, c.tag, c.type, c.name, c.required
-FROM public_v1.html_form f
-JOIN public_v1.html_form_control c
-  ON c.content_id = f.content_id AND c.form_node_index = f.node_index
-WHERE f.content_id = ?
-ORDER BY f.node_index, c.node_index;
-```
-
-### `public_v1.html_list` and `public_v1.html_list_item`
-
-Content-owned views over existing HTML primitives, with no additional stored
-projection. Both keys are `(content_id, node_index)`.
-
-`html_list` represents each HTML-namespace ul or ol, including empty lists:
-
-| Column | SQL type | Meaning |
-| --- | --- | --- |
-| content_id | VARCHAR | Source content identity |
-| node_index | INTEGER | Source list node |
-| ordered | BOOLEAN | True for ol |
-| start_number | BIGINT | Effective ordered-list start; null for ul |
-| reversed | BOOLEAN | Whether an ol has the reversed attribute |
-
-`html_list_item` represents each direct HTML li child of one of those lists:
-
-| Column | SQL type | Meaning |
-| --- | --- | --- |
-| content_id | VARCHAR | Source content identity |
-| node_index | INTEGER | Source item node |
-| list_node_index | INTEGER | Owning list node |
-| item_index | INTEGER | Zero-based position among direct li children |
-| ordinal | BIGINT | Effective ordered-list number; null for ul |
-| text | VARCHAR | Descendant text excluding nested ul/ol subtrees |
-
-An ordered list starts at its valid start declaration, otherwise one, or its
-number of direct HTML li children when reversed. An empty reversed list therefore
-has start_number zero. Reversed is a boolean attribute: even reversed="false"
-means reversed. A valid li value resets that item's number and subsequent items
-continue upward or downward from it. Unordered lists ignore numbering attributes.
-
-Signed integer prefixes after leading HTML ASCII whitespace are parsed into BIGINT;
-invalid or out-of-range declarations are ignored. Numbering arithmetic uses a
-wider intermediate and raises a conversion error if a resulting ordinal exceeds
-BIGINT, rather than wrapping. Original declarations remain in html_element.attributes.
-CSS counters, marker styles and visibility are not interpreted.
-
-Nested lists own their items independently; only direct li children count toward
-a list's numbering. Orphan li and description-list dt/dd elements are excluded.
-Text concatenates descendant text nodes in order, without trimming, whitespace
-normalization or inserted separators. Comments and nested ul/ol subtrees are
-excluded; script/style text is included. Empty items yield empty strings.
-Description lists do not receive special extraction behavior here.
-
-```sql
-SELECT item_index, ordinal, text
-FROM public_v1.html_list_item
-WHERE content_id = ? AND list_node_index = ?
-ORDER BY item_index;
-```
-
-### `public_v1.html_jsonld`
-
-A content-owned view over `material.html_jsonld`, with one row per HTML script
-whose declared type has the application/ld+json media-type essence. Type matching
-ignores ASCII case, surrounding HTML ASCII whitespace and semicolon parameters.
-The key is `(content_id, node_index)`. Parsing happens during materialization.
-
-| Column | SQL type | Meaning |
-| --- | --- | --- |
-| content_id | VARCHAR | Source content identity |
-| node_index | INTEGER | Source script node |
-| value | JSON | Complete parsed document; SQL null on failure |
-| parse_error | VARCHAR | Null on success; otherwise a stable parse error |
-
-Ordered immediate script text comes from `html_element.text_direct` and is parsed
-during materialization using DuckDB's JSON parser and its accepted syntax. Queries
-read the stored records without scanning general HTML elements.
-Empty/whitespace-only scripts report `Empty JSON-LD script`; other parser failures
-report `Invalid JSON syntax`. Invalid declarations remain rows rather than failing
-the query. A valid JSON null is JSON `null`, with no parse error, distinct from
-SQL null on failure. Arrays, objects, @graph and scalar JSON values remain complete;
-this is syntax parsing, not JSON-LD semantic validation. Duplicate scripts remain
-separate source rows. No entity flattening, context fetching, URL resolution, RDF
-expansion, or schema.org interpretation occurs. Script src URLs are not fetched;
-a source-only script with no inline text is reported as empty.
-
-Parsed script text is available from html_element.text_direct through the source
-node. HTML script raw-text parsing does not decode entity-like strings such as
-`&amp;`. Filters on content_id/node_index restrict source selection.
-
-```sql
-SELECT node_index, value ->> '@type' AS declared_type, parse_error
-FROM public_v1.html_jsonld
-WHERE content_id = ?
-ORDER BY node_index;
-```
-
-### `public_v1.html_image`
-
-A content-owned view with one row per HTML-namespace img element, including
-images without src. It reads existing elements directly and needs no additional
-materialization. The key is `(content_id, node_index)`.
-
-| Column | SQL type | Meaning |
-| --- | --- | --- |
-| content_id | VARCHAR | Source content identity |
-| node_index | INTEGER | Source img node |
-| src | VARCHAR | Declared source reference |
-| srcset | VARCHAR | Declared responsive candidates, unparsed |
-| sizes | VARCHAR | Declared responsive sizing expression |
-| alt | VARCHAR | Declared alternative text |
-| width | VARCHAR | Declared width string |
-| height | VARCHAR | Declared height string |
-
-Attribute values retain their parsed spelling and whitespace. Missing attributes
-are null, while explicitly empty values remain empty strings, including alt="".
-Character references are already decoded by HTML parsing. Relative references,
-data URLs, and srcset strings are unchanged; there is no URL resolution or browser
-candidate selection. Width and height are declarations, not decoded-image or
-rendered dimensions. Repeated image elements remain separate source rows.
-
-This relation does not include CSS backgrounds, SVG image elements, input images,
-or picture/source alternatives. An img inside picture is included normally.
-There is no inference from data-src or other lazy-loading attributes; inspect
-html_element.attributes through the source key for those values. Images are not
-downloaded, classified, or tested for visibility by this view.
-
-```sql
-SELECT node_index, src, alt, srcset
-FROM public_v1.html_image
-WHERE content_id = ?
-ORDER BY node_index;
-```
 
 ### `public_v1.html_metadata`
 
@@ -439,185 +269,88 @@ WHERE content_id = ?
 ORDER BY node_index, kind, name;
 ```
 
-### `public_v1.html_code`
+### `public_v1.html_jsonld`
 
-A content-owned view over existing HTML primitives. One row represents each
-HTML-namespace code element; the key is `(content_id, node_index)`.
+A content-owned view over `material.html_jsonld`, with one row per HTML script
+whose declared type has the application/ld+json media-type essence. Type matching
+ignores ASCII case, surrounding HTML ASCII whitespace and semicolon parameters.
+The key is `(content_id, node_index)`. Parsing happens during materialization.
 
 | Column | SQL type | Meaning |
 | --- | --- | --- |
 | content_id | VARCHAR | Source content identity |
-| node_index | INTEGER | Source code element node |
-| block | BOOLEAN | Whether an HTML pre element is an ancestor |
-| text | VARCHAR | Complete ordered descendant text |
+| node_index | INTEGER | Source script node |
+| value | JSON | Complete parsed document; SQL null on failure |
+| parse_error | VARCHAR | Null on success; otherwise a stable parse error |
 
-Text preserves parsed whitespace and line breaks, including text inside syntax
-highlighting spans. Comments are excluded; no separators, trimming, or language
-inference are applied. Empty code yields an empty string. Character references
-have already been decoded by HTML parsing; original serialization remains in raw
-bytes. Nested code elements remain separate rows, with ancestor text including
-its descendants. The block flag describes ancestry, not CSS layout. Plain pre,
-styled containers, and foreign-namespace elements are not inferred to be code.
-Language classes and other declarations remain available through html_element.
-No additional materialization is required.
+Ordered immediate script text comes from `html_element.text_direct` and is parsed
+during materialization using DuckDB's JSON parser and its accepted syntax. Queries
+read the stored records without scanning general HTML elements.
+Empty/whitespace-only scripts report `Empty JSON-LD script`; other parser failures
+report `Invalid JSON syntax`. Invalid declarations remain rows rather than failing
+the query. A valid JSON null is JSON `null`, with no parse error, distinct from
+SQL null on failure. Arrays, objects, @graph and scalar JSON values remain complete;
+this is syntax parsing, not JSON-LD semantic validation. Duplicate scripts remain
+separate source rows. No entity flattening, context fetching, URL resolution, RDF
+expansion, or schema.org interpretation occurs. Script src URLs are not fetched;
+a source-only script with no inline text is reported as empty.
+
+Parsed script text is available from html_element.text_direct through the source
+node. HTML script raw-text parsing does not decode entity-like strings such as
+`&amp;`. Filters on content_id/node_index restrict source selection.
 
 ```sql
-SELECT node_index, block, text
-FROM public_v1.html_code
+SELECT node_index, value ->> '@type' AS declared_type, parse_error
+FROM public_v1.html_jsonld
 WHERE content_id = ?
 ORDER BY node_index;
 ```
-
-### `public_v1.html_section`
-
-A content-owned view of heading-delimited passages, computed from existing HTML
-primitives. One row per HTML h1–h6; the key is `(content_id, heading_node_index)`.
-This is an explicit interpretation of heading order, not the HTML section element,
-a semantic outline, or a CSS layout region. It adds no stored projection.
-
-| Column | SQL type | Meaning |
-| --- | --- | --- |
-| content_id | VARCHAR | Source content identity |
-| heading_node_index | INTEGER | Heading that starts the passage |
-| parent_heading_node_index | INTEGER | Nearest preceding heading of higher rank; null when absent |
-| start_node_index | INTEGER | Inclusive start immediately after the heading subtree |
-| end_node_index | INTEGER | Exclusive end at the next heading of equal/higher rank, or document end |
-
-Higher rank means a smaller heading number. An h2 passage includes following h3–h6
-subsections until the next h1 or h2. Its own heading text is excluded, but descendant
-subsection headings are inside its range. Parent references identify the nearest
-preceding higher-ranked heading even when levels are skipped. These are passage
-parents, not DOM parents. Adjacent equal-rank headings can produce empty passages.
-If malformed nested headings place the next boundary before the heading subtree
-ends, the passage is represented as an empty interval at its start.
-
-Content before the first heading does not receive an artificial section. A document
-with no headings has no rows. Ranges end at the document-root boundary, so the final
-passage can include footer or navigation content. Layout, visibility, ARIA heading
-roles and semantic relevance are not inferred. Use this rule for predominantly
-linear documents; inspect results before treating a passage as a domain field.
-Node references retain the same catalogue-snapshot scope as other HTML relations.
-
-Join html_heading for the heading text. Join existing nodes, lists, tables or images
-by content_id and positions in `[start_node_index, end_node_index)`. Parent and
-child ranges overlap deliberately; querying both can repeat nested content.
-
-```sql
-SELECT s.heading_node_index, h.text AS heading, e.node_index, e.text
-FROM public_v1.html_section s
-JOIN public_v1.html_heading h
-  ON h.content_id = s.content_id AND h.node_index = s.heading_node_index
-JOIN public_v1.html_element e
-  ON e.content_id = s.content_id AND e.node_index >= s.start_node_index
- AND e.node_index < s.end_node_index
-WHERE s.content_id = ? AND e.tag = 'p'
-ORDER BY e.node_index;
-```
-
-Each paragraph contains complete descendant text. Nested matching paragraphs or
-other enclosing elements can repeat text; this query does not reconstruct a passage.
-
-### `public_v1.html_heading`
-
-A content-owned view over the existing HTML primitives, computed on demand.
-One row represents one HTML-namespace h1 through h6 element. The key is
-`(content_id, node_index)`; join html_element on that key for original attributes.
-
-| Column | SQL type | Meaning |
-| --- | --- | --- |
-| content_id | VARCHAR | Source content identity |
-| node_index | INTEGER | Source heading node |
-| level | INTEGER | Declared heading level, 1 through 6 |
-| text | VARCHAR | Ordered descendant text; empty string for an empty heading |
-
-Text concatenates all descendant text nodes in document order, including inline
-markup and script/style text, without trimming, whitespace normalization, or
-inserted separators. Comments are excluded. Image alt text is not substituted.
-CSS visibility and ARIA heading roles are not interpreted. Levels come directly
-from tag names; no section hierarchy or inferred rank is added. Repeated headings
-remain separate rows, and captures sharing content share the same heading rows.
-Filter by content_id and order by node_index for source order. No additional
-materialization or storage is required.
-
-```sql
-SELECT node_index, level, text
-FROM public_v1.html_heading
-WHERE content_id = ?
-ORDER BY node_index;
-```
-
-### `public_v1.html_table` and `public_v1.html_table_cell`
-
-Both are content-owned SQL views over the HTML primitives, computed on demand.
-They add no physical tables, persistence, or materialization jobs. Filter by
-`content_id` and, for cell extraction, `table_node_index` before exploring cells.
-
-`html_table` has `content_id VARCHAR`, `node_index INTEGER`,
-`caption_node_index INTEGER`, and `caption VARCHAR`. One row represents one HTML
-`table` element, including empty and nested tables. Its key is
-`(content_id, node_index)`. The first direct HTML caption is used; both caption
-columns are null when absent, while an existing empty caption has empty text.
-
-`html_table_cell` has these columns, in order:
-
-| Column | SQL type | Meaning |
-| --- | --- | --- |
-| content_id | VARCHAR | Source content identity |
-| table_node_index | INTEGER | Owning table node |
-| row_node_index | INTEGER | Owning tr node |
-| node_index | INTEGER | Source td or th node |
-| row_index | INTEGER | Zero-based parsed source row order, including empty rows |
-| column_index | INTEGER | Zero-based starting grid column, accounting for spans |
-| row_span | INTEGER | Effective occupied source rows within the row group |
-| column_span | INTEGER | Effective occupied columns |
-| is_header | BOOLEAN | True for th, without inferring header associations |
-| text | VARCHAR | Ordered descendant text; empty string for an empty cell |
-
-Its key is `(content_id, node_index)`. Join the table through
-`(content_id, table_node_index)` and original attributes through
-`html_element(content_id, node_index)`. Each source cell appears once, including
-merged cells. Missing grid positions do not generate cells. Only HTML-namespace
-cells directly under table rows are included; rows must be direct table children
-or children of direct thead/tbody/tfoot elements. Nested tables own their rows and
-cells independently.
-
-Rows follow parsed source order, including tfoot wherever it occurs; these views
-are not a browser/CSS layout simulation. Span attributes use the HTML nonnegative
-integer prefix rule. Missing/invalid spans default to one; colspan zero becomes
-one. Column spans cap at 1000 and positive row spans at 65534. Rowspan zero covers
-the remaining source rows in its group. All row spans are clipped to that group's
-remaining source rows; no synthetic rows are created. Original declarations are
-preserved in html_element.attributes. Cells start at the next unoccupied column;
-a colspan that overlaps an earlier row-spanning cell raises an explicit error.
-The HTML attribute rules are described in the
-[HTML standard](https://html.spec.whatwg.org/multipage/tables.html).
-
-Text concatenates descendant text nodes in order without trimming, whitespace
-normalization, or inserted separators. Comments and nested-table subtrees are
-excluded; script/style text remains included, and CSS visibility is not modeled.
-This rule applies to captions and cells alike. Formatting and footnote links can
-be inspected through original nodes.
-
-Grid computation rejects tables exceeding 10,000 source cells or 2,048 occupied
-columns instead of emitting partial positions. Query service time/memory/result
-limits still apply; LIMIT alone does not bound extraction work. These limits
-apply to cell layout, not discovery through html_table.
-
-```sql
-SELECT row_index, column_index, text, row_span, column_span
-FROM public_v1.html_table_cell
-WHERE content_id = ? AND table_node_index = ?
-ORDER BY row_index, column_index;
-```
-
 ### `public_v1.link`
 
-`capture_id UUID`, `node_index INTEGER`, `raw_href VARCHAR`, `resolved_url VARCHAR`.
-One resolvable HTTP(S) anchor occurrence per `(capture_id, node_index)`. Original
-parsed href values are retained; targets use existing URL normalization. Resolution
-uses the capture's effective URL and applicable document base URL. Join capture
-first to obtain content identity before joining the source element. A linked
-destination need not have been captured.
+Columns in order: `capture_id UUID`, `node_index INTEGER`, `target_url VARCHAR`,
+`raw_href VARCHAR`. One resolvable HTTP(S) anchor occurrence per
+`(capture_id, node_index)`. `capture_id` references the source capture and
+`target_url` references `page.url`. Source page identity is `capture.page_url`;
+relative href resolution uses the effective URL and applicable document base URL.
+`raw_href` preserves the original parsed attribute. Repeated anchors remain separate.
+
+Join capture first to obtain content identity before joining the source element.
+A destination need not have been captured. Links describe that capture's version;
+choose captures explicitly to construct a graph at the desired time. There is no
+implicit latest-capture or successful-status filter.
+
+### `search(terms VARCHAR[])`
+
+Both schemas expose the same portable table macro. Supply at most 32 Unicode
+case-folded, NFC-normalized word keys. Inputs are exact word keys, not a free-text
+query parser. Matching is any-word over parsed page text, including title,
+script and style text; attributes and comments are excluded.
+
+| Column | SQL type | Meaning |
+| --- | --- | --- |
+| content_id | VARCHAR | Content matching at least one requested key; one row per content |
+| node_indexes | INTEGER[] | Sorted distinct elements fully containing any matched page word |
+| score | DOUBLE | Number of distinct requested keys found in the content |
+
+Null, empty and duplicate keys add no score. Empty/null lists return no rows.
+An element in the union need not contain all matched keys. Words crossing inline
+markup belong only to elements containing the complete word. No stemming,
+phrase matching, frequency weighting or readable-text extraction is implied.
+Join capture on content_id for page URLs and capture provenance; repeated captures
+intentionally produce multiple rows. Choose ordering and limits explicitly:
+
+```sql
+SELECT c.page_url, c.capture_id, c.captured_at, s.score
+FROM public_v1.search(['robot', 'science']) s
+JOIN public_v1.capture c USING (content_id)
+ORDER BY s.score DESC, c.page_url, c.capture_id
+LIMIT 20;
+```
+
+The term index is private. Equality, LIKE and ILIKE on html_element.text retain
+ordinary DuckDB semantics; search does not redefine those predicates. The existing
+experimental exact-text candidate optimization reads the private index and keeps
+the original equality check. Stable retains native SQL execution.
 
 ### Collection lineage
 

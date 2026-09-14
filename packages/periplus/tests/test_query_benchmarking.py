@@ -56,16 +56,9 @@ class QueryBenchmarkingTests(unittest.TestCase):
 
     def test_checked_in_cases_bind_to_current_public_contract(self):
         root = Path(__file__).resolve().parents[3] / "benchmarks/query/cases"
-        connection = duckdb.connect()
+        from element_fixture import catalogue
+        connection = catalogue().connection
         try:
-            connection.execute("CREATE SCHEMA public_v1")
-            connection.execute("CREATE TABLE public_v1.capture(capture_id UUID, requested_url VARCHAR, effective_url VARCHAR, captured_at TIMESTAMPTZ, http_status_code INTEGER, content_id VARCHAR)")
-            connection.execute("CREATE TABLE public_v1.html_element(content_id VARCHAR, node_index INTEGER, tag VARCHAR, attributes MAP(VARCHAR,VARCHAR), parent_index INTEGER, sibling_index INTEGER, subtree_end_index INTEGER, text_direct VARCHAR, text VARCHAR)")
-            connection.execute("CREATE TABLE public_v1.link(capture_id UUID, node_index INTEGER, raw_href VARCHAR, resolved_url VARCHAR)")
-            connection.execute("CREATE TABLE public_v1.html_heading(content_id VARCHAR, node_index INTEGER, level INTEGER, text VARCHAR)")
-            connection.execute("CREATE TABLE public_v1.html_section(content_id VARCHAR, heading_node_index INTEGER)")
-            connection.execute("CREATE TABLE public_v1.html_jsonld(content_id VARCHAR, node_index INTEGER, value JSON, parse_error VARCHAR)")
-            connection.execute("CREATE TABLE public_v1.html_metadata(content_id VARCHAR, node_index INTEGER, kind VARCHAR, name VARCHAR, value VARCHAR)")
             for case in discover_cases(root).values():
                 parameters = {"scope": case.scales[0]} if case.scales[0] else None
                 connection.execute("EXPLAIN " + case.sql, parameters)
@@ -92,7 +85,7 @@ class QueryBenchmarkingTests(unittest.TestCase):
 
     def test_pair_rejects_incompatible_catalogue_before_execution(self):
         root = Path(__file__).resolve().parents[3] / "benchmarks/query/cases"
-        case = discover_cases(root)["gov-heading-sections"]
+        case = discover_cases(root)["exact-page-history"]
         connection = MagicMock()
         connection.execute.return_value.fetchall.return_value = []
         scope = MagicMock()

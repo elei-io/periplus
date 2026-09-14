@@ -36,7 +36,7 @@ def _(mo):
 def _(mo, pp):
     captures = mo.sql(
         """
-        SELECT capture_id, requested_url, content_id
+        SELECT capture_id, page_url, content_id
         FROM public_v1.capture
         LIMIT 10
         """,
@@ -48,7 +48,7 @@ def _(mo, pp):
 @app.cell
 def _(captures, pp, sql_api):
     # Replace this Python predicate with your own qualification logic.
-    _ids = [row["content_id"] for row in captures.to_dicts() if row["requested_url"].startswith("https://")]
+    _ids = [row["content_id"] for row in captures.to_dicts() if row["page_url"].startswith("https://")]
     selected = sql_api.bind(pp, content_ids=_ids)
     return (selected,)
 

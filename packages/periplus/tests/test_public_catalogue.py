@@ -20,23 +20,8 @@ from periplus.query.http import _public_metadata, metadata
 
 
 EXPECTED_PUBLIC_RELATIONS = {
-    ("public_v1", "html_term"),
-    ("public_v1", "capture"),
-    ("public_v1", "link"),
-    ("public_v1", "html_element"),
-    ("public_v1", "html_heading"),
-    ("public_v1", "html_code"),
-    ("public_v1", "html_section"),
-    ("public_v1", "html_metadata"),
-    ("public_v1", "html_image"),
-    ("public_v1", "html_jsonld"),
-    ("public_v1", "html_list"),
-    ("public_v1", "html_form"),
-    ("public_v1", "html_form_control"),
-    ("public_v1", "html_select_option"),
-    ("public_v1", "html_list_item"),
-    ("public_v1", "html_table"),
-    ("public_v1", "html_table_cell"),
+    ("public_v1", name) for name in
+    ("page", "capture", "link", "html_element", "html_metadata", "html_jsonld")
 }
 
 
@@ -141,7 +126,7 @@ class PublicCatalogueTests(unittest.TestCase):
             self.catalogue.connection.execute("SELECT * FROM public_v1.link_occurrence")
         self.assertEqual(
             [row[0] for row in self.catalogue.connection.execute("DESCRIBE public_v1.link").fetchall()],
-            ["capture_id", "node_index", "raw_href", "resolved_url"],
+            ["capture_id", "node_index", "target_url", "raw_href"],
         )
 
     def test_removed_search_internals_are_dropped_without_touching_materials(self):
@@ -223,7 +208,7 @@ class PublicCatalogueTests(unittest.TestCase):
         )
 
         observations = self.catalogue.connection.execute(
-            "SELECT capture_id::VARCHAR, requested_url, effective_url, "
+            "SELECT capture_id::VARCHAR, page_url, effective_url, "
             "content_id FROM public_v1.capture ORDER BY capture_id"
         ).fetchall()
         self.assertEqual(len(observations), 2)
@@ -249,7 +234,7 @@ class PublicCatalogueTests(unittest.TestCase):
         )
         self.assertEqual(
             self.catalogue.connection.execute(
-                "SELECT capture_id::VARCHAR, node_index, raw_href, resolved_url "
+                "SELECT capture_id::VARCHAR, node_index, raw_href, target_url "
                 "FROM public_v1.link"
             ).fetchone(),
             ("10000000-0000-0000-0000-000000000001", 1, "/next", "https://example.com/next"),

@@ -83,7 +83,7 @@ class TextIndexTests(unittest.TestCase):
                 self.assertIsNone(exact_text_anchor(_one_statement(sql)))
         # This span exists, but page-once tokenization deliberately has no fish posting.
         self.assertTrue(self.db.execute("SELECT * FROM html_element WHERE text='fish'").fetchall())
-        self.assertEqual(self.db.execute("SELECT * FROM html_term WHERE term='fish'").fetchall(), [])
+        self.assertEqual(self.db.execute("SELECT * FROM material.html_terms WHERE term='fish'").fetchall(), [])
 
     def test_candidate_keys_remain_a_required_scan_filter(self):
         rewrite = self.rewrite("SELECT content_id FROM html_element WHERE text='The Requiem Red'")
@@ -108,5 +108,5 @@ class TextIndexTests(unittest.TestCase):
         self.db.execute("SET default_collation='nocase'")
         self.assertIsNone(self.rewrite(sql))
         self.db.execute("SET default_collation=''")
-        self.db.execute('CREATE OR REPLACE VIEW experimental.html_term AS SELECT term,content_sha256 AS content_id,node_indexes FROM material.html_terms WHERE false')
+        self.db.execute('CREATE OR REPLACE VIEW experimental.html_element AS SELECT content_sha256 AS content_id,node_index,text FROM material.html_elements WHERE false')
         self.assertIsNone(self.rewrite(sql))

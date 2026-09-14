@@ -27,13 +27,16 @@ class SearchTests(unittest.TestCase):
             self.db.unregister('postings')
 
     def search(self, terms):
-        return self.db.execute('SELECT * FROM public_v1.search(?) ORDER BY score DESC,content_id', [terms]).fetchall()
+        stable = self.db.execute('SELECT * FROM public_v1.search(?) ORDER BY score DESC,content_id', [terms]).fetchall()
+        experimental = self.db.execute('SELECT * FROM experimental.search(?) ORDER BY score DESC,content_id', [terms]).fetchall()
+        self.assertEqual(experimental, stable)
+        return stable
 
     def test_any_word_score_and_union_are_exact(self):
         rows = self.search(['robot', 'science', 'robot', None, ''])
         self.assertEqual([(r[0], r[2]) for r in rows], [('a', 2.0), ('b', 1.0)])
         for content, nodes, _ in rows:
-            postings = self.db.execute("SELECT node_indexes FROM public_v1.html_term WHERE content_id=? AND term IN ('robot','science')", [content]).fetchall()
+            postings = self.db.execute("SELECT node_indexes FROM material.html_terms WHERE content_sha256=? AND term IN ('robot','science')", [content]).fetchall()
             expected = sorted({index for (indexes,) in postings for index in indexes})
             self.assertEqual(nodes, expected)
             self.assertEqual(nodes, sorted(set(nodes)))
@@ -42,9 +45,10 @@ class SearchTests(unittest.TestCase):
         for terms in [[], None, [None, ''], ['not-in-corpus']]:
             self.assertEqual(self.search(terms), [])
         self.assertTrue(self.search(['robot'] * 32))
-        with self.assertRaises(Exception) as raised:
-            self.search(['robot'] * 33)
-        self.assertEqual(safe_helper_error(str(raised.exception)), 'search accepts at most 32 term keys')
+        for schema in ('public_v1', 'experimental'):
+            with self.assertRaises(Exception) as raised:
+                self.db.execute(f'SELECT * FROM {schema}.search(?)', [['robot'] * 33])
+            self.assertEqual(safe_helper_error(str(raised.exception)), 'search accepts at most 32 term keys')
 
     def test_page_word_boundaries_and_unicode_keys(self):
         self.assertEqual(self.search(['fish']), [])

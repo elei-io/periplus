@@ -39,7 +39,7 @@ pp = sql_api.create_engine("https://periplus.dev", mode="stable")
 Add a SQL cell, select **pp** in its connection dropdown, and enter:
 
 ```sql
-SELECT capture_id, requested_url
+SELECT capture_id, page_url
 FROM public_v1.capture
 LIMIT 10
 ```
