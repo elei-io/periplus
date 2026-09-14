@@ -1,0 +1,9 @@
+id = "node-count"
+title = "Correlated node count for selected content"
+use_case = "Test whether correlated count scopes primitive reads to requested keys."
+classification = "optimizer"
+ordered = false
+memory_limit = "512MB"
+max_warm_ms = 60000
+seconds = 60
+scales = [1, 20, 100]
