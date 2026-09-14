@@ -189,6 +189,54 @@ class QueryServiceTests(unittest.TestCase):
         self.addCleanup(self.service.close)
 
 
+    def test_experimental_heading_scope_uses_original_sql_and_recovers(self):
+        from periplus.query.service import QueryMode
+        from periplus.query.heading_scope import HeadingScope, OPTIMIZATION
+        self.service.close()
+        writer = DuckLakeConnectionFactory(self.config).connect()
+        try:
+            writer.execute('USE periplus')
+            writer.execute('DELETE FROM material.html_elements')
+            from element_fixture import seed
+            seed(writer, '<h1>Light</h1><h2>Daylight</h2>', 'helper-fixture')
+        finally:
+            writer.close()
+        self.service.connection = self.service._connect()
+        experimental = QueryService(self.config, mode=QueryMode.EXPERIMENTAL)
+        self.addCleanup(experimental.close)
+        request = QueryRequest(sql="SELECT h.level,h.text,c.effective_url AS url FROM html_heading h JOIN capture c USING(content_id) WHERE requested_url LIKE '%inline' AND h.text ILIKE '%Light%' ORDER BY h.level LIMIT 10")
+        with patch.object(HeadingScope, 'resolve', side_effect=AssertionError('prep or stable performed selection')):
+            self.assertEqual(experimental.prepare(request).optimizations, [])
+            baseline = self.service.execute(request)
+        selected_snapshots = []
+        original = HeadingScope.resolve
+        def resolve(scope, connection):
+            selected_snapshots.append(connection.execute("SELECT id FROM ducklake_current_snapshot('periplus')").fetchone()[0])
+            return original(scope, connection)
+        with patch.object(HeadingScope, 'resolve', resolve):
+            result = experimental.execute(request)
+        self.assertEqual(result.rows, baseline.rows)
+        self.assertEqual(result.row_count, 2)
+        self.assertEqual(result.types, baseline.types)
+        self.assertEqual(result.sql, request.sql)
+        self.assertEqual(result.optimizations, [OPTIMIZATION])
+        self.assertEqual(selected_snapshots, [result.source_snapshot])
+        self.assertIn('_query_scoped_headings', result.plan)
+        with patch.object(HeadingScope, 'resolve', side_effect=TimeoutError('selection deadline')):
+            with self.assertRaises(TimeoutError):
+                experimental.execute(request)
+        self.assertEqual(experimental.execute(QueryRequest(sql='SELECT 42')).rows, [[42]])
+        def slow_selection(scope, connection):
+            connection.execute('SELECT sum(i) FROM range(10000000000) t(i)').fetchall()
+        experimental.deadline = 0.1
+        try:
+            with patch.object(HeadingScope, 'resolve', slow_selection):
+                with self.assertRaises(TimeoutError):
+                    experimental.execute(request)
+        finally:
+            experimental.deadline = None
+        self.assertEqual(experimental.execute(QueryRequest(sql='SELECT 42')).rows, [[42]])
+
     def test_modes_preserve_results_and_have_separate_admission(self):
         from periplus.query.service import QueryMode
         from periplus.operations.query_history.schemas import PreparationEvidence

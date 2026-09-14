@@ -819,3 +819,12 @@ Migration `20260911_0016` adds input budgets to the existing policy without chan
 result budgets or rate windows. Roll out core, gateway and SDK together. Ingress must allow
 the configured body size, streaming without response buffering, and 610-second transport
 ceiling. Assistant and crawler clients may retain shorter caller deadlines.
+
+
+Experimental also applies `capture_heading_exact_scope_v1` to supported capture/heading
+inner joins. It selects at most 1,024 distinct non-null content IDs (128 KiB), materializes
+exact-membership-filtered experimental headings, and preserves the original join and text
+predicates. Both stages share the request snapshot and deadline. Prep does not select keys;
+unsupported SQL and oversized selections retain native execution. See
+[the heading-scan investigation](query-investigations/heading-key-scans/README.md) for
+measurements and limits. Both optimizations use compiler `public-query-v14:experimental`.

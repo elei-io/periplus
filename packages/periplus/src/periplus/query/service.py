@@ -204,6 +204,17 @@ class QueryService:
                 elif exact_text_anchor(statement, execution_parameters) is not None:
                     diagnostics.append(Diagnostic(severity="info", code="text_index_lookup_deferred",
                         message="Execution may look up bounded word-index candidates; preparation does not read index rows."))
+            if execute and self.mode == QueryMode.EXPERIMENTAL:
+                from periplus.query.heading_scope import OPTIMIZATION, heading_scope
+                scope = heading_scope(statement, payload.parameters)
+                if scope is not None:
+                    scoped_sql = scope.resolve(d)
+                    if expired.is_set():
+                        raise TimeoutError("Query time limit exceeded.")
+                    if scoped_sql is not None:
+                        executable = _bounded_query(scoped_sql, max_rows=limits.max_rows, schema=self.schema)
+                        plan = "\n".join(str(row[-1]) for row in d.execute("EXPLAIN " + scoped_sql).fetchall())
+                        optimizations.append(OPTIMIZATION)
             if len(plan.encode()) > 64_000:
                 plan = plan.encode()[:64_000].decode(errors="ignore")
                 diagnostics.append(Diagnostic(severity="warning", code="plan_truncated", message="The execution plan preview was truncated."))

@@ -1,0 +1,7 @@
+id = "books-heading-search"
+title = "URL-selected capture headings with substring matching"
+use_case = "Find headings containing Light on captures whose requested URL contains books."
+classification = "optimizer"
+ordered = false
+memory_limit = "4GB"
+max_warm_ms = 20000
