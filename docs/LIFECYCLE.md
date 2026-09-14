@@ -330,7 +330,7 @@ new projections together. Normal finalization removes obsolete material tables.
 
 Malformed HTTP(S) authorities are rejected at shared URL validation, and stored
 malformed destinations are cancelled before dispatch policy lookup. Capture also
-checks syntax and public DNS before physical authorization. Name-not-found responses
+checks syntax and public DNS before physical authorization. Negative name/address responses
 have a durable, acquisition-local budget of three with 30/120-second backoff.
 Exhaustion cancels unfinished participating interests with
 `destination_dns_not_found`; it does not invent a browser attempt or observation.

@@ -588,7 +588,7 @@ rollout; the new retry/cleanup behavior takes effect once crawlers are replaced.
 No catalogue setup, lake rebuild, queue purge, or frontier reset is required.
 Review skipped releases separately before using an online migration.
 
-Crawlers terminate a destination after three resolver name-not-found responses,
+Crawlers terminate a destination after three negative resolver name/address responses,
 waiting 30 then 120 seconds between negative checks. Only those negative responses
 consume the persisted DNS budget; physical attempts remain separate. Temporary
 resolver failures, ten-second lookup timeouts, and exhausted local resolver slots
