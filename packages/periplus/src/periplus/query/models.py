@@ -5,7 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from periplus.platform.catalogue.public import PUBLIC_SCHEMA
 
-COMPILER_VERSION = "public-query-v16"
+COMPILER_VERSION = "public-query-v17"
 
 
 class QueryMode(StrEnum):

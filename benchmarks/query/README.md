@@ -12,7 +12,7 @@ experiments are historical and are not part of current case discovery.
 The process and decision matrix live in [QUERY_OPTIMIZATION.md](../../docs/QUERY_OPTIMIZATION.md).
 This directory is the workload home. The runner is
 `packages/periplus/src/periplus/query/benchmarking.py`; it runs standard DuckDB
-against `public_v1.*`. No custom query extension is used.
+against `public_v1.*` or `experimental.*`. No custom query extension is used.
 
 ## Quick start
 
@@ -43,6 +43,19 @@ Repeat the comparison with `--candidate-first` and a different report filename. 
 complete answers first, then elapsed time and physical work. A failed or incomplete pair
 is evidence to investigate, not an accepted fix. The runner records snapshot, engine,
 settings and catalogue metadata; retain unavailable metrics as unknown.
+
+**Compare the implemented first business-case treatment, including key lookup:**
+
+```sh
+uv run python scripts/query_benchmark.py --case single-capture-links \
+  --optimization capture_link_scope --ordinary-warm-runs --warm-runs 1 \
+  --seconds 60 --report ../../.artifacts/query-benchmarks/capture-links.json
+```
+
+Repeat with `--candidate-first`. The runner infers the pass namespace from the
+original SQL and records `lookup_and_rewrite_ms` inside the complete measured time.
+This exercises the registered pass on the reader; service tests separately check
+activation, snapshot ownership and result limits.
 
 **Before shipping:** run targeted tests and `make check` after Python changes, review the
 playbook's four acceptance questions, and verify the unchanged query through the ordinary

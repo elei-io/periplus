@@ -18,6 +18,68 @@ from periplus.query.benchmarking import compare_reports, discover_cases, inspect
 
 
 class QueryBenchmarkingTests(unittest.TestCase):
+    def test_registered_pass_uses_case_namespace_and_records_lookup_time(self):
+        from periplus.query.optimizations.base import OptimizationPass, PassDecision
+
+        seen = []
+
+        def run(context):
+            seen.append(context.schema)
+            return PassDecision(
+                "applied",
+                "identity",
+                "Identity comparison.",
+                statement=context.statement,
+            )
+
+        def pair(case, candidate, scale, **kwargs):
+            kwargs["candidate_transform"](MagicMock(), case.sql, None)
+            measurement = {
+                "case": case.identifier,
+                "scale": None,
+                "within_time_budget": True,
+            }
+            return {"baseline": measurement, "candidate": measurement}
+
+        script = Path(__file__).resolve().parents[1] / "scripts/query_benchmark.py"
+        with TemporaryDirectory() as directory:
+            report = Path(directory) / "report.json"
+            argv = [
+                str(script),
+                "--case",
+                "single-capture-links",
+                "--optimization",
+                "probe",
+                "--ordinary-warm-runs",
+                "--warm-runs",
+                "1",
+                "--report",
+                str(report),
+            ]
+            with (
+                patch.object(sys, "argv", argv),
+                patch(
+                    "periplus.query.optimizations.EXPERIMENTAL_PASSES",
+                    (OptimizationPass("probe", run),),
+                ),
+                patch("periplus.query.benchmarking.measure_pair", side_effect=pair),
+                patch(
+                    "periplus.query.benchmarking.compare_reports", return_value=([], [])
+                ),
+                patch(
+                    "periplus.platform.catalogue.config.catalogue_config_from_env",
+                    return_value=MagicMock(alias="memory"),
+                ),
+                redirect_stdout(io.StringIO()),
+            ):
+                runpy.run_path(str(script), run_name="__main__")
+            payload = json.loads(report.read_text())
+        self.assertEqual(seen, ["experimental"])
+        self.assertEqual(payload["optimization_decisions"][0]["status"], "applied")
+        self.assertGreaterEqual(
+            payload["optimization_decisions"][0]["lookup_and_rewrite_ms"], 0
+        )
+
     def test_packaged_benchmark_metadata_without_checkout(self):
         from periplus.query.benchmarking import environment_metadata
         with patch('periplus.query.benchmarking.__file__', '/tmp/bench.py'):

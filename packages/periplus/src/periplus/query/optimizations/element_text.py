@@ -14,6 +14,7 @@ from collections.abc import Iterator
 import duckdb
 from sqlglot import exp, parse_one
 
+from periplus.query.optimizations._catalogue import normalized_view
 from periplus.query.optimizations.base import (
     OptimizationPass,
     PassContext,
@@ -159,14 +160,6 @@ def canonical_elements() -> exp.Query:
         "sql/public_v1/views/html_element.sql"
     )
     return parse_one(resource.read_text(), read="duckdb").expression
-
-
-def normalized_view(sql: str) -> str:
-    statement = parse_one(sql, read="duckdb").expression
-    for identifier in statement.find_all(exp.Identifier):
-        identifier.set("quoted", False)
-        identifier.set("this", identifier.this.lower())
-    return statement.sql(dialect="duckdb", comments=False)
 
 
 def check_contract(

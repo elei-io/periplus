@@ -43,6 +43,69 @@ class QueryServiceTests(unittest.TestCase):
         bounded = experimental.execute(QueryRequest(sql='SELECT content_id FROM html_element WHERE text=?', parameters=['robot robot robotics careers']))
         self.assertEqual(bounded.optimizations, [])
 
+    def test_capture_link_pass_uses_service_snapshot_and_stream_limits(self):
+        from periplus.query.models import QueryMode
+        from periplus.query.optimizations.capture_links import lookup_keys
+
+        self.service.close()
+        writer = DuckLakeConnectionFactory(self.config).connect()
+        writer.execute(
+            "INSERT INTO periplus.material.link_occurrences (visit_id,element_index,source_url,target_url,raw_href) SELECT visit_id, i::INTEGER, requested_url, 'https://target/' || i, '/target' FROM periplus.ingest.visits CROSS JOIN range(3) n(i) WHERE requested_url='https://example.com/1'"
+        )
+        writer.close()
+        self.service = QueryService(self.config)
+        self.addCleanup(self.service.close)
+        experimental = QueryService(self.config, mode=QueryMode.EXPERIMENTAL)
+        self.addCleanup(experimental.close)
+        request = QueryRequest(
+            sql="""WITH selected AS (
+            SELECT capture_id FROM capture WHERE page_url='https://example.com/1'
+            ORDER BY captured_at DESC,capture_id DESC LIMIT 1)
+            SELECT l.target_url,count(*) AS occurrences FROM link l JOIN selected s
+            ON l.capture_id=s.capture_id GROUP BY l.target_url ORDER BY l.target_url"""
+        )
+        expected = self.service.execute(request)
+        self.assertEqual(expected.row_count, 3)
+        with patch("periplus.query.optimizations.capture_links.lookup_keys") as lookup:
+            prepared = experimental.prepare(request)
+            lookup.assert_not_called()
+        self.assertIn(
+            "capture_link_scope.deferred.capture_lookup",
+            [d.code for d in prepared.diagnostics],
+        )
+        snapshots = []
+
+        def observe(context, matched):
+            snapshots.append(
+                context.connection.execute(
+                    "SELECT id FROM ducklake_current_snapshot('periplus')"
+                ).fetchone()[0]
+            )
+            return lookup_keys(context, matched)
+
+        with patch(
+            "periplus.query.optimizations.capture_links.lookup_keys",
+            side_effect=observe,
+        ):
+            actual = experimental.execute(request)
+        self.assertEqual(snapshots, [actual.source_snapshot])
+        self.assertEqual(
+            (actual.columns, actual.types, actual.rows),
+            (expected.columns, expected.types, expected.rows),
+        )
+        self.assertEqual(actual.optimizations, ["capture_link_scope"])
+        self.assertEqual(actual.sql, request.sql)
+        frames = []
+        limited = experimental.execute(
+            request, limits=QueryLimits(max_rows=1), emit=frames.append
+        )
+        self.assertEqual(limited.optimizations, ["capture_link_scope"])
+        self.assertTrue(limited.truncated)
+        self.assertEqual(
+            [row for f in frames if f["type"] == "rows" for row in f["rows"]],
+            expected.rows[:1],
+        )
+
     def test_passes_share_snapshot_deadline_and_cleanup(self):
         from periplus.query.optimizations.base import OptimizationPass, PassDecision
         snapshots = []
@@ -264,7 +327,7 @@ class QueryServiceTests(unittest.TestCase):
         self.assertEqual(stable.query_mode, QueryMode.STABLE)
         self.assertEqual(result.query_mode, QueryMode.EXPERIMENTAL)
         self.assertEqual(result.optimizations, [])
-        self.assertEqual(evidence.compiler_version, "public-query-v16:experimental")
+        self.assertEqual(evidence.compiler_version, "public-query-v17:experimental")
         self.assertNotEqual(result.compiler_version, stable.compiler_version)
         with self.assertRaises(ValueError):
             QueryService(self.config, mode="invalid")

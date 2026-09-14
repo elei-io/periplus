@@ -3,9 +3,10 @@
 from periplus.query.models import QueryMode
 from periplus.query.optimizations.base import OptimizationPass
 from periplus.query.optimizations.element_text import ELEMENT_TEXT
+from periplus.query.optimizations.capture_links import CAPTURE_LINKS
 
 STABLE_PASSES: tuple[OptimizationPass, ...] = ()
-EXPERIMENTAL_PASSES = (ELEMENT_TEXT,)
+EXPERIMENTAL_PASSES = (ELEMENT_TEXT, CAPTURE_LINKS)
 
 
 def passes_for_mode(mode: QueryMode) -> tuple[OptimizationPass, ...]:
