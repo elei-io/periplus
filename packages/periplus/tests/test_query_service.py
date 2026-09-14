@@ -13,37 +13,70 @@ from periplus.platform.catalogue.connection import DuckLakeConnectionFactory, _l
 from periplus.platform.catalogue.public import known_public_objects
 from periplus.platform.catalogue.schema import expected_columns
 from periplus.platform.catalogue.client import _column_type
-from periplus.query.service import QueryService, QueryRequest, BusyError
+from periplus.query.models import QueryRequest
+from periplus.query.service import QueryService, BusyError
 
 
 class QueryServiceTests(unittest.TestCase):
     def test_experimental_exact_text_rewrite_and_prepare_contract(self):
-        from periplus.query.service import QueryMode
-        from periplus.query.text_index import OPTIMIZATION
+        from periplus.query.models import QueryMode
+        from periplus.query.optimizations.element_text import ELEMENT_TEXT
         experimental = QueryService(self.config, mode=QueryMode.EXPERIMENTAL)
         self.addCleanup(experimental.close)
         request = QueryRequest(sql="SELECT content_id,node_index,text FROM html_element WHERE text='robot robot robotics careers' ORDER BY content_id,node_index")
         expected = self.service.execute(request)
         self.assertTrue(expected.rows)
-        with patch('periplus.query.text_index.text_index_rewrite') as lookup:
+        with patch('periplus.query.optimizations.element_text.lookup_candidates') as lookup:
             prepared = experimental.prepare(request)
             lookup.assert_not_called()
-        self.assertIn('text_index_lookup_deferred', [d.code for d in prepared.diagnostics])
+        self.assertIn('element_text_index_candidates.deferred.candidate_lookup', [d.code for d in prepared.diagnostics])
         actual = experimental.execute(request)
         self.assertEqual((actual.columns, actual.types, actual.rows), (expected.columns, expected.types, expected.rows))
         self.assertEqual(actual.sql, request.sql)
-        self.assertEqual(actual.optimizations, [OPTIMIZATION])
+        self.assertEqual(actual.optimizations, [ELEMENT_TEXT.name])
         self.assertEqual(expected.optimizations, [])
         frames = []
         streamed = experimental.execute(request, emit=frames.append)
-        self.assertEqual(frames[0]['optimizations'], [OPTIMIZATION])
+        self.assertEqual(frames[0]['optimizations'], [ELEMENT_TEXT.name])
         self.assertEqual([row for frame in frames if frame['type']=='rows' for row in frame['rows']], expected.rows)
         self.assertFalse(streamed.truncated)
         bounded = experimental.execute(QueryRequest(sql='SELECT content_id FROM html_element WHERE text=?', parameters=['robot robot robotics careers']))
         self.assertEqual(bounded.optimizations, [])
 
+    def test_passes_share_snapshot_deadline_and_cleanup(self):
+        from periplus.query.optimizations.base import OptimizationPass, PassDecision
+        snapshots = []
+        def observe(context):
+            snapshots.append(context.connection.execute(
+                "SELECT id FROM ducklake_current_snapshot('periplus')").fetchone()[0])
+            return PassDecision('not_applicable', 'probe', 'Snapshot probe completed.')
+        service = QueryService(self.config, passes=(OptimizationPass('probe', observe),))
+        self.addCleanup(service.close)
+        result = service.execute(QueryRequest(sql='SELECT 42'))
+        self.assertEqual(snapshots, [result.source_snapshot])
+        self.assertEqual(result.rows, [[42]])
+
+        def fail(context):
+            raise RuntimeError('pass failure')
+        service.passes = (OptimizationPass('broken', fail),)
+        with self.assertRaisesRegex(RuntimeError, 'pass failure'):
+            service.execute(QueryRequest(sql='SELECT 42'))
+        service.passes = ()
+        self.assertEqual(service.execute(QueryRequest(sql='SELECT 42')).rows, [[42]])
+
+        def slow(context):
+            context.connection.execute('SELECT sum(i) FROM range(10000000000) t(i)').fetchall()
+            return PassDecision('not_applicable', 'slow', 'Slow probe completed.')
+        service.passes = (OptimizationPass('slow', slow),)
+        service.deadline = 0.05
+        with self.assertRaises(TimeoutError):
+            service.execute(QueryRequest(sql='SELECT 42'))
+        service.passes = ()
+        service.deadline = None
+        self.assertEqual(service.execute(QueryRequest(sql='SELECT 42')).rows, [[42]])
+
     def test_endpoint_schema_isolation(self):
-        from periplus.query.service import QueryMode
+        from periplus.query.models import QueryMode
         from periplus.query.helpers import query_helpers
         experimental = QueryService(self.config, mode=QueryMode.EXPERIMENTAL)
         self.addCleanup(experimental.close)
@@ -62,7 +95,7 @@ class QueryServiceTests(unittest.TestCase):
             self.assertTrue(all(item.name.startswith(schema + ".") for item in query_helpers(schema).relations))
 
     def test_removed_surfaces_in_both_modes(self):
-        from periplus.query.service import QueryMode
+        from periplus.query.models import QueryMode
         for mode in QueryMode:
             service = QueryService(self.config, mode=mode)
             self.addCleanup(service.close)
@@ -191,7 +224,7 @@ class QueryServiceTests(unittest.TestCase):
 
 
     def test_search_and_graph_primitives_on_both_read_only_services(self):
-        from periplus.query.service import QueryMode
+        from periplus.query.models import QueryMode
         from periplus.query.helpers import query_helpers
         experimental = QueryService(self.config, mode=QueryMode.EXPERIMENTAL)
         self.addCleanup(experimental.close)
@@ -216,7 +249,7 @@ class QueryServiceTests(unittest.TestCase):
                         service.execute(QueryRequest(sql=f'SELECT * FROM {removed}'))
 
     def test_modes_preserve_results_and_have_separate_admission(self):
-        from periplus.query.service import QueryMode
+        from periplus.query.models import QueryMode
         from periplus.operations.query_history.schemas import PreparationEvidence
         experimental = QueryService(self.config, mode=QueryMode.EXPERIMENTAL)
         self.addCleanup(experimental.close)
@@ -231,7 +264,7 @@ class QueryServiceTests(unittest.TestCase):
         self.assertEqual(stable.query_mode, QueryMode.STABLE)
         self.assertEqual(result.query_mode, QueryMode.EXPERIMENTAL)
         self.assertEqual(result.optimizations, [])
-        self.assertEqual(evidence.compiler_version, "public-query-v15:experimental")
+        self.assertEqual(evidence.compiler_version, "public-query-v16:experimental")
         self.assertNotEqual(result.compiler_version, stable.compiler_version)
         with self.assertRaises(ValueError):
             QueryService(self.config, mode="invalid")

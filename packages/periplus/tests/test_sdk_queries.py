@@ -15,7 +15,7 @@ from periplus_sdk import AsyncClient, ApiError
 from periplus_sdk.types import QueryHelpers
 from periplus.query.helpers import query_helpers
 from periplus.query.server_http import router
-from periplus.query.service import PreparedQuery, QueryResult
+from periplus.query.models import PreparedQuery, QueryResult
 from periplus.query.validation import _bounded_query
 
 

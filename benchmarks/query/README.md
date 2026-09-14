@@ -233,3 +233,14 @@ Older body-only and alternative-layout scripts are archived in `retired/experime
 Reproduce them at commit `466beb9`; they target the superseded registry. Their
 [posting-summary results](../../docs/query-investigations/posting-summary/README.md)
 remain useful historical evidence, not acceptance results for the all-text layout.
+
+## Comparing a registered optimization
+
+Use `--optimization element_text_index_candidates` with an eligible case such as
+`index-text-equality`, and `--ordinary-warm-runs` (or zero warm runs). This replaces
+the pass-specific switch. Choices come from the same explicit registry used by the
+query compiler; adding a pass needs no benchmark CLI branch. The report includes
+`optimization_decisions` with safe status/reason/counts, including declined runs.
+Lookup cost remains inside each timed execution in the shared snapshot. Repeat
+with `--candidate-first` and verify result equality. See the
+[developer guide](../../packages/periplus/src/periplus/query/README.md).

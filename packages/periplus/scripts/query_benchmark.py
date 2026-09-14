@@ -7,9 +7,14 @@ from dataclasses import replace
 import json
 from pathlib import Path
 
-from periplus.query.benchmarking import compare_reports, discover_cases, report_payload, measure_pair, environment_metadata, BenchmarkFailure
-
-
+from periplus.query.benchmarking import (
+    compare_reports,
+    discover_cases,
+    report_payload,
+    measure_pair,
+    environment_metadata,
+    BenchmarkFailure,
+)
 
 
 DEFAULT_CASE_ROOT = Path(__file__).resolve().parents[3] / "benchmarks/query/cases"
@@ -20,13 +25,28 @@ def main() -> None:
     parser.add_argument("--case-root", type=Path, default=DEFAULT_CASE_ROOT)
     parser.add_argument("--case", action="append", dest="case_ids", required=True)
     parser.add_argument("--candidate-first", action="store_true")
-    parser.add_argument("--text-index", action="store_true", help="measure bounded exact-text candidate lookup inside each timed execution")
+    from periplus.query.optimizations import STABLE_PASSES, EXPERIMENTAL_PASSES
+
+    registered = {item.name: item for item in (*STABLE_PASSES, *EXPERIMENTAL_PASSES)}
+    parser.add_argument(
+        "--optimization",
+        choices=tuple(registered),
+        help="measure a registered pass, including candidate lookup inside each timed execution",
+    )
     parser.add_argument("--seconds", type=int, choices=range(1, 121))
     parser.add_argument("--scale", type=int, action="append", dest="scales")
-    parser.add_argument("--ordinary-warm-runs", action="store_true", help="time ordinary executions instead of EXPLAIN ANALYZE; scan metrics are unavailable")
+    parser.add_argument(
+        "--ordinary-warm-runs",
+        action="store_true",
+        help="time ordinary executions instead of EXPLAIN ANALYZE; scan metrics are unavailable",
+    )
     parser.add_argument("--warm-runs", type=int, default=2)
     parser.add_argument("--report", type=Path, required=True)
-    parser.add_argument("--access-path", choices=("local_direct_reader", "cluster_direct_reader"), default="local_direct_reader")
+    parser.add_argument(
+        "--access-path",
+        choices=("local_direct_reader", "cluster_direct_reader"),
+        default="local_direct_reader",
+    )
     parser.add_argument("--baseline", type=Path)
     parser.add_argument(
         "--sql-override",
@@ -42,14 +62,20 @@ def main() -> None:
     missing = sorted(set(requested) - set(discovered))
     if missing:
         parser.error("unknown cases: " + ", ".join(missing))
-    if arguments.ordinary_warm_runs and not (arguments.sql_override or arguments.text_index):
+    if arguments.ordinary_warm_runs and not (
+        arguments.sql_override or arguments.optimization
+    ):
         parser.error("ordinary warm runs require paired mode")
-    if (arguments.sql_override or arguments.text_index) and len(requested) != 1:
+    if (arguments.sql_override or arguments.optimization) and len(requested) != 1:
         parser.error("--sql-override requires exactly one --case")
-    if arguments.text_index and arguments.sql_override:
-        parser.error("choose --text-index or --sql-override")
-    if arguments.text_index and arguments.warm_runs and not arguments.ordinary_warm_runs:
-        parser.error("--text-index requires --ordinary-warm-runs or --warm-runs 0")
+    if arguments.optimization and arguments.sql_override:
+        parser.error("choose --optimization or --sql-override")
+    if (
+        arguments.optimization
+        and arguments.warm_runs
+        and not arguments.ordinary_warm_runs
+    ):
+        parser.error("--optimization requires --ordinary-warm-runs or --warm-runs 0")
     selected = []
     for identifier in requested:
         case = discovered[identifier]
@@ -68,32 +94,80 @@ def main() -> None:
             )
         selected.append(case)
 
+    optimization_decisions = []
     try:
-        if arguments.sql_override or arguments.text_index:
+        if arguments.sql_override or arguments.optimization:
             case = selected[0]
             transform = None
-            candidate = replace(case, sql=arguments.sql_override.read_text(encoding="utf-8").strip()) if arguments.sql_override else case
-            if arguments.text_index:
+            candidate = (
+                replace(
+                    case, sql=arguments.sql_override.read_text(encoding="utf-8").strip()
+                )
+                if arguments.sql_override
+                else case
+            )
+            if arguments.optimization:
                 from periplus.platform.catalogue.config import catalogue_config_from_env
-                from periplus.query.text_index import text_index_rewrite
+                from periplus.query.optimizations.base import PassContext
                 from periplus.query.validation import _one_statement
+
                 alias = catalogue_config_from_env().alias
+                optimization = registered[arguments.optimization]
+
                 def transform(connection, sql, parameters):
-                    rewrite = text_index_rewrite(connection, _one_statement(sql), alias, parameters)
-                    if rewrite is None:
-                        raise ValueError("query did not select text-index candidates")
-                    return rewrite.sql
-            pairs = [measure_pair(case, candidate, scale, warm_runs=arguments.warm_runs,
-                                 candidate_first=arguments.candidate_first, profile_warm_runs=not arguments.ordinary_warm_runs, candidate_transform=transform) for scale in case.scales]
-            payload = {"format_version": 2, "measurements": [p["candidate"] for p in pairs],
-                       "paired_baseline": [p["baseline"] for p in pairs],
-                       "candidate_first": arguments.candidate_first, "environment": environment_metadata(),
-                       "baseline_sql": case.sql, "candidate_sql": candidate.sql,
-                       "optimization": "element_text_index_candidates" if arguments.text_index else "research_sql"}
+                    context = PassContext(
+                        _one_statement(sql),
+                        parameters or [],
+                        "public_v1",
+                        alias,
+                        connection,
+                    )
+                    decision = optimization.run(context)
+                    optimization_decisions.append(
+                        {
+                            "status": decision.status,
+                            "reason": decision.reason,
+                            "counts": decision.counts,
+                        }
+                    )
+                    if decision.status != "applied":
+                        raise ValueError(
+                            f"Optimization declined: {decision.status}.{decision.reason}"
+                        )
+                    assert decision.statement is not None
+                    return decision.statement.sql(dialect="duckdb")
+
+            pairs = [
+                measure_pair(
+                    case,
+                    candidate,
+                    scale,
+                    warm_runs=arguments.warm_runs,
+                    candidate_first=arguments.candidate_first,
+                    profile_warm_runs=not arguments.ordinary_warm_runs,
+                    candidate_transform=transform,
+                )
+                for scale in case.scales
+            ]
+            payload = {
+                "format_version": 2,
+                "measurements": [p["candidate"] for p in pairs],
+                "paired_baseline": [p["baseline"] for p in pairs],
+                "candidate_first": arguments.candidate_first,
+                "environment": environment_metadata(),
+                "baseline_sql": case.sql,
+                "candidate_sql": candidate.sql,
+                "optimization": arguments.optimization or "research_sql",
+            }
             comparisons, pair_failures = compare_reports(
-                {"measurements": payload["paired_baseline"]}, payload)
+                {"measurements": payload["paired_baseline"]}, payload
+            )
             for comparison in comparisons:
-                ratio = comparison["warm_time_ratio"] if arguments.warm_runs else comparison["normal_time_ratio"]
+                ratio = (
+                    comparison["warm_time_ratio"]
+                    if arguments.warm_runs
+                    else comparison["normal_time_ratio"]
+                )
                 comparison["performance_improved"] = ratio is not None and ratio < 1
             payload["comparison"] = comparisons
             payload["pair_failures"] = pair_failures
@@ -101,17 +175,35 @@ def main() -> None:
             payload = report_payload(selected, warm_runs=arguments.warm_runs)
     except Exception as exc:
         # Storage errors can contain credential-bearing connection strings.
-        payload = {"format_version": 2, "measurements": [],
-                   "failures": [exc.error_type if isinstance(exc, BenchmarkFailure) else type(exc).__name__], "complete": False}
+        payload = {
+            "format_version": 2,
+            "measurements": [],
+            "failures": [
+                exc.error_type
+                if isinstance(exc, BenchmarkFailure)
+                else type(exc).__name__
+            ],
+            "complete": False,
+        }
         if isinstance(exc, BenchmarkFailure):
             payload["failed_variant"] = exc.variant
             payload["progress"] = exc.progress
             payload["completed_variants"] = exc.completed_variants
+        payload["optimization_decisions"] = optimization_decisions
         arguments.report.parent.mkdir(parents=True, exist_ok=True)
-        arguments.report.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        arguments.report.write_text(
+            json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+        )
         print("Benchmark incomplete; safe failure type recorded in report")
         raise SystemExit(1) from None
-    payload["warm_protocol"] = "single_execution" if not arguments.warm_runs else ("ordinary_execution" if arguments.ordinary_warm_runs else "explain_analyze")
+    payload["optimization_decisions"] = optimization_decisions
+    payload["warm_protocol"] = (
+        "single_execution"
+        if not arguments.warm_runs
+        else (
+            "ordinary_execution" if arguments.ordinary_warm_runs else "explain_analyze"
+        )
+    )
     payload["environment"]["access_path"] = arguments.access_path
     payload["sql_override"] = (
         str(arguments.sql_override.resolve()) if arguments.sql_override else None

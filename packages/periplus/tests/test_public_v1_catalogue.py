@@ -1,6 +1,6 @@
 """Execute the public v1 views and helper against real DuckDB fixtures."""
 import unittest
-from periplus.query.service import QueryRequest
+from periplus.query.models import QueryRequest
 from periplus.query.validation import _bounded_query
 
 

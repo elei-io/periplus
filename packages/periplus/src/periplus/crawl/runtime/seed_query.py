@@ -6,7 +6,7 @@ import httpx
 from sqlglot import exp
 
 from periplus.crawl.runtime.selection_contract import SelectionCheckpoint
-from periplus.query.service import QueryRequest, QueryResult
+from periplus.query.models import QueryRequest, QueryResult
 from periplus.query.validation import _one_statement
 
 

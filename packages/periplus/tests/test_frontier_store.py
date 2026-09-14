@@ -585,7 +585,7 @@ class FrontierStoreTests(unittest.TestCase):
         policy = lambda url: self.policy
         self.assertEqual(process_seed_selection(self.store, identity, policy, seed_query=query), "settled")
         checkpoint = self.store.get_collection(identity).seed_provenance
-        from periplus.query.service import QueryRequest
+        from periplus.query.models import QueryRequest
         query.assert_called_once_with(QueryRequest(
             sql="SELECT requested_url AS url FROM web.observation WHERE outcome = ?", parameters=["succeeded"]))
         self.assertEqual(checkpoint["source_query_id"], "query-17")

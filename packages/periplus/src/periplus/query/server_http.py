@@ -15,7 +15,8 @@ from starlette.responses import JSONResponse
 from periplus.query.helpers import QueryHelpers, query_helpers
 from periplus.query.errors import query_error
 from periplus.query.limits import QueryLimitsUnavailable
-from periplus.query.service import BusyError, PreparedQuery, QueryRequest, QueryResult
+from periplus.query.models import PreparedQuery, QueryRequest, QueryResult
+from periplus.query.service import BusyError
 
 router = APIRouter(prefix="/query", tags=["query"])
 

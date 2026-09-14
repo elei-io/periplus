@@ -4,7 +4,7 @@ from hashlib import sha256
 from datetime import UTC, datetime
 from uuid import UUID
 
-from periplus.query.service import QueryRequest
+from periplus.query.models import QueryRequest
 
 from periplus.crawl.control.collections.exclusions import UrlExcluded
 from periplus.crawl.control.collections.discovery import DiscoveryState

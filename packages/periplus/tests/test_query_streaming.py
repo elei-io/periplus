@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from periplus.operations.access.schemas import QueryLimits
 from periplus.query.server_http import QueryAccessMiddleware, router
-from periplus.query.service import QueryResult
+from periplus.query.models import QueryResult
 
 
 class StreamingTests(unittest.TestCase):
@@ -73,7 +73,7 @@ class StreamOwnershipTests(unittest.IsolatedAsyncioTestCase):
     async def test_disconnect_keeps_slot_until_backpressured_producer_stops(self):
         import threading
         from periplus.query.streaming import QueryStreamResponse
-        from periplus.query.service import QueryRequest
+        from periplus.query.models import QueryRequest
         started = threading.Event()
         stopped = threading.Event()
         produced = []
