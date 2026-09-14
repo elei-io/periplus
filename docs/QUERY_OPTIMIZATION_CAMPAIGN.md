@@ -27,8 +27,12 @@ Agent work, outages and usage limits can delay runs. Query history is best-effor
 4. Every execution with `elapsed_ms > 20000` or `outcome != success` enters triage.
    Failed preparations also enter triage through a separate `operation=prepare`
    listing. Group by SQL fingerprint, compiler/deployment and root cause; do not
-   create one PR per execution. Also consider frequent sub-20-second queries with
-   large aggregate cost. Distinguish malformed SQL, admission rejection, resource
+   create one PR per execution. Route availability/admission failures using the playbook
+   before choosing a fix. For 503s, check pod OOM termination/restart evidence early and
+   correlate it with query execution; confirmed query-linked OOMs require both memory-work
+   and resource-containment investigation. Cases rejected before execution remain unevaluated. Pause heavy
+   probes during an outage and establish recovery before resuming authorized work. Also
+   consider frequent sub-20-second queries with large aggregate cost. Distinguish malformed SQL, admission rejection, resource
    exhaustion, storage errors and engine/compiler problems. Admin/internal cases
    are classified separately and never replayed as privileged benchmark SQL.
 5. Fetch `/query-history/executions/{execution_id}` only for selected examples.
@@ -42,7 +46,10 @@ Agent work, outages and usage limits can delay runs. Query history is best-effor
 
 ## Development and evidence
 
-Follow the full optimization playbook: explicit hypothesis, baseline, same-snapshot
+Follow the full optimization playbook, including its simple-module implementation standard
+and four acceptance questions. Preserve the original business query as the acceptance case.
+Use its existing benchmark quick start rather than adding campaign-specific runners.
+Required evidence: explicit hypothesis, baseline, same-snapshot
 production reader pair, complete equality, reverse order, physical-work metrics,
 adversarial fixtures, family regressions and required checks. Use the existing
 bounded production benchmark wrapper; run remote workloads serially. Do not raise
