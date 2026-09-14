@@ -9,11 +9,15 @@ from periplus.urls import normalize_url
 
 
 class DestinationUnavailable(RuntimeError):
-    pass
+    def __init__(self, message: str, *, reason: str = "destination_dns_unavailable"):
+        super().__init__(message)
+        self.reason = reason
 
 
 class DestinationRejected(ValueError):
-    pass
+    def __init__(self, message: str, *, reason: str = "non_public_destination"):
+        super().__init__(message)
+        self.reason = reason
 
 
 # A timed-out caller cannot stop the OS resolver thread. Keep its lookup charged
@@ -25,7 +29,7 @@ async def _resolve(host: str):
     loop = asyncio.get_running_loop()
     active = _lookups.setdefault(loop, set())
     if len(active) >= 4:
-        raise DestinationUnavailable("Destination DNS capacity is busy.")
+        raise DestinationUnavailable("Destination DNS capacity is busy.", reason="destination_dns_capacity")
     task = asyncio.create_task(loop.getaddrinfo(host, None, type=socket.SOCK_STREAM))
     active.add(task)
     def finished(completed):
@@ -40,7 +44,7 @@ async def public_destination_url(value: str) -> str:
     try:
         url = normalize_url(value)
     except ValueError as exc:
-        raise DestinationRejected("Invalid public destination.") from exc
+        raise DestinationRejected("Invalid public destination.", reason="invalid_destination") from exc
     host = urlsplit(url).hostname
     try:
         literal = ipaddress.ip_address(host)
@@ -51,7 +55,13 @@ async def public_destination_url(value: str) -> str:
     else:
         try:
             resolved = await _resolve(host)
-        except (OSError, TimeoutError) as exc:
+        except socket.gaierror as exc:
+            reason = ("destination_dns_not_found" if exc.errno == socket.EAI_NONAME
+                      else "destination_dns_unavailable")
+            raise DestinationUnavailable("Destination DNS is unavailable.", reason=reason) from exc
+        except TimeoutError as exc:
+            raise DestinationUnavailable("Destination DNS timed out.", reason="destination_dns_timeout") from exc
+        except OSError as exc:
             raise DestinationUnavailable("Destination DNS is unavailable.") from exc
         addresses = [ipaddress.ip_address(item[4][0]) for item in resolved]
     if not addresses or any(not address.is_global or address.is_multicast or address.is_reserved for address in addresses):
