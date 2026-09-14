@@ -146,6 +146,7 @@ async def run_dispatch(store: FrontierStore, *, pipeline, playwright, stop: asyn
 async def run_recovery(store: FrontierStore, *, stop: asyncio.Event) -> None:
     while not stop.is_set():
         await asyncio.to_thread(store.reconcile_exclusions)
+        await asyncio.to_thread(store.reconcile_orphans)
         expired = await asyncio.to_thread(store.expired_dispatches)
         for identity in expired:
             if stop.is_set():

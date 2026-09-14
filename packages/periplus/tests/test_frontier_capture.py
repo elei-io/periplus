@@ -100,7 +100,12 @@ class FrontierCaptureTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_destination_failure_precedes_domain_and_attempt_authorization(self):
         from periplus.crawl.acquisition.destination import DestinationRejected, DestinationUnavailable
-        for failure in (DestinationRejected('private'), DestinationUnavailable('DNS offline')):
+        for failure in (DestinationRejected('private'),
+                        DestinationRejected('invalid', reason='invalid_destination'),
+                        DestinationUnavailable('DNS offline'),
+                        DestinationUnavailable('not found', reason='destination_dns_not_found'),
+                        DestinationUnavailable('busy', reason='destination_dns_capacity'),
+                        DestinationUnavailable('timeout', reason='destination_dns_timeout')):
             with self.subTest(failure=type(failure).__name__):
                 acquisition = self.acquisition()
                 store = MagicMock()
@@ -110,17 +115,20 @@ class FrontierCaptureTests(unittest.IsolatedAsyncioTestCase):
                 message.data = CaptureWork(acquisition_id=acquisition.id, generation=1).model_dump_json().encode()
                 self.destination.side_effect = failure
                 with patch("periplus.crawl.runtime.frontier_capture.operation_leases", lease), \
-                     patch("periplus.crawl.runtime.frontier_capture.domain_permit") as domain:
+                     patch("periplus.crawl.runtime.frontier_capture.domain_permit") as domain, \
+                     patch("periplus.platform.telemetry.event") as telemetry:
                     await handle_capture_delivery(message, store, AsyncMock(), object(),
                         operation_bucket=object(), domain_bucket=FakeBucket())
                 store.begin_attempt.assert_not_called()
                 domain.assert_not_called()
                 if isinstance(failure, DestinationRejected):
-                    store.reject_destination.assert_called_once_with(acquisition.id, 1)
+                    store.reject_destination.assert_called_once_with(acquisition.id, 1, reason=failure.reason)
                     store.defer_unstarted.assert_not_called()
                 else:
                     store.reject_destination.assert_not_called()
-                    self.assertEqual(store.defer_unstarted.call_args.kwargs['reason'], 'destination_dns_unavailable')
+                    self.assertEqual(store.defer_unstarted.call_args.kwargs['reason'], failure.reason)
+                    telemetry.assert_called_once_with('capture_deferred', operation_id=str(acquisition.id),
+                                                      code=failure.reason)
                 message.ack.assert_awaited_once()
 
     def acquisition(self):

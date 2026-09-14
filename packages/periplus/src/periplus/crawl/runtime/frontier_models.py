@@ -64,6 +64,7 @@ class AcquisitionRecord(Base):
     generation: Mapped[int] = mapped_column(Integer, default=0)
     dispatch_policy_version: Mapped[int | None] = mapped_column()
     eligible_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    dns_not_found_count: Mapped[int] = mapped_column(default=0, server_default="0")
     defer_reason: Mapped[str | None] = mapped_column(Text)
     domain_eligible_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     domain_policy_id: Mapped[UUID | None] = mapped_column()

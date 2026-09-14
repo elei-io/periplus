@@ -1,3 +1,6 @@
+import ipaddress
+import re
+
 from urllib.parse import urldefrag, urlsplit, urlunsplit
 
 
@@ -18,7 +21,11 @@ def host_matches(host: str, pattern: str) -> bool:
 
 
 def normalize_url(value: str) -> str:
-    url, _ = urldefrag(value.strip())
+    value = value.strip()
+    # urlsplit silently removes tabs/newlines; reject them before parsing.
+    if any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise ValueError("URL contains control characters")
+    url, _ = urldefrag(value)
     parsed = urlsplit(url)
     scheme = parsed.scheme.lower()
     if scheme not in {"http", "https"} or parsed.hostname is None:
@@ -26,6 +33,21 @@ def normalize_url(value: str) -> str:
     if parsed.username is not None or parsed.password is not None:
         raise ValueError("URL credentials are not supported")
     host = parsed.hostname.lower()
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        try:
+            ascii_host = host.encode("idna").decode("ascii")
+        except UnicodeError as exc:
+            raise ValueError("Invalid URL hostname") from exc
+        labels = ascii_host.removesuffix(".").split(".")
+        if (len(ascii_host.removesuffix(".")) > 253 or any(
+                not re.fullmatch(r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?", label)
+                for label in labels)):
+            raise ValueError("Invalid URL hostname")
+    else:
+        if "%" in host:
+            raise ValueError("Scoped IP addresses are not supported")
     if ":" in host and not host.startswith("["):
         host = f"[{host}]"
     port = parsed.port

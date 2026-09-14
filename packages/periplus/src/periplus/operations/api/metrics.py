@@ -4,6 +4,8 @@ from prometheus_client import CONTENT_TYPE_LATEST, Gauge, generate_latest
 
 router = APIRouter(tags=["operations"])
 pending = Gauge('periplus_frontier_pending_acquisitions', 'Current queued and retrying acquisitions; shared across API replicas.')
+orphaned = Gauge('periplus_frontier_orphaned_pending_acquisitions', 'Queued or retrying acquisitions without unfinished interests.')
+owned = Gauge('periplus_frontier_owned_pending_acquisitions', 'Queued or retrying acquisitions with unfinished interests, including paused requests.')
 oldest = Gauge('periplus_frontier_oldest_pending_seconds', 'Age of the oldest queued or retrying acquisition; zero when empty.')
 
 
@@ -18,13 +20,23 @@ def prometheus_metrics(request: Request) -> Response:
 
 def refresh_frontier_metrics(sessions) -> None:
     from sqlalchemy import func, select
-    from periplus.crawl.runtime.frontier_models import AcquisitionRecord, FrontierControlRecord
+    from periplus.crawl.runtime.frontier_models import AcquisitionRecord, FrontierControlRecord, InterestRecord
 
     with sessions() as session:
         oldest_created = select(func.min(AcquisitionRecord.created_at)).where(
             AcquisitionRecord.status.in_(("queued", "retry"))).scalar_subquery()
-        count, created = session.execute(select(FrontierControlRecord.pending_count, oldest_created).where(
-            FrontierControlRecord.id == 1)).one()
+        referenced = select(InterestRecord.id).where(
+            InterestRecord.acquisition_id == AcquisitionRecord.id,
+            InterestRecord.status.not_in(("settled", "cancelled")),
+        ).exists()
+        orphan_count_query = select(func.count()).select_from(AcquisitionRecord).where(
+            AcquisitionRecord.status.in_(("queued", "retry")), ~referenced).scalar_subquery()
+        # Read counters and ownership at one statement snapshot during dispatch/recovery.
+        count, created, orphan_count = session.execute(select(
+            FrontierControlRecord.pending_count, oldest_created, orphan_count_query,
+        ).where(FrontierControlRecord.id == 1)).one()
+        orphaned.set(orphan_count)
+        owned.set(max(0, count - orphan_count))
         pending.set(count)
         if created is not None and created.tzinfo is None:
             created = created.replace(tzinfo=UTC)

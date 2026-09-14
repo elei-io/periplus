@@ -119,6 +119,101 @@ class FrontierStoreTests(unittest.TestCase):
             control = session.get(FrontierControlRecord, 1)
             self.assertEqual(control.active_count, 0)
 
+    def test_existing_malformed_destination_is_cancelled_before_policy_lookup(self):
+        a = self.admit(self.collection())
+        with self.sessions.begin() as session:
+            record = session.get(AcquisitionRecord, a.acquisition_id)
+            record.url = "https:// www.ardian.com/"
+            record.domain = " www.ardian.com"
+        self.assertIsNone(self.store.dispatch_next(now=self.now))
+        record = self.store.get_acquisition(a.acquisition_id)
+        self.assertEqual(record.status, "cancelled")
+        self.assertEqual(record.terminal_reason, "invalid_destination")
+
+    def test_dns_negative_budget_survives_restart_and_settles_shared_interests(self):
+        identities = [self.collection(), self.collection()]
+        a = self.admit(identities[0])
+        self.admit(identities[1])
+        now = datetime.now(UTC)
+        for count in range(1, 4):
+            self.store = FrontierStore(self.sessions)
+            work = self.store.dispatch(a.acquisition_id, now=now)
+            self.assertIsNotNone(work)
+            self.assertTrue(self.store.defer_unstarted(a.acquisition_id, work.generation,
+                reason="destination_dns_not_found", delay_seconds=30, now=now))
+            self.assertFalse(self.store.defer_unstarted(a.acquisition_id, work.generation,
+                reason="destination_dns_not_found", delay_seconds=30, now=now))
+            acquisition = self.store.get_acquisition(a.acquisition_id)
+            self.assertEqual(acquisition.dns_not_found_count, count)
+            self.assertEqual(acquisition.attempt_count, 0)
+            if count < 3:
+                delay = 30 * 4 ** (count - 1)
+                self.assertEqual(acquisition.eligible_at.replace(tzinfo=UTC), now + timedelta(seconds=delay))
+                from periplus.crawl.runtime.frontier_views import collection_views
+                self.assertEqual(collection_views(self.sessions, identity=identities[0])[0].waiting_reason,
+                                 "destination_dns_not_found")
+                now += timedelta(seconds=delay)
+        self.assertEqual(acquisition.status, "cancelled")
+        self.assertEqual(acquisition.terminal_reason, "destination_dns_not_found")
+        self.assertIsNone(acquisition.outcome)
+        with self.sessions.begin() as session:
+            for identity in identities:
+                session.get(CollectionRecord, identity).seeds_settled = True
+        for identity in identities:
+            self.assertIsNotNone(self.store.settle_collection(identity, now=now))
+        with self.sessions() as session:
+            self.assertTrue(all(i.status == "cancelled" for i in session.scalars(select(InterestRecord))))
+            control = session.get(FrontierControlRecord, 1)
+            self.assertEqual((control.pending_count, control.active_count), (0, 0))
+
+    def test_dns_infrastructure_waits_do_not_exhaust_negative_budget(self):
+        a = self.admit(self.collection())
+        now = self.now
+        for reason in ("destination_dns_capacity", "destination_dns_timeout", "destination_dns_unavailable") * 4:
+            work = self.store.dispatch(a.acquisition_id, now=now)
+            self.assertTrue(self.store.defer_unstarted(a.acquisition_id, work.generation,
+                reason=reason, delay_seconds=30, now=now))
+            now += timedelta(seconds=30)
+        self.assertEqual(self.store.get_acquisition(a.acquisition_id).dns_not_found_count, 0)
+        self.assertEqual(self.store.get_acquisition(a.acquisition_id).attempt_count, 0)
+
+    def test_cancel_during_unstarted_dispatch_fences_late_defer(self):
+        identity = self.collection()
+        a = self.admit(identity)
+        work = self.store.dispatch(a.acquisition_id, now=self.now)
+        self.store.stop_collection(identity, now=self.now)
+        self.assertFalse(self.store.defer_unstarted(a.acquisition_id, work.generation,
+                                                   delay_seconds=30, now=self.now))
+        self.assertFalse(self.store.begin_attempt(a.acquisition_id, work.generation, now=self.now))
+        self.assertEqual(self.store.get_acquisition(a.acquisition_id).status, "cancelled")
+        with self.sessions() as session:
+            control = session.get(FrontierControlRecord, 1)
+            self.assertEqual((control.pending_count, control.active_count), (0, 0))
+
+    def test_orphan_recovery_preserves_paused_shared_work_and_is_idempotent(self):
+        from sqlalchemy import delete
+        first, second = self.collection(), self.collection()
+        shared = self.admit(first)
+        self.admit(second)
+        self.store.set_collection_paused(second, True)
+        self.store.stop_collection(first, now=self.now)
+        self.assertEqual(self.store.reconcile_orphans(now=self.now), 0)
+        orphan = self.admit(self.collection(), "https://orphan.example/")
+        work = self.store.dispatch(orphan.acquisition_id, now=self.now)
+        self.store.defer_unstarted(orphan.acquisition_id, work.generation, delay_seconds=30, now=self.now)
+        with self.sessions.begin() as session:
+            session.execute(delete(InterestRecord).where(InterestRecord.acquisition_id == orphan.acquisition_id))
+        self.assertEqual(self.store.reconcile_orphans(now=self.now), 1)
+        self.assertEqual(self.store.reconcile_orphans(now=self.now), 0)
+        self.assertEqual(self.store.get_acquisition(shared.acquisition_id).status, "queued")
+        self.assertEqual(self.store.get_acquisition(orphan.acquisition_id).status, "cancelled")
+        self.assertEqual(self.store.cleanup_acquisitions(cutoff=self.now + timedelta(hours=2)).removed, 0)
+        with self.sessions.begin() as session:
+            for message in session.scalars(select(FrontierOutboxRecord).where(
+                    FrontierOutboxRecord.acquisition_id == orphan.acquisition_id)):
+                message.committed_snapshot = 1
+        self.assertEqual(self.store.cleanup_acquisitions(cutoff=self.now + timedelta(hours=2)).removed, 1)
+
     def collection(self, **kwargs):
         identity = uuid4()
         self.store.create_collection(identity, CollectionSpec(**kwargs))
@@ -706,6 +801,28 @@ class FrontierStoreTests(unittest.TestCase):
                                    ))
         self.store.defer_retry(a.acquisition_id, work.generation, result, now=self.now)
         self.store.stop_collection(identity, now=self.now)
+        acquisition = self.store.get_acquisition(a.acquisition_id)
+        self.assertEqual(acquisition.status, "cancelled")
+        self.assertEqual(len(acquisition.outcome["attempts"]), 1)
+        with self.sessions() as session:
+            self.assertEqual(session.get(FrontierControlRecord, 1).pending_count, 0)
+            self.assertIsNotNone(session.get(FrontierOutboxRecord, f"observation:{a.acquisition_id}"))
+
+    def test_capture_retry_after_cancellation_keeps_attempt_evidence(self):
+        from periplus.crawl.acquisition.models import AcquisitionAttemptEvidence, AcquisitionResult
+        identity = self.collection()
+        a = self.admit(identity)
+        work = self.store.dispatch(a.acquisition_id, now=self.now)
+        self.store.begin_attempt(a.acquisition_id, work.generation, now=self.now)
+        result = AcquisitionResult(url="https://example.com/", success=False, duration_seconds=1,
+                                   outcome="failed", attempt_evidence=AcquisitionAttemptEvidence(
+                                        resource_usage=AttemptUsage(policy_version=1, domain_policy=self.store.current_domain_policy(a.acquisition_id), exclusion_policy_version=1, reserved_ms=125000, measured_ms=100),
+                                       attempt=1, requested_url="https://example.com/", outcome="retry",
+                                       started_at=self.now, completed_at=self.now,
+                                   ))
+        self.store.stop_collection(identity, now=self.now)
+        self.assertEqual(self.store.reconcile_orphans(now=self.now), 0)
+        self.store.defer_retry(a.acquisition_id, work.generation, result, now=self.now)
         acquisition = self.store.get_acquisition(a.acquisition_id)
         self.assertEqual(acquisition.status, "cancelled")
         self.assertEqual(len(acquisition.outcome["attempts"]), 1)

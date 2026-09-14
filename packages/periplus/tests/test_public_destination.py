@@ -1,3 +1,4 @@
+import socket
 import asyncio
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -6,6 +7,25 @@ from periplus.crawl.acquisition.destination import public_destination_url, Desti
 
 
 class PublicDestinationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_dns_errors_have_distinct_recovery_semantics(self):
+        cases = ((socket.gaierror(socket.EAI_NONAME, 'not found'), 'destination_dns_not_found'),
+                 (socket.gaierror(getattr(socket, 'EAI_NODATA', socket.EAI_NONAME), 'no address'), 'destination_dns_not_found'),
+                 (socket.gaierror(socket.EAI_AGAIN, 'temporary'), 'destination_dns_unavailable'),
+                 (TimeoutError(), 'destination_dns_timeout'))
+        for failure, reason in cases:
+            with self.subTest(reason=reason), patch.object(asyncio.get_running_loop(),
+                    'getaddrinfo', AsyncMock(side_effect=failure)):
+                with self.assertRaises(DestinationUnavailable) as caught:
+                    await public_destination_url('https://example.com/')
+                self.assertEqual(caught.exception.reason, reason)
+
+    async def test_malformed_hostname_is_rejected_before_dns(self):
+        with patch.object(asyncio.get_running_loop(), 'getaddrinfo', AsyncMock()) as resolver:
+            with self.assertRaises(DestinationRejected) as caught:
+                await public_destination_url('https:// www.ardian.com/')
+            self.assertEqual(caught.exception.reason, 'invalid_destination')
+            resolver.assert_not_awaited()
+
     async def test_nonpublic_literals_never_resolve_or_proceed(self):
         with patch.object(asyncio.get_running_loop(), 'getaddrinfo', AsyncMock()) as resolver:
             for url in ('http://127.0.0.1/', 'http://10.0.0.1/', 'http://169.254.169.254/',

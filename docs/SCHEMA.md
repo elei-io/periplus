@@ -507,3 +507,9 @@ The initial columns match public_v1; subsequent experiments may change them free
 The endpoint's discovery response is authoritative for its current relation names and columns.
 A successful experiment is released as a new `public_vN` contract; released views never
 alias mutable experimental views. See [QUERY.md](QUERY.md#stable-and-experimental-execution).
+
+The operational `frontier_acquisitions.dns_not_found_count` counts negative
+name-resolution checks, separately from physical `attempt_count`. It is durable
+across dispatch generations and worker restarts. Three negative results terminate
+the destination; temporary resolver errors and local capacity waits do not debit
+it. This control-only field is not crawl history or part of the lake contract.

@@ -55,9 +55,9 @@ async def handle_capture_delivery(message, store: FrontierStore, pipeline, playw
 
     async def defer(delay, *, reason=None):
         from periplus.platform.telemetry import event
-        event("capture_deferred", operation_id=str(work.acquisition_id), code=reason if reason in {"cdp_unavailable", "ingestion_delivery_unavailable", "storage_unavailable"} else "capacity_or_pacing")
+        event("capture_deferred", operation_id=str(work.acquisition_id), code=reason or "capacity_or_pacing")
         from periplus.operations.metrics import work_deferred
-        work_deferred.labels(reason if reason in {"cdp_unavailable", "ingestion_delivery_unavailable", "storage_unavailable"} else "capacity_or_pacing").inc()
+        work_deferred.labels(reason or "capacity_or_pacing").inc()
         released = await asyncio.to_thread(store.defer_unstarted, work.acquisition_id, work.generation,
                                           delay_seconds=min(86400, max(1, delay)), domain_policy=current_domain if reason is None else None, reason=reason)
         if released:
@@ -87,11 +87,12 @@ async def handle_capture_delivery(message, store: FrontierStore, pipeline, playw
                 return
             try:
                 await public_destination_url(acquisition.url)
-            except DestinationUnavailable:
-                await defer(30, reason="destination_dns_unavailable")
+            except DestinationUnavailable as failure:
+                await defer(30, reason=failure.reason)
                 return
-            except DestinationRejected:
-                rejected = await asyncio.to_thread(store.reject_destination, work.acquisition_id, work.generation)
+            except DestinationRejected as failure:
+                rejected = await asyncio.to_thread(store.reject_destination, work.acquisition_id, work.generation,
+                                                   reason=failure.reason)
                 if rejected:
                     await message.ack()
                 else:

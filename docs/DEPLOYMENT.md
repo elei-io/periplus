@@ -578,3 +578,26 @@ and selects `experimental`. Internal service URLs remain separate deployments.
 Install the complete native catalogue and deploy core/public/SDK coherently; image-only
 promotion does not install these objects. No physical projection or control schema changes
 are needed, so no corpus rebuild is required. The old helper name is removed directly.
+
+## Destination retry and orphan recovery
+
+Revision `20260914_0018` adds `frontier_acquisitions.dns_not_found_count` with a
+server default of zero. Apply the control migration before rolling the API and
+control workers. The additive column permits old workers to continue during the
+rollout; the new retry/cleanup behavior takes effect once crawlers are replaced.
+No catalogue setup, lake rebuild, queue purge, or frontier reset is required.
+Review skipped releases separately before using an online migration.
+
+Crawlers terminate a destination after three negative resolver name/address responses,
+waiting 30 then 120 seconds between negative checks. Only those negative responses
+consume the persisted DNS budget; physical attempts remain separate. Temporary
+resolver failures, ten-second lookup timeouts, and exhausted local resolver slots
+remain dependency waits. Existing pending work starts with zero negative checks.
+Malformed destinations already admitted are cancelled before domain-policy lookup.
+
+Recovery cancels at most 64 unstarted acquisitions without unfinished interests
+per pass, including existing orphan retries. Started attempts retain completion
+and uncertain-attempt recovery. Terminal records are reclaimed only after the
+existing receipt, navigation, and one-hour grace gates. Keep operator pause and
+concurrency unchanged. Verify DNS reasons, collection settlement, and decreasing
+`periplus_frontier_orphaned_pending_acquisitions` after rollout.

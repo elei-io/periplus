@@ -325,3 +325,24 @@ Uncertain writes retain their original claims and fail-stop bounds.
 Elements share one parsed document context. Exact descendant text is materialized
 for every element; parser nodes are temporary. A complete rebuild activates all
 new projections together. Normal finalization removes obsolete material tables.
+
+## Destination preflight and abandoned frontier work
+
+Malformed HTTP(S) authorities are rejected at shared URL validation, and stored
+malformed destinations are cancelled before dispatch policy lookup. Capture also
+checks syntax and public DNS before physical authorization. Negative name/address responses
+have a durable, acquisition-local budget of three with 30/120-second backoff.
+Exhaustion cancels unfinished participating interests with
+`destination_dns_not_found`; it does not invent a browser attempt or observation.
+Actual prior attempts, if any, retain their normal terminal evidence publication.
+Temporary DNS failures, timeouts and local lookup capacity waits are distinct from
+negative name results and do not consume this budget. Logs and queue views retain
+the specific reason. The DNS budget counts negative checks over this acquisition's
+lifetime, independently of process restarts or dispatch generations.
+
+Removing the last unfinished interest cancels unstarted queued, retrying or
+dispatched work transactionally. A physical retry arriving after cancellation
+preserves its attempt evidence and terminates instead of requeueing an orphan.
+Paused interests still protect shared work. Crawler recovery also reconciles
+bounded batches of existing orphans. The janitor's terminal cleanup and durable
+receipt gates remain unchanged.
