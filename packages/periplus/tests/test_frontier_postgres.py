@@ -50,6 +50,29 @@ class FrontierPostgresTests(unittest.TestCase):
         self.store.create_collection(identity, CollectionSpec(page_limit=1))
         return identity
 
+    def test_cancellation_racing_dns_deferral_never_requeues_unowned_work(self):
+        for _ in range(5):
+            identity = self.collection()
+            admitted = self.store.admit(identity, 'https://example.com/', self.context, self.policy)
+            work = self.store.dispatch(admitted.acquisition_id)
+            gate = Barrier(2)
+            def cancel():
+                gate.wait(timeout=5)
+                self.store.stop_collection(identity)
+            def defer():
+                gate.wait(timeout=5)
+                self.store.defer_unstarted(admitted.acquisition_id, work.generation,
+                                           delay_seconds=30, reason='destination_dns_not_found')
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                futures = [pool.submit(cancel), pool.submit(defer)]
+                for future in futures:
+                    future.result(timeout=10)
+            self.assertEqual(self.store.get_acquisition(admitted.acquisition_id).status, 'cancelled')
+            with self.sessions() as session:
+                control = session.get(FrontierControlRecord, 1)
+                self.assertEqual((control.pending_count, control.active_count), (0, 0))
+            self.assertEqual(self.store.reconcile_orphans(), 0)
+
     def test_publication_and_retry_reject_claims_expired_during_row_lock_wait(self):
         from datetime import timedelta
         from threading import Event

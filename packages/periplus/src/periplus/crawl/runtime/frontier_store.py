@@ -807,8 +807,42 @@ class FrontierStore:
             control.exclusion_cursor = acquisitions[-1].id if len(acquisitions) == 64 else None
             return excluded
 
-    def reject_destination(self, acquisition_id: UUID, generation: int) -> bool:
-        """Reject an unstarted dispatch whose destination failed public-address validation."""
+    def _cancel_unwanted(self, session: Session, control: FrontierControlRecord,
+                         acquisition: AcquisitionRecord, now: datetime) -> bool:
+        """Paused participants still own work; started attempts finish or recover."""
+        if (acquisition.status not in {"queued", "retry", "dispatched"}
+                or acquisition.attempt_started_at is not None):
+            return False
+        session.flush()
+        unfinished = session.scalar(select(InterestRecord.id).where(
+            InterestRecord.acquisition_id == acquisition.id,
+            InterestRecord.status.not_in(("settled", "cancelled")),
+        ).limit(1))
+        if unfinished is not None:
+            return False
+        self._exclude_acquisition(session, control, acquisition, now, reason="no_remaining_interests")
+        return True
+
+    def reconcile_orphans(self, *, now: datetime | None = None) -> int:
+        """Cancel at most 64 abandoned unstarted acquisitions through normal fencing."""
+        with self._sessions() as session, session.begin():
+            control = self._control(session)
+            now = self._transaction_now(session, now)
+            referenced = select(InterestRecord.id).where(
+                InterestRecord.acquisition_id == AcquisitionRecord.id,
+                InterestRecord.status.not_in(("settled", "cancelled")),
+            ).exists()
+            records = list(session.scalars(select(AcquisitionRecord).where(
+                AcquisitionRecord.status.in_(("queued", "retry", "dispatched")),
+                AcquisitionRecord.attempt_started_at.is_(None), ~referenced,
+            ).order_by(AcquisitionRecord.id).limit(64)))
+            return sum(self._cancel_unwanted(session, control, acquisition, now) for acquisition in records)
+
+    def reject_destination(self, acquisition_id: UUID, generation: int, *,
+                           reason: str = "non_public_destination") -> bool:
+        """Reject an unstarted dispatch whose destination failed validation."""
+        if reason not in {"non_public_destination", "invalid_destination"}:
+            raise ValueError("unknown destination rejection reason")
         with self._sessions() as session, session.begin():
             control = self._control(session)
             acquisition = session.get(AcquisitionRecord, acquisition_id)
@@ -816,7 +850,7 @@ class FrontierStore:
                     or acquisition.generation != generation or acquisition.attempt_started_at is not None):
                 return False
             self._exclude_acquisition(session, control, acquisition, self._transaction_now(session),
-                                      reason="non_public_destination")
+                                      reason=reason)
             return True
 
     def _exclude_acquisition(self, session: Session, control: FrontierControlRecord,
@@ -851,6 +885,11 @@ class FrontierStore:
             return None
         acquisition = session.get(AcquisitionRecord, acquisition_id)
         if acquisition is None or acquisition.status not in ("queued", "retry"):
+            return None
+        try:
+            normalize_url(acquisition.url)
+        except ValueError:
+            self._exclude_acquisition(session, control, acquisition, now, reason="invalid_destination")
             return None
         if is_excluded(acquisition.url, control.exclusions):
             self._exclude_acquisition(session, control, acquisition, now)
@@ -1023,7 +1062,7 @@ class FrontierStore:
         """
         if not 0 <= delay_seconds <= 86400:
             raise ValueError("domain deferral outside bounds")
-        if reason not in (None, "ingestion_delivery_unavailable", "destination_dns_unavailable", "cdp_unavailable", "storage_unavailable"):
+        if reason not in (None, "ingestion_delivery_unavailable", "destination_dns_unavailable", "destination_dns_not_found", "destination_dns_capacity", "destination_dns_timeout", "cdp_unavailable", "storage_unavailable"):
             raise ValueError("unknown pre-acquisition dependency reason")
         with self._sessions() as session, session.begin():
             control = self._control(session)
@@ -1032,6 +1071,15 @@ class FrontierStore:
             if (acquisition is None or acquisition.status != "dispatched"
                     or acquisition.generation != generation or acquisition.attempt_started_at is not None):
                 return False
+            if self._cancel_unwanted(session, control, acquisition, now):
+                return True
+            if reason == "destination_dns_not_found":
+                acquisition.dns_not_found_count += 1
+                if acquisition.dns_not_found_count >= 3:
+                    self._exclude_acquisition(session, control, acquisition, now,
+                                              reason="destination_dns_not_found")
+                    return True
+                delay_seconds = 30 * 4 ** (acquisition.dns_not_found_count - 1)
             self._settle_attempt(acquisition, None)
             acquisition.status = "retry"
             acquisition.defer_reason = reason
@@ -1286,6 +1334,7 @@ class FrontierStore:
             acquisition.eligible_at = now + timedelta(seconds=delay_seconds)
             control.active_count -= 1
             control.pending_count += 1
+            self._cancel_unwanted(session, control, acquisition, now)
             return True
 
     def needs_navigation(self, acquisition_id: UUID) -> bool:
@@ -1408,19 +1457,7 @@ class FrontierStore:
             for identity in affected:
                 acquisition = session.get(AcquisitionRecord, identity)
                 assert acquisition is not None
-                other = session.scalar(select(InterestRecord.id).where(
-                    InterestRecord.acquisition_id == identity, InterestRecord.status.in_(("queued", "awaiting_result"))).limit(1))
-                if acquisition.status in ("queued", "retry") and other is None:
-                    if acquisition.status == "retry":
-                        evidence = terminal_evidence(acquisition, now, "cancelled")
-                        acquisition.outcome = evidence.model_dump(mode="json")
-                        acquisition.generation += 1
-                        self._outbox(session, acquisition, "observation", acquisition.outcome,
-                                     f"observation:{acquisition.id}")
-                    acquisition.status = "cancelled"
-                    acquisition.pending_key = None
-                    acquisition.completed_at = now
-                    control.pending_count -= 1
+                self._cancel_unwanted(session, control, acquisition, now)
             collection.seeds_settled = True
             collection.outcome = reason
             if finishing:

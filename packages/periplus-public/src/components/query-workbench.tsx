@@ -103,10 +103,10 @@ export function QueryWorkbench({ initialSql, initialParameters, autoRun = false,
           <div ref={editor} onKeyDownCapture={event => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); event.stopPropagation(); if (!query.isPending && sql.trim()) run() } }}><SqlEditor namespace={namespace} relations={relations} value={sql} onChange={setSql} onSelectionChange={setSelection} /></div>
           {!sql.trim() && !assistant.open && <div className="px-3"><Button variant="ghost" size="sm" onClick={() => assistant.show()}>Describe what you want to query…</Button></div>}
           <div className="flex flex-wrap items-center justify-between gap-2 p-3"><div className="flex flex-wrap items-center gap-3"><CardDescription role="status">{query.access.message ?? query.phase}</CardDescription><DropdownMenu>
-            <DropdownMenuTrigger disabled={query.isPending} aria-label={`Query execution mode: ${namespace} - ${mode}`} render={<Badge variant="secondary" render={<button type="button" />} />}>{namespace} - {mode}<ChevronDown data-icon="inline-end" /></DropdownMenuTrigger>
+            <DropdownMenuTrigger disabled={query.isPending} aria-label={`Query schema: ${namespace}`} render={<Badge variant="secondary" render={<button type="button" />} />}>{namespace}<ChevronDown data-icon="inline-end" /></DropdownMenuTrigger>
             <DropdownMenuContent side="top" align="start" className="w-max">
-              <DropdownMenuRadioGroup value={mode} onValueChange={value => { if (value === "stable" || value === "experimental") setMode(value) }} aria-label="Query execution mode">
-                <DropdownMenuRadioItem value="stable" disabled={query.isPending}>public_v1 - stable</DropdownMenuRadioItem>
+              <DropdownMenuRadioGroup value={mode} onValueChange={value => { if (value === "stable" || value === "experimental") setMode(value) }} aria-label="Query schema">
+                <DropdownMenuRadioItem value="stable" disabled={query.isPending}>public_v1</DropdownMenuRadioItem>
                 <DropdownMenuRadioItem value="experimental" disabled={query.isPending}>experimental</DropdownMenuRadioItem>
               </DropdownMenuRadioGroup>
             </DropdownMenuContent>

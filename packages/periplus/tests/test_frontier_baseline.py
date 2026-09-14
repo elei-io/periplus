@@ -65,8 +65,15 @@ class FrontierBaselineTests(unittest.TestCase):
                             control.pending_count = 12
                             control.active_count = 2
                             control.capture_timeout_ms = 45000
-                            session.add(AcquisitionRecord(id=queued_id, url='https://example.com/',
-                                domain='example.com', capture_key='migration-test', requirements={}))
+                            # Insert using the old contract, before newer columns exist.
+                            session.execute(text("""INSERT INTO frontier_acquisitions
+                                (id, url, domain, capture_key, requirements, status, generation,
+                                 eligible_at, attempt_exclusions, attempt_exclusion_version,
+                                 attempt_reserved_ms, attempt_count, attempt_limit, uncertain_attempts,
+                                 prior_results, frozen_reasons, created_at)
+                                VALUES (:id, 'https://example.com/', 'example.com', 'migration-test',
+                                        '{}', 'queued', 0, CURRENT_TIMESTAMP, '[]', 1, 0, 0, 3,
+                                        '[]', '[]', '[]', CURRENT_TIMESTAMP)"""), {"id": queued_id})
                             session.commit()
                         connection.execute(text('UPDATE frontier_control SET attempt_allowance=100, started_attempts=100, capture_time_allowance_ms=172800000, charged_capture_ms=172800000'))
                     migration.upgrade()
@@ -78,13 +85,14 @@ class FrontierBaselineTests(unittest.TestCase):
                     access = session.get(PublicAccessRecord, 1)
                     self.assertEqual(access.configuration["crawl"]["queue_limit"], 10000)
                     self.assertFalse(access.configuration["crawl"]["enabled"])
-                    self.assertEqual(access.version, 9)
+                    self.assertEqual(access.version, 11)  # Follow-link and query-input migrations each increment it.
                     self.assertEqual(access.windows["crawl"]["count"], 3)
                     control = session.get(FrontierControlRecord, 1)
                     self.assertEqual(control.dispatch_limit, 7)
                     self.assertEqual((control.pending_count, control.active_count), (12, 2))
                     self.assertEqual(control.capture_timeout_ms, 45000)
                     self.assertEqual(session.get(AcquisitionRecord, queued_id).status, 'queued')
+                    self.assertEqual(session.get(AcquisitionRecord, queued_id).dns_not_found_count, 0)
                     self.assertNotIn('started_attempts', {column['name'] for column in inspect(connection).get_columns('frontier_control')})
                     control.paused = True
                     session.flush()
@@ -92,6 +100,6 @@ class FrontierBaselineTests(unittest.TestCase):
                     self.assertTrue(session.get(FrontierControlRecord, 1).paused)
                     session.commit()
                 with self.assertRaisesRegex(RuntimeError, 'Reclaimed acquisition references'):
-                    migrations[-1].downgrade()
+                    next(m for m in migrations if m.revision == '20260910_0014').downgrade()
             connection.execute(text('SET search_path TO public'))
             connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))

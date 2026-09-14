@@ -144,6 +144,11 @@ def collection_views(sessions, *, identity: UUID | None = None, status: str | No
             FrontierOutboxRecord.committed_snapshot.is_not(None),
         )))
         for identity, view in views.items():
+            if (view.status == "active" and view.waiting_reason is None
+                    and not view.acquiring_pages and not view.selecting_pages
+                    and view.queue.deferred_pages and not view.queue.runnable_pages
+                    and not view.queue.unknown_pages and len(view.queue.constraints) == 1):
+                view.waiting_reason = view.queue.constraints[0].reason
             view.lineage_ready = (view.status == "settled" and identity in confirmed_outcomes
                                   and identity not in uncommitted)
             if view.lineage_ready and view.ingested_pages == view.supplied_pages + view.failed_pages:
