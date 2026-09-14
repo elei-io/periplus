@@ -10,7 +10,7 @@ import duckdb
 
 from periplus.platform.catalogue.config import CatalogueConfig
 from periplus.platform.catalogue.connection import DuckLakeConnectionFactory, _literal
-from periplus.platform.catalogue.public import public_objects
+from periplus.platform.catalogue.public import known_public_objects
 from periplus.platform.catalogue.schema import expected_columns
 from periplus.platform.catalogue.client import _column_type
 from periplus.query.service import QueryService, QueryRequest, BusyError
@@ -41,6 +41,25 @@ class QueryServiceTests(unittest.TestCase):
         self.assertFalse(streamed.truncated)
         bounded = experimental.execute(QueryRequest(sql='SELECT content_id FROM html_element WHERE text=?', parameters=['robot robot robotics careers']))
         self.assertEqual(bounded.optimizations, [])
+
+    def test_endpoint_schema_isolation(self):
+        from periplus.query.service import QueryMode
+        from periplus.query.helpers import query_helpers
+        experimental = QueryService(self.config, mode=QueryMode.EXPERIMENTAL)
+        self.addCleanup(experimental.close)
+        for service, schema, other in ((self.service, "public_v1", "experimental"), (experimental, "experimental", "public_v1")):
+            for execute in (service.prepare, service.execute):
+                result = execute(QueryRequest(sql="SELECT * FROM search(['robot'])"))
+                self.assertEqual(result.schema_version, schema)
+                for sql in (f"SELECT * FROM {other}.capture", f"SELECT * FROM {other}.search(['robot'])",
+                            f"DESCRIBE {other}.html_element", f"SHOW TABLES FROM {other}",
+                            f"EXPLAIN SELECT * FROM {other}.capture"):
+                    with self.subTest(schema=schema, sql=sql), self.assertRaises(ValueError):
+                        execute(QueryRequest(sql=sql))
+                with self.assertRaises(ValueError):
+                    execute(QueryRequest(sql="SELECT 1", schema_version=other))
+            self.assertEqual([item.name for item in query_helpers(schema).helpers], [f"{schema}.search"])
+            self.assertTrue(all(item.name.startswith(schema + ".") for item in query_helpers(schema).relations))
 
     def test_removed_surfaces_in_both_modes(self):
         from periplus.query.service import QueryMode
@@ -142,7 +161,7 @@ class QueryServiceTests(unittest.TestCase):
             f"ATTACH {_literal('ducklake:' + self.config.metadata_path)} AS periplus (DATA_PATH {_literal(self.config.data_path)}, METADATA_SCHEMA 'ducklake')"
         )
         d.execute("USE periplus")
-        for schema in ("ingest", "material", "public_v1"):
+        for schema in ("ingest", "material", "public_v1", "experimental"):
             d.execute(f"CREATE SCHEMA {schema}")
         for relation, columns in expected_columns().items():
             definitions = ", ".join(
@@ -151,7 +170,7 @@ class QueryServiceTests(unittest.TestCase):
             d.execute(f"CREATE TABLE {relation.qualified} ({definitions})")
         base = files("periplus.platform.catalogue").joinpath("sql")
         from periplus.platform.catalogue.public_registry import INTERNAL_OBJECTS
-        for item in (*INTERNAL_OBJECTS, *public_objects()):
+        for item in (*INTERNAL_OBJECTS, *known_public_objects()):
             d.execute(base.joinpath(item.schema, item.resource).read_text())
         d.execute(
             "INSERT INTO ingest.visits (visit_id, requested_url, outcome) SELECT uuid(), 'https://example.com/' || i, 'success' FROM range(20) t(i)"
@@ -170,6 +189,54 @@ class QueryServiceTests(unittest.TestCase):
         self.addCleanup(self.service.close)
 
 
+    def test_experimental_heading_scope_uses_original_sql_and_recovers(self):
+        from periplus.query.service import QueryMode
+        from periplus.query.heading_scope import HeadingScope, OPTIMIZATION
+        self.service.close()
+        writer = DuckLakeConnectionFactory(self.config).connect()
+        try:
+            writer.execute('USE periplus')
+            writer.execute('DELETE FROM material.html_elements')
+            from element_fixture import seed
+            seed(writer, '<h1>Light</h1><h2>Daylight</h2>', 'helper-fixture')
+        finally:
+            writer.close()
+        self.service.connection = self.service._connect()
+        experimental = QueryService(self.config, mode=QueryMode.EXPERIMENTAL)
+        self.addCleanup(experimental.close)
+        request = QueryRequest(sql="SELECT h.level,h.text,c.effective_url AS url FROM html_heading h JOIN capture c USING(content_id) WHERE requested_url LIKE '%inline' AND h.text ILIKE '%Light%' ORDER BY h.level LIMIT 10")
+        with patch.object(HeadingScope, 'resolve', side_effect=AssertionError('prep or stable performed selection')):
+            self.assertEqual(experimental.prepare(request).optimizations, [])
+            baseline = self.service.execute(request)
+        selected_snapshots = []
+        original = HeadingScope.resolve
+        def resolve(scope, connection):
+            selected_snapshots.append(connection.execute("SELECT id FROM ducklake_current_snapshot('periplus')").fetchone()[0])
+            return original(scope, connection)
+        with patch.object(HeadingScope, 'resolve', resolve):
+            result = experimental.execute(request)
+        self.assertEqual(result.rows, baseline.rows)
+        self.assertEqual(result.row_count, 2)
+        self.assertEqual(result.types, baseline.types)
+        self.assertEqual(result.sql, request.sql)
+        self.assertEqual(result.optimizations, [OPTIMIZATION])
+        self.assertEqual(selected_snapshots, [result.source_snapshot])
+        self.assertIn('_query_scoped_headings', result.plan)
+        with patch.object(HeadingScope, 'resolve', side_effect=TimeoutError('selection deadline')):
+            with self.assertRaises(TimeoutError):
+                experimental.execute(request)
+        self.assertEqual(experimental.execute(QueryRequest(sql='SELECT 42')).rows, [[42]])
+        def slow_selection(scope, connection):
+            connection.execute('SELECT sum(i) FROM range(10000000000) t(i)').fetchall()
+        experimental.deadline = 0.1
+        try:
+            with patch.object(HeadingScope, 'resolve', slow_selection):
+                with self.assertRaises(TimeoutError):
+                    experimental.execute(request)
+        finally:
+            experimental.deadline = None
+        self.assertEqual(experimental.execute(QueryRequest(sql='SELECT 42')).rows, [[42]])
+
     def test_modes_preserve_results_and_have_separate_admission(self):
         from periplus.query.service import QueryMode
         from periplus.operations.query_history.schemas import PreparationEvidence
@@ -186,7 +253,7 @@ class QueryServiceTests(unittest.TestCase):
         self.assertEqual(stable.query_mode, QueryMode.STABLE)
         self.assertEqual(result.query_mode, QueryMode.EXPERIMENTAL)
         self.assertEqual(result.optimizations, [])
-        self.assertEqual(evidence.compiler_version, "public-query-v13:experimental")
+        self.assertEqual(evidence.compiler_version, "public-query-v14:experimental")
         self.assertNotEqual(result.compiler_version, stable.compiler_version)
         with self.assertRaises(ValueError):
             QueryService(self.config, mode="invalid")
@@ -389,7 +456,7 @@ class QueryServiceTests(unittest.TestCase):
             self.assertEqual(client.get('/query/helpers').status_code, 401)
             helper_response = client.get('/query/helpers', headers=headers)
             self.assertEqual(helper_response.status_code, 200)
-            self.assertEqual([h['name'] for h in helper_response.json()['helpers']], ['public_v1.html_search'])
+            self.assertEqual([h['name'] for h in helper_response.json()['helpers']], ['public_v1.search'])
             self.assertEqual(client.post('/query/helpers', headers=headers).status_code, 404)
             with patch.object(self.service, "execute", side_effect=duckdb.HTTPException("HTTP 404 https://private/file?token=secret")):
                 unavailable = client.post('/query/exec', headers=headers, json={'sql': 'SELECT 1'})

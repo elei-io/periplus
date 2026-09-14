@@ -156,12 +156,12 @@ class Connection:
 
     def __init__(self, base_url: str | None = None, *, timeout: float = 620,
                  mode: Literal["stable", "experimental"] = "stable",
-                 schema_version: str = "public_v1", allow_partial: bool = False):
+                 schema_version: str | None = None, allow_partial: bool = False):
         try:
             self._client = Client(base_url, timeout=timeout, mode=mode)
         except ConfigurationError as exc:
             raise InterfaceError(str(exc)) from exc
-        self.schema_version = schema_version
+        self.schema_version = schema_version if schema_version is not None else ("experimental" if mode == "experimental" else "public_v1")
         self.allow_partial = allow_partial
         self._cursors = set()
         self.closed = False
@@ -211,7 +211,7 @@ class Connection:
 
 def connect(base_url: str | None = None, *, timeout: float = 620,
             mode: Literal["stable", "experimental"] = "stable",
-            schema_version: str = "public_v1", allow_partial: bool = False) -> Connection:
+            schema_version: str | None = None, allow_partial: bool = False) -> Connection:
     return Connection(base_url, timeout=timeout, mode=mode, schema_version=schema_version, allow_partial=allow_partial)
 
 

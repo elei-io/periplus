@@ -551,7 +551,7 @@ Other process roles and crawler controls need no maintenance pause.
 
 ### Initial index search and bounded finalization
 
-Install the new `public_v1.html_search` SQL macro after the term generation has
+Install the new `public_v1.search` SQL macro after the term generation has
 activated, then roll catalogue 2.2.0. No physical schema,
 projection digest or control migration changes. Pause and drain materializers while
 changing the public helper contract so old post-activation validators do not reject
@@ -567,3 +567,14 @@ execution. Stable remains the comparison. It uses the already active element and
 term tables, with no new DDL, projection digest, rebuild, stored row IDs or maintenance
 job. Roll the query images and verify unchanged public SQL through both API modes;
 include all candidate stages in timings and require complete matching results.
+
+
+### Separate experimental catalogue
+
+Catalogue 2.3.0 renames `html_search` to `search` and installs independently owned
+`experimental.*` views and macros. Stable keeps `/api/query/{exec,prep,helpers}` and
+selects `public_v1`; Experimental keeps `/api/query/experimental/{exec,prep,helpers}`
+and selects `experimental`. Internal service URLs remain separate deployments.
+Install the complete native catalogue and deploy core/public/SDK coherently; image-only
+promotion does not install these objects. No physical projection or control schema changes
+are needed, so no corpus rebuild is required. The old helper name is removed directly.

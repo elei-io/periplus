@@ -57,13 +57,25 @@ class PublicCatalogueTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.catalogue.connection.close()
 
+    def test_experimental_views_are_independent(self):
+        install_public_catalogue(self.catalogue)
+        db = self.catalogue.connection
+        before = db.execute("DESCRIBE public_v1.capture").fetchall()
+        db.execute("CREATE OR REPLACE VIEW experimental.capture AS SELECT 42 AS experiment")
+        self.assertEqual(db.execute("SELECT * FROM experimental.capture").fetchall(), [(42,)])
+        self.assertEqual(db.execute("DESCRIBE public_v1.capture").fetchall(), before)
+        with self.assertRaises(CatalogueSchemaError):
+            validate_public_catalogue(self.catalogue)
+        install_public_catalogue(self.catalogue)
+        validate_public_catalogue(self.catalogue)
+
     def test_manifest_is_exactly_the_narrow_public_contract(self) -> None:
         objects = public_objects()
         self.assertEqual(
             {(item.schema, item.name) for item in objects if item.kind == "view"},
             EXPECTED_PUBLIC_RELATIONS,
         )
-        self.assertEqual([(item.schema, item.name) for item in objects if item.kind == "table_macro"], [("public_v1", "html_search")])
+        self.assertEqual([(item.schema, item.name) for item in objects if item.kind == "table_macro"], [("public_v1", "search")])
         self.assertTrue(all(not item.requires_functions for item in objects))
 
     def test_installs_and_validates_public_views(self) -> None:
@@ -85,7 +97,7 @@ class PublicCatalogueTests(unittest.TestCase):
         self.assertEqual(views, EXPECTED_PUBLIC_RELATIONS)
         with self.assertRaises(duckdb.CatalogException):
             self.catalogue.connection.execute("SELECT * FROM public_v1.object")
-        self.assertEqual(set(macros), {("html_search",)})
+        self.assertEqual(set(macros), {("search",)})
 
     def test_install_removes_superseded_web_and_dom_objects(self) -> None:
         self.catalogue.connection.execute("CREATE SCHEMA web")
@@ -320,7 +332,7 @@ class PublicCatalogueTests(unittest.TestCase):
             {(str(row[0]), str(row[1])) for row in rows},
             EXPECTED_PUBLIC_RELATIONS,
         )
-        self.assertEqual([row[1] for row in macro_rows], ["html_search"])
+        self.assertEqual([row[1] for row in macro_rows], ["search"])
 
         response = asyncio.run(metadata(_LocalCatalogueControl(self.catalogue)))
         self.assertEqual(response.catalogue_version, PUBLIC_CATALOGUE_VERSION)
@@ -328,7 +340,7 @@ class PublicCatalogueTests(unittest.TestCase):
             {(item.schema_name, item.name) for item in response.relations},
             EXPECTED_PUBLIC_RELATIONS,
         )
-        self.assertEqual([item.name for item in response.macros], ["html_search"])
+        self.assertEqual([item.name for item in response.macros], ["search"])
 
 
 class _LocalCatalogue:

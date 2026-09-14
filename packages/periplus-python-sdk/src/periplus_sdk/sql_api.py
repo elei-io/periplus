@@ -12,7 +12,7 @@ def create_engine(
     *,
     mode: Literal["stable", "experimental"] = "stable",
     timeout: float = 620,
-    schema_version: str = "public_v1",
+    schema_version: str | None = None,
     allow_partial: bool = False,
 ) -> Engine:
     """Create a SQLAlchemy engine recognized by marimo and other SQL tools.

@@ -15,7 +15,7 @@ class TextIndexTests(unittest.TestCase):
         self.catalogue = catalogue()
         self.addCleanup(self.catalogue.connection.close)
         self.db = self.catalogue.connection
-        self.db.execute("SET schema='public_v1'")
+        self.db.execute("SET schema='experimental'")
         pages = {
             'a': '<p>The Requiem Red</p><p>The Requiem Red</p>',
             'b': '<p>prefix<span>The Requiem Red</span>suffix</p>',
@@ -40,7 +40,7 @@ class TextIndexTests(unittest.TestCase):
             "SELECT content_id,node_index,text FROM html_element WHERE text='The Requiem Red' ORDER BY content_id,node_index",
             "SELECT content_id,node_index FROM html_element WHERE text='😀 Requiem 字'",
             "SELECT content_id,node_index FROM html_element WHERE text='The Requiem Red' AND content_id<'c' ORDER BY content_id,node_index",
-            "SELECT count(*) FROM public_v1.html_element AS e WHERE 'The Requiem Red'=e.text",
+            "SELECT count(*) FROM experimental.html_element AS e WHERE 'The Requiem Red'=e.text",
             "SELECT e.* FROM html_element e WHERE e.tag='p' AND e.text='The Requiem Red' ORDER BY e.content_id,e.node_index LIMIT 2",
             "SELECT content_id,node_index FROM html_element WHERE text='The MISSINGWORD Red' ORDER BY content_id,node_index",
             'SELECT "my alias".content_id FROM html_element AS "my alias" WHERE "my alias".text=\'The REQUIEM Red\'',
@@ -59,7 +59,7 @@ class TextIndexTests(unittest.TestCase):
         queries = [
             "SELECT * FROM html_element WHERE content_id='a' AND text='The Requiem Red'",
             "SELECT * FROM html_element WHERE content_id IN ('a','b') AND text='The Requiem Red'",
-            "SELECT public_v1.html_element.content_id FROM public_v1.html_element WHERE text='The Requiem Red'",
+            "SELECT experimental.html_element.content_id FROM experimental.html_element WHERE text='The Requiem Red'",
             "SELECT * FROM html_element WHERE text='fish'",
             "SELECT * FROM html_element WHERE text='catfish'",
             "SELECT * FROM html_element WHERE text=''",
@@ -108,5 +108,5 @@ class TextIndexTests(unittest.TestCase):
         self.db.execute("SET default_collation='nocase'")
         self.assertIsNone(self.rewrite(sql))
         self.db.execute("SET default_collation=''")
-        self.db.execute('CREATE OR REPLACE VIEW public_v1.html_term AS SELECT term,content_sha256 AS content_id,node_indexes FROM material.html_terms WHERE false')
+        self.db.execute('CREATE OR REPLACE VIEW experimental.html_term AS SELECT term,content_sha256 AS content_id,node_indexes FROM material.html_terms WHERE false')
         self.assertIsNone(self.rewrite(sql))

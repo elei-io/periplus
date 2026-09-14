@@ -40,7 +40,7 @@ class ClientTests(unittest.TestCase):
             self.assertNotIn('authorization', request.headers)
             self.assertEqual(request.headers['x-periplus-query-source'], 'sdk')
             if request.url.path.endswith('helpers'):
-                return httpx.Response(200, json={'catalogue_version': '1.0.0', 'helpers': []})
+                return httpx.Response(200, json={'catalogue_version': '1.0.0', 'helpers': [], 'relations': [], 'schema_version': 'experimental' if '/experimental/' in request.url.path else 'public_v1'})
             self.assertEqual(json.loads(request.content), {'sql': PREP['sql'], 'parameters': [1], 'schema_version': 'public_v1'})
             return httpx.Response(200, json=RESULT if request.url.path.endswith('exec') else PREP)
         with patch.dict(os.environ, {'PERIPLUS_QUERY_API_TOKEN': 'secret', 'PERIPLUS_API_TOKEN': 'admin'}):
@@ -59,9 +59,10 @@ class ClientTests(unittest.TestCase):
         def handler(request):
             paths.append(request.url.path)
             if request.url.path.endswith('helpers'):
-                return httpx.Response(200, json={'catalogue_version': '1.0.0', 'helpers': []})
+                return httpx.Response(200, json={'catalogue_version': '1.0.0', 'helpers': [], 'relations': [], 'schema_version': 'experimental' if '/experimental/' in request.url.path else 'public_v1'})
+            self.assertEqual(json.loads(request.content)['schema_version'], 'experimental')
             payload = dict(RESULT if request.url.path.endswith('exec') else PREP,
-                           query_mode='experimental', compiler_version='public-query-v8:experimental',
+                           schema_version='experimental', query_mode='experimental', compiler_version='public-query-v8:experimental',
                            optimizations=['content_scope'])
             return httpx.Response(200, json=payload)
         with self.client(handler, mode='experimental') as client:
@@ -132,7 +133,7 @@ class AsyncClientTests(unittest.IsolatedAsyncioTestCase):
         def handler(request):
             calls.append(request)
             if request.url.path.endswith('helpers'):
-                return httpx.Response(200, json={'catalogue_version': '1.0.0', 'helpers': []})
+                return httpx.Response(200, json={'catalogue_version': '1.0.0', 'helpers': [], 'relations': [], 'schema_version': 'experimental' if '/experimental/' in request.url.path else 'public_v1'})
             return httpx.Response(200, json=RESULT if request.url.path.endswith('exec') else PREP)
         with patch('periplus_sdk.client.httpx.AsyncClient', side_effect=lambda **kw:
                    factory(**kw, transport=httpx.MockTransport(handler))):
@@ -144,3 +145,4 @@ class AsyncClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(calls), 3)
         self.assertEqual([r.url.path for r in calls], ['/prefix/api/query/experimental/' + p for p in ['prep', 'exec', 'helpers']])
         self.assertTrue(all(r.headers['x-periplus-query-source'] == 'sdk' for r in calls))
+        self.assertTrue(all(json.loads(r.content)['schema_version'] == 'experimental' for r in calls if r.method == 'POST'))

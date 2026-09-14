@@ -14,10 +14,11 @@ class SQLApiTests(unittest.TestCase):
     def test_engine_options_environment_and_queries(self):
         factory = httpx.Client
         for mode in ('stable', 'experimental'):
+            schema = 'experimental' if mode == 'experimental' else 'public_v1'
             requests = []
             def handler(request):
                 requests.append(request)
-                return stream_response(dict(RESULT, columns=['n'], types=['INTEGER'], rows=[[42]], truncated=False))
+                return stream_response(dict(RESULT, schema_version=schema, query_mode=mode, columns=['n'], types=['INTEGER'], rows=[[42]], truncated=False))
             with self.subTest(mode=mode), patch.dict(os.environ, {'PERIPLUS_PUBLIC_URL':'https://public.example/prefix'}), patch(
                 'periplus_sdk.client.httpx.Client',
                 side_effect=lambda **kw: factory(**kw, transport=httpx.MockTransport(handler)),
@@ -27,13 +28,13 @@ class SQLApiTests(unittest.TestCase):
                 self.assertEqual(engine.url.database, "periplus")
                 self.assertEqual(requests, [])
                 try:
-                    self.assertEqual(inspect(engine).default_schema_name, 'public_v1')
+                    self.assertEqual(inspect(engine).default_schema_name, schema)
                     with engine.connect() as conn:
                         self.assertEqual(conn.connection.dbapi_connection._client._http.timeout.read,37)
                         self.assertEqual(conn.execute(text('SELECT :n AS n'), {'n':42}).fetchall(), [(42,)])
                     suffix = 'experimental/' if mode == 'experimental' else ''
                     self.assertEqual(requests[0].url.path, '/prefix/api/query/'+suffix+'exec')
                     self.assertEqual(json.loads(requests[0].content)['parameters'], [42])
-                    self.assertEqual(json.loads(requests[0].content)['schema_version'], 'public_v1')
+                    self.assertEqual(json.loads(requests[0].content)['schema_version'], schema)
                 finally:
                     engine.dispose()

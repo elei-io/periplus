@@ -1,5 +1,7 @@
 export type QueryHelpers = {
   catalogue_version: string
+  schema_version: "public_v1" | "experimental"
+  relations: QueryHelpers["helpers"]
   helpers: {
     name: string
     kind: string

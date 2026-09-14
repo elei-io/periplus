@@ -82,6 +82,7 @@ class Client:
     def __init__(self, base_url: str | None = None, *, timeout: float = 620, mode: Literal["stable", "experimental"] = "stable"):
         if mode not in {"stable", "experimental"}:
             raise ConfigurationError("mode must be stable or experimental.")
+        self.schema_version = "experimental" if mode == "experimental" else "public_v1"
         self._query_path = "api/query/experimental/" if mode == "experimental" else "api/query/"
         self._http = httpx.Client(**_options(base_url, timeout))
 
@@ -101,19 +102,19 @@ class Client:
             raise TransportError("Could not complete the public query request.") from None
         return _decode(response, model)
 
-    def prepare(self, sql: str, parameters: Sequence[JsonValue] | None = None, *, schema_version: str = "public_v1") -> PreparedQuery:
-        return self._request("POST", "prep", PreparedQuery, json=_payload(sql, parameters, schema_version))
+    def prepare(self, sql: str, parameters: Sequence[JsonValue] | None = None, *, schema_version: str | None = None) -> PreparedQuery:
+        return self._request("POST", "prep", PreparedQuery, json=_payload(sql, parameters, schema_version if schema_version is not None else self.schema_version))
 
-    def execute(self, sql: str, parameters: Sequence[JsonValue] | None = None, *, schema_version: str = "public_v1") -> QueryResult:
-        return self._request("POST", "exec", QueryResult, json=_payload(sql, parameters, schema_version))
+    def execute(self, sql: str, parameters: Sequence[JsonValue] | None = None, *, schema_version: str | None = None) -> QueryResult:
+        return self._request("POST", "exec", QueryResult, json=_payload(sql, parameters, schema_version if schema_version is not None else self.schema_version))
 
     def stream(self, sql: str, parameters: Sequence[JsonValue] | None = None, *,
-               schema_version: str = "public_v1", allow_partial: bool = False):
+               schema_version: str | None = None, allow_partial: bool = False):
         """Stream batches from one snapshot; use as a context manager for early exit."""
         from .stream import MEDIA_TYPE, QueryStream
         try:
             request = self._http.build_request("POST", self._query_path + "exec",
-                headers={"accept": MEDIA_TYPE}, json=_payload(sql, parameters, schema_version))
+                headers={"accept": MEDIA_TYPE}, json=_payload(sql, parameters, schema_version if schema_version is not None else self.schema_version))
             response = self._http.send(request, stream=True)
             try:
                 if not response.is_success:
@@ -136,6 +137,7 @@ class AsyncClient:
     def __init__(self, base_url: str | None = None, *, timeout: float = 620, mode: Literal["stable", "experimental"] = "stable"):
         if mode not in {"stable", "experimental"}:
             raise ConfigurationError("mode must be stable or experimental.")
+        self.schema_version = "experimental" if mode == "experimental" else "public_v1"
         self._query_path = "api/query/experimental/" if mode == "experimental" else "api/query/"
         self._http = httpx.AsyncClient(**_options(base_url, timeout))
 
@@ -155,11 +157,11 @@ class AsyncClient:
             raise TransportError("Could not complete the public query request.") from None
         return _decode(response, model)
 
-    async def prepare(self, sql: str, parameters: Sequence[JsonValue] | None = None, *, schema_version: str = "public_v1") -> PreparedQuery:
-        return await self._request("POST", "prep", PreparedQuery, json=_payload(sql, parameters, schema_version))
+    async def prepare(self, sql: str, parameters: Sequence[JsonValue] | None = None, *, schema_version: str | None = None) -> PreparedQuery:
+        return await self._request("POST", "prep", PreparedQuery, json=_payload(sql, parameters, schema_version if schema_version is not None else self.schema_version))
 
-    async def execute(self, sql: str, parameters: Sequence[JsonValue] | None = None, *, schema_version: str = "public_v1") -> QueryResult:
-        return await self._request("POST", "exec", QueryResult, json=_payload(sql, parameters, schema_version))
+    async def execute(self, sql: str, parameters: Sequence[JsonValue] | None = None, *, schema_version: str | None = None) -> QueryResult:
+        return await self._request("POST", "exec", QueryResult, json=_payload(sql, parameters, schema_version if schema_version is not None else self.schema_version))
 
     async def helpers(self) -> QueryHelpers:
         return await self._request("GET", "helpers", QueryHelpers)

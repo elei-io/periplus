@@ -3,7 +3,7 @@ from periplus.platform.catalogue.public import CatalogueObject
 
 HELPERS = (
     CatalogueObject(
-        kind="table_macro", name="html_search", resource="helpers/html_search.sql",
+        kind="table_macro", name="search", resource="helpers/search.sql",
         columns=("content_id", "node_indexes", "score"), arguments_sql="['robot']",
         parameters=(("terms", "VARCHAR[]: at most 32 Unicode case-folded, NFC-normalized word keys"),),
         comment="Find content matching any requested page word, with containing elements and a simple word-coverage score.",
@@ -18,8 +18,8 @@ HELPERS = (
             "Matching is any-word. Node indexes are the union of matching elements; a listed element need not contain every matched term.",
             "Use ORDER BY score DESC, content_id and LIMIT for deterministic top results. Query API resource and truncation limits still apply.",
         ),
-        examples=("SELECT * FROM html_search(['robot', 'science']) ORDER BY score DESC, content_id LIMIT 20",),
-        errors=("html_search accepts at most 32 term keys",),
+        examples=("SELECT * FROM search(['robot', 'science']) ORDER BY score DESC, content_id LIMIT 20",),
+        errors=("search accepts at most 32 term keys",),
         requires_relations=frozenset({"material.html_terms"}),
         content_local=True,
     ),

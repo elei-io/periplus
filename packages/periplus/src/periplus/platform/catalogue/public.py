@@ -9,9 +9,10 @@ from typing import Literal, Protocol
 
 from periplus.platform.catalogue.exceptions import CatalogueSchemaError
 
-PUBLIC_CATALOGUE_VERSION = "2.2.0"
+PUBLIC_CATALOGUE_VERSION = "2.3.0"
 PUBLIC_SCHEMA = "public_v1"
-PUBLIC_SCHEMAS = (PUBLIC_SCHEMA,)
+EXPERIMENTAL_SCHEMA = "experimental"
+PUBLIC_SCHEMAS = (PUBLIC_SCHEMA, EXPERIMENTAL_SCHEMA)
 RETIRED_PUBLIC_SCHEMAS = ("dom", "web", "content")
 
 
@@ -46,18 +47,23 @@ class CatalogueObject:
     content_local: bool = False
 
 
-def public_objects() -> tuple[CatalogueObject, ...]:
-    """Return the complete, indivisible public SQL contract."""
+def public_objects(schema: str = PUBLIC_SCHEMA) -> tuple[CatalogueObject, ...]:
+    """Return one independently declared query schema contract."""
 
     from periplus.platform.catalogue.public_registry import PUBLIC_OBJECTS
 
-    return PUBLIC_OBJECTS
+    if schema == PUBLIC_SCHEMA:
+        return PUBLIC_OBJECTS
+    if schema == EXPERIMENTAL_SCHEMA:
+        from periplus.platform.catalogue.experimental_registry import EXPERIMENTAL_OBJECTS
+        return EXPERIMENTAL_OBJECTS
+    raise ValueError(f"Unsupported query schema: {schema}")
 
 
 def known_public_objects() -> tuple[CatalogueObject, ...]:
     """Return all declared public objects."""
 
-    return public_objects()
+    return tuple(item for schema in PUBLIC_SCHEMAS for item in public_objects(schema))
 
 
 def installed_public_objects(
