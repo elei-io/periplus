@@ -260,3 +260,52 @@ changed. All diagnostic material databases were dropped; the three temporary
 pods, service and two network policies were removed. A final resource query
 returned no remaining diagnostic resources. Cleanup is recorded with the local
 run evidence.
+
+## Managed ClickHouse deployment — 2026-09-15 follow-up
+
+After the size-limit fix (`38e5486`), candidate
+`2a70e436-37aa-42a5-932e-3caa2654d889` reached 76,096 committed observations
+without failed batches at 15:22:26 UTC, after starting at 15:08:33 UTC. Ten
+workers rebuild while two preserve the old serving recipe. Early sustained
+throughput is approximately 90–100 observations/s; an earlier target count
+showed 38,411 unique documents at 48,184 observations, implying roughly 75–80
+unique documents/s during that interval. This is partial-run evidence, not a
+finished-rebuild result or a billion-document forecast.
+
+A bounded diagnostic processed the first 512 observations from journal shard
+zero (406 HTML captures, 402 distinct documents) through the deployed
+`apply_batch`/`materialize_many` code into a disposable ClickHouse database.
+It retained actual Postgres write protection and object checks, and excluded
+NATS scheduling and final build-checkpoint transactions. Source reads were warm:
+the ongoing rebuild had already read this early range. The database and
+Kubernetes diagnostic resources were removed afterwards.
+
+| Measured stage | Calls | Wall seconds |
+| --- | ---: | ---: |
+| Acquire exact write claims | 453 | 8.68 |
+| Release exact write claims | 453 | 9.43 |
+| DOM conversion, text models, links, canonical encoding | — | 16.57 |
+| ClickHouse SELECT requests | 2,025 | 7.43 |
+| Raw/metadata reads | 420 | 1.25 |
+| Object existence checks | 2,092 | 3.26 |
+| ClickHouse inserts | 117 | 2.19 |
+| Remaining work | — | approximately 4.5 |
+
+Total wall time was 53.35 seconds, process CPU 27.30 seconds and peak RSS
+321.9 MiB. Claim timing excludes protected body work. Postgres uses local-path
+volumes, `synchronous_commit=on`, `fsync=on` and an ANY 1 synchronous replica
+requirement. These measurements do not isolate network versus WAL flush/replica
+latency. Batch the correctness protocol rather than weakening durability.
+
+Concurrent production snapshots showed workers around 0.4–0.6 CPU each,
+ClickHouse around three CPU cores and 3 GiB, insert p95 around 35 ms, and no
+active merge at the sampled instant. Public count SQL remained around 30 ms.
+These small-corpus observations do not certify large public-query performance.
+
+The immediate candidates remain bounded batch claims, bounded batch existing-row
+lookups, fewer repeated retirement checks with equivalent deletion fences, and
+less Python representation/encoding work. Even removing all measured claim and
+SELECT time would yield only about a 1.9x diagnostic speedup; it would not close
+the roughly 20x gap to a billion unique documents per week. Native projection,
+transport efficiency, scheduling and cache-independent source-read capacity
+still need separate proof. This run has not established a hardware ceiling.
