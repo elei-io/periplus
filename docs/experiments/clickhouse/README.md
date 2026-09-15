@@ -1,5 +1,12 @@
 # ClickHouse experiment
 
+For the current checkpoint, see the [verified E2E result](E2E_RESULT.md) and
+[cleanup audit](CLEANUP_AUDIT.md). The [rebuild design](REBUILD_DESIGN.md) refines
+the original proposals with bounded scanning, catch-up barriers and query publication.
+The initial setup/proposal notes below describe the experiment's starting point.
+The [rebuild proof](REBUILD_PROOF.md) records real-store crash, coverage,
+publication and cancellation experiments with a reproducible harness.
+
 The [implementation exit criteria](EXIT_CRITERIA.md) define the first vertical
 slice, recovery/rebuild/retention acceptance, performance targets and cleanup needed
 to call this replacement complete.
