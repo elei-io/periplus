@@ -1,5 +1,47 @@
 # Local archive/corpus validation
 
+## Shared workers and Postgres schemas (2026-09-16)
+
+The isolated `codex/shared-workers` checkout keeps direct batched ClickHouse
+publication. No Postgres staging tables or CDC service were introduced. The
+19 application tables moved to `control` (7) and `state` (12). Real Postgres
+migration tests compare the entire resulting schema to ORM metadata, preserve
+existing customer/control records, and exercise the namespace downgrade/upgrade.
+Historical migrations now contain frozen DDL instead of importing current models.
+
+`make check` passed, including package tests and both frontend typechecks, lint,
+tests and production builds. The final backend suite ran 486 tests with 7 optional
+tests skipped; Postgres migration, frontier concurrency, claim exclusion and
+query-history tests were enabled against a dedicated local test container. The
+SDK suite ran 23 tests with 6 skipped. Additional chart checks verify the merged
+worker, its writer credentials and 16-replica optional ceiling. Compose config,
+Helm lint and removed-worker upgrade rejection passed.
+
+The shared worker tests verify that one replica completes and checkpoints a
+material batch before ACK, only offers an import step after an idle queue poll,
+releases the global Common Crawl lease after one step, and admits no new import
+after shutdown or provider lease loss. Live and historical material work retain
+the same recipe queue. This proves scheduling/correctness, not a throughput gain.
+
+The recovery drill uses image `periplus-core:shared-worker-proof`, a unique Docker
+project selected by the output path, fresh Postgres/NATS/ClickHouse and a read-only
+copy of synthetic archive data. Homelab and the original local application stack
+were untouched. It restored 255 retained captures with exact evidence digests,
+zero duplicate identities, zero customer rows and the tombstoned capture absent.
+One of two shared workers was killed during a claimed batch; recovery completed
+622.52 seconds later using the real ownership clock. A later capture arrived
+without a NATS notification and was materialized while history remained paused.
+Local evidence is under `.artifacts/shared-worker-recovery/`; generated data and
+logs are not committed. Missing/corrupt payloads blocked publication; restoring
+exact bytes and retrying completed under the real write-claim clock. Activation
+exposed all 256 captures including the new live capture. Cancelled and older
+retired targets were physically dropped. For those cleanup checks only, all
+workers stopped before advancing the drain timestamp; the crash and failed-input
+retry checks used real clocks. Both `result.json` and `lifecycle-result.json`
+record `status: passed`. The isolated test containers were removed afterwards.
+
+## Earlier local cutover
+
 This records the earlier, pre-batching local cutover. For the subsequent batched
 archive implementation, repeat recovery drills and retained homelab adoption, see
 [the current handoff](ARCHIVE_ADOPTION.md). The old local archive is not a
@@ -58,8 +100,8 @@ uv run python ../../scripts/archive_recovery_smoke.py \
 The script reads the configured raw repository, copies at most 1,000 events and
 uses the locally built `periplus-core:local` image. It writes synthetic captures
 only into the copy. Allow roughly 25 minutes for the two real ownership-expiry
-checks. Use a new output directory; inspect the script's explicit Docker project
-name before running concurrent drills.
+checks. Use a new output directory; each absolute output path selects its own Docker
+project name so concurrent drills do not share containers.
 
 ## Running local product
 
