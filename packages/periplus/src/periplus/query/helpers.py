@@ -1,6 +1,11 @@
 """Read-only helper documentation derived from the public catalogue manifest."""
 
+from functools import cache
+from importlib.resources import files
+
 from pydantic import BaseModel
+import sqlglot
+from sqlglot import exp
 from periplus.platform.clickhouse.public import PUBLIC_RELATIONS
 
 PUBLIC_SCHEMA = "public_v1"
@@ -28,6 +33,23 @@ class QueryHelpers(BaseModel):
     relations: list[QueryHelper]
 
 
+@cache
+def _column_names() -> dict[str, tuple[str, ...]]:
+    """Use the installed view definitions without executing corpus queries."""
+    source = files("periplus.platform.clickhouse").joinpath("public.sql").read_text()
+    columns = {
+        statement.this.name: tuple(statement.expression.named_selects)
+        for statement in sqlglot.parse(source, read="clickhouse")
+        if isinstance(statement, exp.Create) and statement.args.get("kind") == "VIEW"
+    }
+    if columns.keys() != PUBLIC_RELATIONS or any(
+        not names or any(name in {"", "*"} for name in names)
+        for names in columns.values()
+    ):
+        raise ValueError("Public views must declare named columns for the explorer")
+    return columns
+
+
 def query_helpers(schema: str = PUBLIC_SCHEMA) -> QueryHelpers:
     if schema != PUBLIC_SCHEMA:
         raise ValueError("Unsupported public schema")
@@ -47,7 +69,7 @@ def query_helpers(schema: str = PUBLIC_SCHEMA) -> QueryHelpers:
                 kind="view",
                 description=description,
                 parameters=[],
-                columns=[],
+                columns=[HelperField(name=column, description="") for column in _column_names()[name]],
                 notes=[],
                 examples=[f"SELECT * FROM public_v1.{name} LIMIT 10"],
             )
