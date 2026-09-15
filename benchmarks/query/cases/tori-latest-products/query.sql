@@ -1,13 +1,13 @@
 WITH latest AS (
-SELECT effective_url, content_id, captured_at,
-row_number() OVER (PARTITION BY effective_url ORDER BY captured_at DESC, capture_id DESC) AS rn
+SELECT url, document_id, captured_at,
+row_number() OVER (PARTITION BY url ORDER BY captured_at DESC, capture_id DESC) AS rn
 FROM public_v1.capture
-WHERE effective_url LIKE 'https://www.tori.fi/recommerce/forsale/item/%'
+WHERE url LIKE 'https://www.tori.fi/recommerce/forsale/item/%'
 AND http_status_code = 200
 ), products AS (
-SELECT l.effective_url AS listing_url, l.captured_at, j.value
+SELECT l.url AS listing_url, l.captured_at, j.value
 FROM latest l
-JOIN public_v1.html_jsonld j USING (content_id)
+JOIN public_v1.html_jsonld j USING (document_id)
 WHERE l.rn = 1
 AND j.parse_error IS NULL
 AND json_extract_string(j.value, '$."@type"') = 'Product'

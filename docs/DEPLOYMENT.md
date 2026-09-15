@@ -67,3 +67,14 @@ asynchronous resolver does not apply the pod search suffix to a short hostname;
 using `periplus-api` there caused gateway 502s despite healthy API pods. Compose
 continues to use its Docker service name. Unexpected gateway HTML is summarized
 as an HTTP status in the admin rather than rendered as raw error-page text.
+
+A public-view-only maintenance release may set `setup.refreshPublicViews: true`
+to install the current public contract on protected builds with compatible
+material columns. This changes view projections, never parsed material or build
+checkpoints. All query traffic must drain first through upgrade coordination.
+Keep `materializer.image` pinned to the serving recipe: `public.sql` is included
+in the recipe hash, so replacing these workers would strand existing builds.
+Future rebuilds must use workers for their selected recipe; move that pin only
+as part of a planned rebuild. Recovery with preserved older software restores
+its older public contract; rerun the current maintenance setup to expose the
+current contract. Clear the refresh flag before any incompatible material change.

@@ -172,6 +172,7 @@ ingestor:
       cpu: 2
       memory: 4Gi
 materializer:
+  image: "" # Pin the serving recipe independently during public-only releases.
   autoscaling:
     enabled: false
     minReplicas: 2
@@ -197,6 +198,7 @@ janitor:
       cpu: 1
       memory: 512Mi
 setup:
+  refreshPublicViews: false # Maintenance only; requires compatible material columns.
   restoreManifest: ''
   backoffLimit: 3
   activeDeadlineSeconds: 900

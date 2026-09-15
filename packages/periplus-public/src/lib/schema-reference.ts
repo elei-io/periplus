@@ -2,7 +2,7 @@
 export const schemaReference = [
   {
     "name": "public_v1.page",
-    "grain": "Distinct requested, effective and linked URLs in retained HTML evidence, including uncaptured destinations.",
+    "grain": "Distinct capture and linked URLs in retained HTML evidence, including uncaptured destinations.",
     "key": "url",
     "columns": [
       [
@@ -23,14 +23,9 @@ export const schemaReference = [
         "Acquisition identity with retained content."
       ],
       [
-        "page_url",
+        "url",
         "String",
-        "Requested page URL; references page.url."
-      ],
-      [
-        "effective_url",
-        "String",
-        "Final URL after navigation."
+        "Effective URL, falling back to the requested URL; references page.url."
       ],
       [
         "captured_at",
@@ -41,11 +36,6 @@ export const schemaReference = [
         "http_status_code",
         "UInt32",
         "HTTP response status when known; retained error bodies qualify."
-      ],
-      [
-        "content_id",
-        "String",
-        "SHA-256 identity of retained bytes."
       ],
       [
         "document_id",
@@ -70,11 +60,6 @@ export const schemaReference = [
     "key": "document_id + node_index",
     "columns": [
       ["document_id", "String", "Identity of bytes and their HTML interpretation."],
-      [
-        "content_id",
-        "String",
-        "SHA-256 identity of captured bytes."
-      ],
       [
         "node_index",
         "UInt32",

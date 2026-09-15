@@ -1,1 +1,1 @@
-SELECT * FROM public_v1.html_metadata WHERE content_id >= '0' AND content_id < '1';
+SELECT * FROM public_v1.html_metadata WHERE document_id >= '0' AND document_id < '1';

@@ -12,10 +12,9 @@ class QueryHelperTests(unittest.TestCase):
             for relation in helpers.relations
         }
         self.assertEqual(actual, {
-            "public_v1.capture": ["capture_id", "page_url", "effective_url", "captured_at",
-                "http_status_code", "content_id", "document_id", "byte_length", "encoding",
-                "representation", "source_provider", "source_dataset", "source_record_id"],
-            "public_v1.html_element": ["content_id", "document_id", "node_index", "parent_index",
+            "public_v1.capture": ["capture_id", "url", "captured_at",
+                "http_status_code", "document_id", "byte_length", "encoding"],
+            "public_v1.html_element": ["document_id", "node_index", "parent_index",
                 "subtree_end_index", "sibling_index", "depth", "tag", "namespace", "attributes",
                 "text_direct", "text"],
             "public_v1.link": ["capture_id", "node_index", "target_url", "raw_href"],

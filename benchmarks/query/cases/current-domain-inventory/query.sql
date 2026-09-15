@@ -1,7 +1,7 @@
 SELECT
     trim(
         regexp_extract(
-            coalesce(effective_url, page_url),
+            url,
             '^https?://(\[[^]]+\]|[^/:]+)',
             1
         ),

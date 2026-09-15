@@ -128,3 +128,13 @@ pretending to be complete public HTML. The table DDL is
 
 There is no `ingest.*`, collection, fulfillment, acquisition-reason, frontier,
 work queue or business table in ClickHouse.
+
+Public captures expose only `capture_id`, `url`, `captured_at`, `http_status_code`,
+`document_id`, `byte_length`, and `encoding`. The URL uses the effective URL when
+present, falling back to the requested URL; scheme/authority case, default ports,
+empty paths and fragments are normalized. Query strings remain opaque.
+`page.url` includes these same URLs and link destinations. HTML elements expose
+`document_id` plus element fields. Join captures and HTML using `document_id`;
+raw-byte `content_id` and provenance remain internal. Public downloads use
+`/api/documents/{document_id}/content` and verify the original bytes against the
+internal content digest before responding.

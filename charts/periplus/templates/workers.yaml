@@ -49,7 +49,7 @@ spec:
       {{- include "periplus.corePodSpec" $root | nindent 6 }}
       containers:
         - name: {{ $worker.name }}
-          image: {{ include "periplus.coreImage" $root | quote }}
+          image: {{ ternary (include "periplus.materializerImage" $root) (include "periplus.coreImage" $root) (eq $worker.name "materializer") | quote }}
           imagePullPolicy: {{ $root.Values.images.core.pullPolicy }}
           command: [periplus-worker, {{ $worker.name }}]
           ports:

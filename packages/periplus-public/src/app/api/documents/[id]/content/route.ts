@@ -1,11 +1,11 @@
 // Raw evidence is served by the repository-owning API, never the SQL service.
-export async function GET(request: Request, context: RouteContext<"/api/content/[id]">) {
+export async function GET(request: Request, context: RouteContext<"/api/documents/[id]/content">) {
   const { id } = await context.params
-  if (!/^[0-9a-f]{64}$/.test(id)) return Response.json({ detail: "Invalid content identity." }, { status: 400 })
+  if (!/^[0-9a-f]{64}$/.test(id)) return Response.json({ detail: "Invalid document identity." }, { status: 400 })
   const token = process.env.PERIPLUS_PUBLIC_API_TOKEN
   if (!token) return Response.json({ detail: "Content retrieval is not configured." }, { status: 503 })
   try {
-    const upstream = await fetch(new URL(`/documents/by-content/${id}/content`, process.env.PERIPLUS_API_URL ?? "http://127.0.0.1:8000"), {
+    const upstream = await fetch(new URL(`/documents/${id}/content`, process.env.PERIPLUS_API_URL ?? "http://127.0.0.1:8000"), {
       headers: { authorization: `Bearer ${token}` },
       signal: AbortSignal.any([request.signal, AbortSignal.timeout(30_000)]),
       cache: "no-store",

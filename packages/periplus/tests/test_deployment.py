@@ -47,7 +47,7 @@ class DeploymentTests(TestCase):
             [
                 call.migrate(),
                 call.seed_control(),
-                call.bootstrap(None),
+                call.bootstrap(None, refresh_public_views=False),
             ],
         )
 
@@ -63,3 +63,20 @@ class DeploymentTests(TestCase):
                 "platform/postgres/alembic"
             )
         )
+
+    @patch("periplus.entrypoints.setup.grant_query_target")
+    @patch("periplus.entrypoints.setup.install_query_user")
+    @patch("periplus.entrypoints.setup.install_public_schema")
+    @patch("periplus.entrypoints.setup.install_material_schema")
+    @patch("periplus.entrypoints.setup.connect_clickhouse")
+    @patch("periplus.entrypoints.setup.BuildControl")
+    def test_explicit_maintenance_refreshes_only_protected_views(self, controls, connect, material, public, user, grant):
+        control = controls.return_value
+        control.get.return_value = SimpleNamespace(phase="serving")
+        control.builds.return_value = [
+            SimpleNamespace(protected=True, material_database="material_"+"a"*32, query_database="query_"+"a"*32),
+            SimpleNamespace(protected=False, material_database="material_"+"b"*32, query_database="query_"+"b"*32),
+        ]
+        setup.bootstrap_catalogue(refresh_public_views=True)
+        material.assert_not_called()
+        public.assert_called_once_with(connect.return_value, "material_"+"a"*32, "query_"+"a"*32)

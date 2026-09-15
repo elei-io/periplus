@@ -1,13 +1,13 @@
 export const docsSqlPatterns = [
   {
-    "title": "Find pages without a requested capture",
-    "description": "Find link and redirect destinations with no retained HTML capture requested at that URL.",
-    "sql": "SELECT p.url\nFROM public_v1.page p\nWHERE NOT EXISTS (SELECT 1 FROM public_v1.capture c WHERE c.page_url = p.url)\nORDER BY p.url LIMIT 20;"
+    "title": "Find pages without a capture",
+    "description": "Find linked destinations without retained HTML at that URL.",
+    "sql": "SELECT p.url\nFROM public_v1.page p\nWHERE NOT EXISTS (SELECT 1 FROM public_v1.capture c WHERE c.url = p.url)\nORDER BY p.url LIMIT 20;"
   },
   {
     "title": "Choose pages to explore",
     "description": "Select retained captures, then use their document IDs to inspect HTML elements.",
-    "sql": "SELECT document_id, effective_url, captured_at FROM capture ORDER BY captured_at DESC, capture_id LIMIT 20;"
+    "sql": "SELECT document_id, url, captured_at FROM capture ORDER BY captured_at DESC, capture_id LIMIT 20;"
   },
   {
     "title": "Find matching HTML headings",

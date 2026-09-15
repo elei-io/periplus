@@ -165,9 +165,9 @@ def _verified_file(store, row):
         raise
 
 
-@router.get("/documents/by-content/{content_id}/content")
+@router.get("/documents/{document_id}/content")
 async def download(
-    content_id: Annotated[str, Path(pattern=r"^[0-9a-f]{64}$")], request: Request
+    document_id: Annotated[str, Path(pattern=r"^[0-9a-f]{64}$")], request: Request
 ):
     slot = request.app.state.download_slot
     if slot.locked():
@@ -180,8 +180,8 @@ async def download(
         rows = (
             await request.app.state.crawl_results._read(
                 f"SELECT object_key, storage_encoding, byte_length AS content_bytes, lower(hex(content_id)) AS digest "
-                f"FROM {database}.captures WHERE content_id=unhex({{digest:String}}) LIMIT 1",
-                {"digest": content_id},
+                f"FROM {database}.captures WHERE document_id=unhex({{digest:String}}) LIMIT 1",
+                {"digest": document_id},
             )
         )["data"]
         if not rows:
@@ -227,8 +227,8 @@ async def download(
         media_type="application/octet-stream",
         background=BackgroundTask(cleanup),
         headers={
-            "Content-Disposition": f'attachment; filename="{content_id}"',
-            "ETag": f'"{content_id}"',
+            "Content-Disposition": f'attachment; filename="{document_id}"',
+            "ETag": f'"{document_id}"',
             "Content-Length": str(rows[0]["content_bytes"]),
             "X-Content-Type-Options": "nosniff",
             "Content-Security-Policy": "sandbox; default-src 'none'",

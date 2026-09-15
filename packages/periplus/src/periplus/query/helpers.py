@@ -54,7 +54,7 @@ def query_helpers(schema: str = PUBLIC_SCHEMA) -> QueryHelpers:
     if schema != PUBLIC_SCHEMA:
         raise ValueError("Unsupported public schema")
     descriptions = {
-        "capture": "Archived HTML observations with stable capture, content and document identities.",
+        "capture": "Archived HTML observations with stable capture and document identities.",
         "html_element": "DOM elements, attributes and text spans, identified within a document.",
         "link": "Link occurrences resolved against the captured page URL.",
         "page": "Page URLs present as captures or link destinations.",

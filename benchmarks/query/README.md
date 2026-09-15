@@ -50,3 +50,5 @@ be mixed into the public baseline. `corpus.sql` retains the small functional
 smoke queries. See `docs/QUERY_OPTIMIZATION.md` for acceptance requirements.
 
 Local runner checks: `python3 -m unittest discover -s benchmarks/query -p 'test_*.py'`.
+
+Current cases use the document-centric public contract (`document_id`, `capture.url`). Older result reports used the earlier content/URL columns and are historical evidence, not measurements of this contract. Hash-range cohorts now refer to document identities and require fresh baselines.

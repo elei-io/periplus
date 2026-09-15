@@ -204,3 +204,7 @@ sum(avg_over_time(periplus_query_active_operations{ {{ $scope }} }[2m]) and (tim
       name: {{ .Values.secrets.queryClickhouse.name | quote }}
       key: {{ .Values.secrets.queryClickhouse.passwordKey | quote }}
 {{- end }}
+
+{{- define "periplus.materializerImage" -}}
+{{- .Values.materializer.image | default (include "periplus.coreImage" .) -}}
+{{- end }}

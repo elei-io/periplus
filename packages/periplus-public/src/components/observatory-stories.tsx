@@ -21,7 +21,7 @@ function title(item: Collection) { return item.specification.seed_description ||
 function site(url: string) { try { return new URL(url).hostname } catch { return url } }
 function queryUrl(id: string) {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) return null
-  return datasetSqlUrl({sql: `SELECT o.page_url, o.captured_at, o.http_status_code, o.content_id\nFROM public_v1.capture o\nWHERE o.capture_id = '${id}'::UUID\nORDER BY o.captured_at DESC NULLS LAST LIMIT 100;`})
+  return datasetSqlUrl({sql: `SELECT o.url, o.captured_at, o.http_status_code, o.document_id\nFROM public_v1.capture o\nWHERE o.capture_id = '${id}'::UUID\nORDER BY o.captured_at DESC NULLS LAST LIMIT 100;`})
 }
 function ReadError({ error }: {error: unknown}) { return <Alert variant="destructive"><AlertDescription>{extractApiError(error)}</AlertDescription></Alert> }
 function progress(item: Collection) {

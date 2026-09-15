@@ -35,7 +35,7 @@ def migrate_control_database() -> None:
     command.upgrade(config, "head")
 
 
-def bootstrap_catalogue(manifest_key: str | None = None) -> None:
+def bootstrap_catalogue(manifest_key: str | None = None, *, refresh_public_views: bool = False) -> None:
     control = BuildControl()
     control.bootstrap(manifest_key)
     client = connect_clickhouse()
@@ -49,6 +49,8 @@ def bootstrap_catalogue(manifest_key: str | None = None) -> None:
         install_query_user(client)
         for build in control.builds():
             if build.protected:
+                if refresh_public_views:
+                    install_public_schema(client, build.material_database, build.query_database)
                 grant_query_target(client, build.query_database)
     finally:
         client.close()
@@ -67,10 +69,12 @@ def main(argv: Sequence[str] | None = None) -> None:
         "--restore-manifest",
         help="Bootstrap empty control state from this raw recovery manifest",
     )
+    parser.add_argument("--refresh-public-views", action="store_true",
+                        help="Maintenance: refresh public views over compatible retained material tables")
     arguments = parser.parse_args(argv)
     migrate_control_database()
     seed_system_control_plane()
-    bootstrap_catalogue(arguments.restore_manifest)
+    bootstrap_catalogue(arguments.restore_manifest, refresh_public_views=arguments.refresh_public_views)
     print("Periplus setup complete.")
 
 
