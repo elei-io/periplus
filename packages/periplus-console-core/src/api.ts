@@ -1,6 +1,5 @@
 import type { SqlMetadata, SqlResult } from "./types.js"
 
-const PUBLIC_SCHEMAS = ["public_v1"] as const
 
 export class SqlApiError extends Error {
   constructor(
@@ -32,64 +31,16 @@ export class SqlApi {
   }
 
   async metadata(signal?: AbortSignal): Promise<SqlMetadata> {
-    const versionResult = await this.query(
-      "SELECT version() AS duckdb_version",
-      signal
-    )
-    const duckdbVersion = versionResult.rows[0]?.[0]
-    if (typeof duckdbVersion !== "string") {
-      throw new Error("Periplus API did not return the DuckDB version.")
-    }
-
+    if (this.access === "admin") return this.request<SqlMetadata>("/sql/metadata", { method: "GET", signal })
     const relations: SqlMetadata["relations"] = []
-    const schemas = this.access === "admin"
-      ? (await this.query("SELECT schema_name FROM information_schema.schemata WHERE catalog_name = current_database() ORDER BY schema_name", signal)).rows.map((row) => String(row[0]))
-      : PUBLIC_SCHEMAS
-    for (const schemaName of schemas) {
-      const tables = await this.query(
-        this.access === "admin"
-          ? `SELECT table_name, table_type FROM information_schema.tables WHERE table_catalog = current_database() AND table_schema = '${schemaName.replaceAll("'", "''")}' ORDER BY table_name`
-          : `SHOW TABLES FROM ${quoteIdentifier(schemaName)}`,
-        signal
-      )
-      for (const row of tables.rows) {
-        const name = row[0]
-        if (typeof name !== "string") {
-          throw new Error("Periplus API returned an invalid table name.")
-        }
-        const description = await this.query(
-          `DESCRIBE ${quoteIdentifier(schemaName)}.${quoteIdentifier(name)}`,
-          signal
-        )
-        relations.push({
-          schema_name: schemaName,
-          name,
-          kind: this.access === "admin" && row[1] === "BASE TABLE" ? "table" : "view",
-          description: null,
-          columns: description.rows.map((column) => {
-            if (
-              typeof column[0] !== "string" ||
-              typeof column[1] !== "string"
-            ) {
-              throw new Error(
-                "Periplus API returned an invalid column description."
-              )
-            }
-            return {
-              name: column[0],
-              data_type: column[1],
-              nullable: String(column[2]).toUpperCase() === "YES",
-              description: null,
-            }
-          }),
-        })
-      }
+    const version = await this.query("SELECT version()", signal)
+    for (const name of ["capture", "html_element", "link", "page"]) {
+      const result = await this.query(`SELECT * FROM public_v1.${name} LIMIT 0`, signal)
+      relations.push({ schema_name: "public_v1", name, kind: "view", description: null,
+        columns: result.columns.map((column, index) => ({ name: column, data_type: result.types[index] ?? "",
+          nullable: (result.types[index] ?? "").includes("Nullable("), description: null })) })
     }
-    return {
-      duckdb_version: duckdbVersion,
-      relations,
-      macros: [],
-    }
+    return { engine_version: String(version.rows[0]?.[0] ?? "unknown"), relations, macros: [] }
   }
 
   private async request<T>(path: string, init: RequestInit): Promise<T> {
@@ -123,8 +74,4 @@ function isSqlResult(value: unknown): value is SqlResult {
     candidate.rows.every((row) => Array.isArray(row)) &&
     typeof candidate.truncated === "boolean"
   )
-}
-
-function quoteIdentifier(value: string): string {
-  return `"${value.replaceAll('"', '""')}"`
 }

@@ -69,12 +69,22 @@ class CrawlResults:
     async def is_retired(self, identity):
         return await asyncio.to_thread(retired, 'collection', str(identity))
 
+    async def _ready_sql(self):
+        def selected():
+            with self.sessions() as session:
+                from periplus.materialization.rebuilds.models import PublicationRecord, BuildRecord
+                publication = session.get(PublicationRecord, 'public_v1')
+                return session.get(BuildRecord, publication.build_id).material_database
+        database = await asyncio.to_thread(selected)
+        return _READY.replace('material.', database + '.')
+
     async def readiness(self, identities):
         identities = list(dict.fromkeys(identities))
         if not identities:
             return {}
         wanted, parameters = _wanted(identities)
-        rows = (await self._read(f"SELECT visit_id, visit_id IN ({_READY}) AS ready "
+        ready_sql = await self._ready_sql()
+        rows = (await self._read(f"SELECT visit_id, visit_id IN ({ready_sql}) AS ready "
             f"FROM ingest.visits WHERE visit_id IN ({wanted})", parameters))['data']
         by_id = {UUID(row['visit_id']): bool(row['ready']) for row in rows}
         now = datetime.now(UTC)
@@ -87,11 +97,12 @@ class CrawlResults:
         if not identities:
             return {}
         wanted, parameters = _wanted(identities)
+        ready_sql = await self._ready_sql()
         def controls():
             return {identity: collection_views(self.sessions, identity=identity) for identity in identities}
         views = await asyncio.to_thread(controls)
         rows = (await self._read(f"SELECT collection_id, count() AS n, uniqExact(record_id) AS unique_n, "
-            f"countIf(observation_id IN ({_READY})) AS ready FROM ingest.fulfillments "
+            f"countIf(observation_id IN ({ready_sql})) AS ready FROM ingest.fulfillments "
             f"WHERE collection_id IN ({wanted}) GROUP BY collection_id", parameters))['data']
         counts = {UUID(row['collection_id']): row for row in rows}
         result = {}
@@ -128,6 +139,7 @@ class CrawlResults:
         return await asyncio.to_thread(read)
 
     async def arrivals(self, identity, *, limit, cursor):
+        ready_sql = await self._ready_sql()
         if not 1 <= limit <= 100:
             raise ValueError('arrival page outside bounds')
         anchor = decode_arrival_cursor(cursor, identity)
@@ -145,7 +157,7 @@ class CrawlResults:
             f.requested_url, f.parent_observation_id, f.depth, f.rule_id, f.mode,
             f.recorded_at AS decided_at, i.present=1 AS observation_committed,
             i.effective_url, i.observed_at, i.outcome, i.status_code AS http_status_code,
-            f.observation_id IN ({_READY}) AS query_ready
+            f.observation_id IN ({ready_sql}) AS query_ready
             FROM ingest.fulfillments f LEFT JOIN (SELECT *,1 AS present FROM ingest.visits) i
             ON i.visit_id=f.observation_id WHERE f.collection_id={{id:UUID}} {predicate}
             ORDER BY f.recorded_at DESC,f.record_id DESC LIMIT {limit+1} SETTINGS join_use_nulls=1""", parameters))['data']

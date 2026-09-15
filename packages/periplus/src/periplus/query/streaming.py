@@ -18,7 +18,8 @@ MEDIA_TYPE = "application/x-ndjson"
 class QueryStreamResponse(StreamingResponse):
     """Own admission until the producer has stopped, including disconnect cleanup."""
 
-    def __init__(self, request, payload, limits):
+    def __init__(self, request, payload, limits, publication=None):
+        self.publication = publication
         self.request, self.payload, self.limits = request, payload, limits
         self.cancelled = threading.Event()
         self.worker = None
@@ -69,7 +70,7 @@ class QueryStreamResponse(StreamingResponse):
                     self.executing.set()
                     try:
                         result = await run_in_threadpool(service.execute, self.payload, limits=self.limits,
-                                                         evidence=evidence, emit=emit, cancelled=self.cancelled)
+                                                         evidence=evidence, emit=emit, cancelled=self.cancelled, publication=self.publication)
                     finally:
                         self.executing.clear()
                     record.update(result_fields(result))

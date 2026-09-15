@@ -17,7 +17,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { useIngestion } from "@/hooks/use-ingestion"
+import { useIngestion, useRetryIngestion } from "@/hooks/use-ingestion"
 import { extractApiError } from "@/lib/api"
 
 const count = (value: number | null | undefined) =>
@@ -26,6 +26,7 @@ const time = (value: string) => new Date(value).toLocaleString()
 
 export function IngestionPage() {
   const query = useIngestion()
+  const retry = useRetryIngestion()
   const report = query.data
   const queue = report?.queue
   const capacity = report?.capacity
@@ -35,7 +36,7 @@ export function IngestionPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Ingestion</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Captured evidence arriving in DuckLake.
+            Captured evidence arriving in ClickHouse.
           </p>
         </div>
         <Button
@@ -318,7 +319,7 @@ export function IngestionPage() {
                             {item.error}
                           </p>
                           <p className="mt-2 text-xs text-muted-foreground">
-                            Failed {time(item.failed_at)} ·{" "}
+                            <Button variant="outline" size="sm" disabled={retry.isPending} onClick={() => retry.mutate(item.sequence)}>Retry delivery</Button> Failed {time(item.failed_at)} ·{" "}
                             {count(item.processing_failure_count)} processing
                             failures · Enqueued {time(item.enqueued_at)}
                           </p>

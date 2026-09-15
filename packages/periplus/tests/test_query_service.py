@@ -4,6 +4,7 @@ The former DuckLake fixture's optimizer passes, two query modes and pinned lake
 snapshots are retired. Native SQL and SDK execution are covered by the opt-in
 ClickHouse integration suite, independently of these HTTP boundary checks.
 """
+from periplus.query.binding import ExecutionContext, PublicationBinding
 import asyncio
 import json
 import os
@@ -36,7 +37,7 @@ class QueryServiceTests(unittest.TestCase):
         self.app = FastAPI()
         self.app.state.query_service = self.service
         self.app.state.query_limits = AsyncMock()
-        self.app.state.query_limits.read.return_value = QueryLimits()
+        self.app.state.query_limits.read.return_value = ExecutionContext(limits=QueryLimits(), publication=PublicationBinding(database="public_v1", revision=0))
         self.app.state.query_slot = asyncio.Semaphore(1)
         self.app.include_router(router)
         self.app.add_middleware(QueryAccessMiddleware)
@@ -77,7 +78,7 @@ class QueryServiceTests(unittest.TestCase):
     def test_operator_row_limits_are_read_for_each_operation(self):
         self.rows = [[i] for i in range(8)]
         for count in (2,7):
-            self.app.state.query_limits.read.return_value = QueryLimits(max_rows=count)
+            self.app.state.query_limits.read.return_value = ExecutionContext(limits=QueryLimits(max_rows=count), publication=PublicationBinding(database="public_v1", revision=0))
             result = self.http.post('/query/exec', headers=self.headers, json={'sql':'SELECT 42'}).json()
             self.assertEqual(len(result['rows']), count)
             self.assertTrue(result['truncated'])

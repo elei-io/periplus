@@ -5,7 +5,7 @@ import os
 import httpx
 from pydantic import ValidationError
 
-from periplus.operations.access.schemas import QueryLimits
+from periplus.query.binding import ExecutionContext
 
 
 class QueryLimitsUnavailable(Exception):
@@ -24,13 +24,16 @@ class QueryLimitsClient:
     async def close(self):
         await self.client.aclose()
 
-    async def read(self) -> QueryLimits:
+    async def read(self) -> ExecutionContext:
         try:
             async with asyncio.timeout(5):
-                response = await self.client.get("access")
+                response = await self.client.get("internal/query-context")
             response.raise_for_status()
-            sql = response.json()["sql"]
-            return QueryLimits(**{name: sql[name] for name in QueryLimits.model_fields})
+            data = response.json()
+            from periplus.operations.access.schemas import QueryLimits
+            if set(data['limits']) != set(QueryLimits.model_fields):
+                raise ValueError("Incomplete execution policy")
+            return ExecutionContext.model_validate(data)
         except (httpx.HTTPError, TimeoutError, ValueError, KeyError, TypeError, ValidationError):
             # No cached/default policy on failure; no origin details reach the caller.
             raise QueryLimitsUnavailable() from None

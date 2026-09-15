@@ -1,10 +1,5 @@
 export const docsSqlPatterns = [
   {
-    "title": "Enter the graph through word search",
-    "description": "Find content matching any normalized word key, then join its captures. Score counts distinct matched keys; repeated captures stay separate.",
-    "sql": "SELECT c.page_url, c.capture_id, c.captured_at, s.score\nFROM public_v1.search(['robot', 'science']) s\nJOIN public_v1.capture c USING (content_id)\nORDER BY s.score DESC, c.page_url, c.capture_id\nLIMIT 20;"
-  },
-  {
     "title": "Find pages without a requested capture",
     "description": "Find link and redirect destinations with no retained HTML capture requested at that URL.",
     "sql": "SELECT p.url\nFROM public_v1.page p\nWHERE NOT EXISTS (SELECT 1 FROM public_v1.capture c WHERE c.page_url = p.url)\nORDER BY p.url LIMIT 20;"
@@ -25,18 +20,8 @@ export const docsSqlPatterns = [
     "sql": "SELECT node_index, substr(tag, 2, 1)::INTEGER AS level, text\nFROM public_v1.html_element\nWHERE content_id = '01e3b8320926e10284e97da69093af4b4c04e181b5a3607c05bfd1920134a770'\n  AND namespace = 'http://www.w3.org/1999/xhtml'\n  AND tag IN ('h1', 'h2', 'h3', 'h4', 'h5', 'h6')\nORDER BY node_index;"
   },
   {
-    "title": "Read titles, descriptions, and canonical declarations",
-    "description": "Repeated declarations remain separate. Values and relative link URLs are preserved; select your own preferred declaration explicitly.",
-    "sql": "SELECT node_index, kind, name, value\nFROM public_v1.html_metadata\nWHERE content_id = '01e3b8320926e10284e97da69093af4b4c04e181b5a3607c05bfd1920134a770'\n  AND (kind = 'title'\n       OR (kind = 'meta_name' AND lower(name) = 'description')\n       OR (kind = 'link_rel' AND lower(name) = 'canonical'))\nORDER BY node_index, kind, name;"
-  },
-  {
     "title": "Inspect image declarations",
-    "description": "src and srcset are source strings, often relative. Missing alt is NULL; an explicitly empty alt is an empty string. Dimensions are declared attributes, not measured pixels.",
+    "description": "src and srcset are source strings, often relative. Missing alt is an empty string; an explicitly empty alt is an empty string. Dimensions are declared attributes, not measured pixels.",
     "sql": "SELECT node_index, attributes['src'] AS src, attributes['alt'] AS alt,\n       attributes['srcset'] AS srcset\nFROM public_v1.html_element\nWHERE content_id = '01e3b8320926e10284e97da69093af4b4c04e181b5a3607c05bfd1920134a770'\n  AND namespace = 'http://www.w3.org/1999/xhtml' AND tag = 'img'\nORDER BY node_index;"
-  },
-  {
-    "title": "Read a JSON-LD article",
-    "description": "This captured article uses @graph. Inspect value before choosing a JSON path: other sites use objects or arrays. Parser failures remain rows with parse_error; there is no schema.org normalization.",
-    "sql": "SELECT node_index,\n       (value -> '@graph') ->> '$[0].headline' AS headline,\n       parse_error\nFROM public_v1.html_jsonld\nWHERE content_id = '072a5a77e6bf9d591a30832addace1b20ccfa7e4e13b1bd9a00a3779b7bce252'\nORDER BY node_index;"
   }
 ] as const

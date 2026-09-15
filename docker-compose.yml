@@ -56,8 +56,8 @@ services:
       - "127.0.0.1:${PERIPLUS_CLICKHOUSE_NATIVE_PORT:-9000}:9000"
     volumes:
       - periplus-clickhouse-data:/var/lib/clickhouse
-    mem_limit: 8g
-    cpus: 4
+    mem_limit: 3g
+    cpus: 3
     ulimits:
       nofile:
         soft: 262144
@@ -310,6 +310,7 @@ services:
           "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9096/healthz', timeout=2).read()",
         ]
     environment:
+      PERIPLUS_CLICKHOUSE_QUERY_USER: ${PERIPLUS_CLICKHOUSE_QUERY_USER:-periplus_query}
       <<:
         [
           *periplus-control-environment,

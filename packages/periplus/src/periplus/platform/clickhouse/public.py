@@ -5,13 +5,18 @@ from periplus.platform.clickhouse.client import ClickHouseClient
 PUBLIC_RELATIONS = frozenset({"capture", "html_element", "link", "page"})
 
 
-def install_public_schema(client: ClickHouseClient) -> None:
-    source = files("periplus.platform.clickhouse").joinpath("public.sql").read_text()
+def install_public_schema(client: ClickHouseClient, material: str = "material", database: str = "public_v1") -> None:
+    import re
+    from periplus.materialization.storage import material_database
+    material_database(material)
+    if not re.fullmatch(r"public_v1|query_[0-9a-f]{32}", database):
+        raise ValueError("Invalid query namespace")
+    source = files("periplus.platform.clickhouse").joinpath("public.sql").read_text().replace("material.", material + ".").replace("public_v1", database)
     for statement in source.split(";"):
         if statement.strip():
             client.execute(statement)
     for name in sorted(PUBLIC_RELATIONS):
-        client.execute(f"SELECT * FROM public_v1.{name} LIMIT 0")
+        client.execute(f"SELECT * FROM {database}.{name} LIMIT 0")
 
 
 def install_query_user(client: ClickHouseClient) -> None:
@@ -34,3 +39,14 @@ def install_query_user(client: ClickHouseClient) -> None:
         "cancel_http_readonly_queries_on_client_close=1 READONLY, "
         "timeout_before_checking_execution_speed=0 READONLY")
     client.execute(f"GRANT SELECT ON public_v1.* TO `{config.username}`")
+
+
+def grant_query_target(client: ClickHouseClient, database: str) -> None:
+    import re
+    from periplus.platform.config import get_str
+    if not re.fullmatch(r"public_v1|query_[0-9a-f]{32}", database):
+        raise ValueError("Invalid query namespace")
+    username = get_str("PERIPLUS_CLICKHOUSE_QUERY_USER")
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,62}", username):
+        raise ValueError("Invalid query user name")
+    client.execute(f"GRANT SELECT ON `{database}`.* TO `{username}`")

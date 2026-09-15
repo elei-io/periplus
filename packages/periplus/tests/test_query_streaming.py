@@ -1,4 +1,5 @@
 """HTTP stream ownership, terminal failures and authoritative input budgets."""
+from periplus.query.binding import ExecutionContext, PublicationBinding
 import asyncio
 import json
 import os
@@ -20,7 +21,7 @@ class StreamingTests(unittest.TestCase):
         app.include_router(router)
         app.add_middleware(QueryAccessMiddleware)
         app.state.query_slot = asyncio.Semaphore(1)
-        app.state.query_limits = SimpleNamespace(read=AsyncMock(return_value=limits))
+        app.state.query_limits = SimpleNamespace(read=AsyncMock(return_value=ExecutionContext(limits=limits, publication=PublicationBinding(database="public_v1", revision=0))))
         app.state.query_service = SimpleNamespace(execute=execute, compiler_version='clickhouse-public-v1', interrupt=Mock())
         return app
 

@@ -1,6 +1,7 @@
 from periplus.operations.access.schemas import QueryLimits
 from unittest.mock import AsyncMock
 """SDK wire responses and history pass through the actual query HTTP adapter."""
+from periplus.query.binding import ExecutionContext, PublicationBinding
 import asyncio
 from pathlib import Path
 import sys
@@ -25,14 +26,14 @@ class SdkQueryTests(unittest.IsolatedAsyncioTestCase):
         app.include_router(router, prefix='/api')
         app.state.query_slot = asyncio.Semaphore(1)
         history = app.state.query_history = AsyncMock()
-        def prepare(payload, *, limits, evidence):
+        def prepare(payload, *, limits, evidence, publication):
             _bounded_query(payload.sql, max_rows=limits.max_rows)
             return PreparedQuery(query_id='00000000-0000-4000-8000-000000000001', sql=payload.sql, parameters=payload.parameters, diagnostics=[], plan='plan')
-        def execute(payload, *, limits, evidence):
-            return QueryResult(**prepare(payload, limits=limits, evidence=evidence).model_dump(), columns=['n'], types=['INTEGER'],
+        def execute(payload, *, limits, evidence, publication):
+            return QueryResult(**prepare(payload, limits=limits, evidence=evidence, publication=publication).model_dump(), columns=['n'], types=['INTEGER'],
                                rows=[[1]], row_count=1, result_bytes=5, elapsed_ms=1, source_snapshot=7, truncated=False)
         app.state.query_limits = AsyncMock()
-        app.state.query_limits.read.return_value = QueryLimits()
+        app.state.query_limits.read.return_value = ExecutionContext(limits=QueryLimits(), publication=PublicationBinding(database="public_v1", revision=0))
         app.state.query_service = Mock(schema="public_v1", prepare=prepare, execute=execute, compiler_version="public-query-v4:stable")
         # This fixture exercises the service adapter; the real Next gateway supplies authentication.
         async with AsyncClient('http://public.test') as client:

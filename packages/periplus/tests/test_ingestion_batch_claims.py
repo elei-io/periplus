@@ -24,7 +24,7 @@ def job(collection=None):
 
 
 def message(work):
-    return SimpleNamespace(data=work.model_dump_json().encode(), ack=AsyncMock(), nak=AsyncMock(),
+    return SimpleNamespace(subject="periplus.catalogue.ingest.lineage", data=work.model_dump_json().encode(), ack=AsyncMock(), nak=AsyncMock(),
                            term=AsyncMock(), in_progress=AsyncMock())
 
 

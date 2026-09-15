@@ -287,11 +287,14 @@ async def _prepare_batch(
 
     batch = PreparedBatch()
     for message in messages:
+        from periplus.materialization.rebuilds.delivery import acknowledge_barrier
+        if await acknowledge_barrier(message):
+            continue
         try:
             job = IngestionJob.model_validate_json(message.data)
         except Exception:
             logging.exception("invalid ingestion envelope")
-            await message.term()
+            await message.nak(delay=30)
             continue
         try:
             state = await ensure_pending_ingestion(results_store, job=job)
@@ -303,7 +306,7 @@ async def _prepare_batch(
             await message.ack()
             continue
         if state.status == "failed":
-            await message.term()
+            await message.nak(delay=30)
             continue
         try:
             metrics.operation_started("prepare")
@@ -387,7 +390,7 @@ async def _retry_or_fail(
         logging.warning("ingestion dead-letter publication failed", exc_info=True)
         await message.nak(delay=30)
     else:
-        await message.term()
+        await message.nak(delay=30)
 
 
 async def _defer_write_claims(

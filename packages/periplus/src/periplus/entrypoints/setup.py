@@ -35,6 +35,8 @@ def bootstrap_catalogue() -> None:
         install_material_schema(client)
         install_public_schema(client)
         install_query_user(client)
+        from periplus.materialization.rebuilds.control import BuildControl
+        BuildControl().bootstrap()
     finally:
         client.close()
 

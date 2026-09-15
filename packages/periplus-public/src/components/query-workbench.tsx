@@ -1,7 +1,7 @@
 "use client"
 
 import { memo, useCallback, useEffect, useRef, useState } from "react"
-import { ChevronDown, Database, ListTree, MessageSquare, Play, Share2, Table2 } from "lucide-react"
+import { Database, ListTree, MessageSquare, Play, Share2, Table2 } from "lucide-react"
 import { toast } from "sonner"
 import dynamic from "next/dynamic"
 
@@ -15,7 +15,6 @@ import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
-import { DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs"
 import { useQuery } from "@tanstack/react-query"
 import type { QueryHelpers } from "@/types/query-helpers"
@@ -35,13 +34,13 @@ const SqlEditor = dynamic(() => import("@/components/sql-editor").then(module =>
 
 
 export function QueryWorkbench({ initialSql, initialParameters, autoRun = false, initialMode = "stable" }: { initialMode?: QueryMode; initialSql?: string; initialParameters?: string; autoRun?: boolean }) {
-  const [mode, setMode] = useState<QueryMode>(initialMode)
-  const namespace = mode === "experimental" ? "experimental" : "public_v1"
+  const mode = "stable" as const
+  const namespace = "public_v1"
   const catalogue = useQuery({
     queryKey: ["query-catalogue", mode],
     queryFn: async ({ signal }) => {
       const result = await responseJson<QueryHelpers>(await fetch(
-        mode === "experimental" ? "/api/query/experimental/helpers" : "/api/query/helpers", { signal }))
+        "/api/query/helpers", { signal }))
       if (result.schema_version !== namespace) throw new Error("The query endpoint returned the wrong schema.")
       return result
     },
@@ -102,16 +101,7 @@ export function QueryWorkbench({ initialSql, initialParameters, autoRun = false,
           <div className="flex flex-wrap items-center gap-2 p-3"><Button className="min-w-28" disabled={!query.access.enabled || query.isPending || !sql.trim()} onClick={run}>{query.isPending ? <Spinner aria-hidden="true" /> : <Play />}{query.isPending ? "Running…" : "Run query"}</Button><Button variant="outline" onClick={share}><Share2 />Share</Button><QuerySettings value={parameters} onChange={setParameters} /><Button variant="ghost" className="ml-auto" aria-expanded={assistant.open} aria-controls="sql-assistant" onClick={() => { if (assistant.open) { assistant.setOpen(false) } else { assistant.show(); captureAnalytics("sql_assistant_opened") } }}>{assistant.isPending ? <Spinner aria-hidden="true" /> : <MessageSquare />}Ask SQL</Button></div>
           <div ref={editor} onKeyDownCapture={event => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); event.stopPropagation(); if (!query.isPending && sql.trim()) run() } }}><SqlEditor namespace={namespace} relations={relations} value={sql} onChange={setSql} onSelectionChange={setSelection} /></div>
           {!sql.trim() && !assistant.open && <div className="px-3"><Button variant="ghost" size="sm" onClick={() => assistant.show()}>Describe what you want to query…</Button></div>}
-          <div className="flex flex-wrap items-center justify-between gap-2 p-3"><div className="flex flex-wrap items-center gap-3"><CardDescription role="status">{query.access.message ?? query.phase}</CardDescription><DropdownMenu>
-            <DropdownMenuTrigger disabled={query.isPending} aria-label={`Query schema: ${namespace}`} render={<Badge variant="secondary" render={<button type="button" />} />}>{namespace}<ChevronDown data-icon="inline-end" /></DropdownMenuTrigger>
-            <DropdownMenuContent side="top" align="start" className="w-max">
-              <DropdownMenuRadioGroup value={mode} onValueChange={value => { if (value === "stable" || value === "experimental") setMode(value) }} aria-label="Query schema">
-                <DropdownMenuRadioItem value="stable" disabled={query.isPending}>public_v1</DropdownMenuRadioItem>
-                <DropdownMenuRadioItem value="experimental" disabled={query.isPending}>experimental</DropdownMenuRadioItem>
-              </DropdownMenuRadioGroup>
-            </DropdownMenuContent>
-          </DropdownMenu></div><CardDescription>{query.access.data ? `${query.access.data.sql.max_rows.toLocaleString()} rows / ${query.access.data.sql.max_result_bytes / (1024 * 1024)} MiB · ${query.access.data.sql.max_duration_seconds}s limit` : query.access.message === "Checking availability…" ? "Loading query limits…" : "Query limits unavailable"}</CardDescription></div>
-          {mode === "experimental" && <CardDescription className="px-3 pb-3">Experimental schema and execution. Names, columns and behavior may change.</CardDescription>}
+          <div className="flex flex-wrap items-center justify-between gap-2 p-3"><div className="flex flex-wrap items-center gap-3"><CardDescription role="status">{query.access.message ?? query.phase}</CardDescription><Badge variant="secondary">{namespace}</Badge></div><CardDescription>{query.access.data ? `${query.access.data.sql.max_rows.toLocaleString()} rows / ${query.access.data.sql.max_result_bytes / (1024 * 1024)} MiB · ${query.access.data.sql.max_duration_seconds}s limit` : query.access.message === "Checking availability…" ? "Loading query limits…" : "Query limits unavailable"}</CardDescription></div>
         </Card>
         <Card size="sm" aria-label="Query output" className="sql-output-surface min-h-72" aria-busy={query.isPending}>
           {query.data && <CardDescription className="px-3 py-2">{query.data.query_mode === "experimental" ? "Experimental" : "Stable"} result</CardDescription>}
@@ -142,7 +132,7 @@ export function QueryWorkbench({ initialSql, initialParameters, autoRun = false,
 const SchemaExplorer = memo(function SchemaExplorer({ onLoadSql, namespace, relations: schemaReference }: { onLoadSql: (sql: string) => void; namespace: string; relations: QueryHelpers["relations"] }) {
   const [filter, setFilter] = useState("")
   function inspectTable(tableName: string) {
-    onLoadSql(`DESCRIBE ${tableName};`)
+    onLoadSql(`SELECT * FROM ${tableName} LIMIT 5;`)
     captureAnalytics("schema_table_inspected", { table_name: tableName })
   }
   return (
@@ -163,7 +153,7 @@ const SchemaExplorer = memo(function SchemaExplorer({ onLoadSql, namespace, rela
                       <TooltipContent side="right"><div className="flex flex-col gap-1"><code>{name}</code><span>{description}</span></div></TooltipContent>
                     </Tooltip>)}
                   </div>
-                </details><Tooltip><TooltipTrigger render={<Button variant="ghost" size="icon-sm" className="absolute top-1 right-0" aria-label={`Inspect schema of ${relation.name}`} onClick={() => inspectTable(relation.name)} />}><ListTree /></TooltipTrigger><TooltipContent>Inspect schema</TooltipContent></Tooltip></div>)}
+                </details><Tooltip><TooltipTrigger render={<Button variant="ghost" size="icon-sm" className="absolute top-1 right-0" aria-label={`Preview ${relation.name}`} onClick={() => inspectTable(relation.name)} />}><ListTree /></TooltipTrigger><TooltipContent>Preview rows</TooltipContent></Tooltip></div>)}
               </div>
             })}
           </TooltipProvider>

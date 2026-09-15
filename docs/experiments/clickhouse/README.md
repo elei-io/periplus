@@ -1,6 +1,9 @@
 # ClickHouse experiment
 
-For the current checkpoint, see the [verified E2E result](E2E_RESULT.md) and
+For the current implemented system, see [local workers and product verification](LOCAL_SYSTEM_RESULT.md)
+and the [rebuild operator runbook](../../REBUILDS.md).
+
+For the earlier checkpoint, see the [verified E2E result](E2E_RESULT.md) and
 [cleanup audit](CLEANUP_AUDIT.md). The [rebuild design](REBUILD_DESIGN.md) refines
 the original proposals with bounded scanning, catch-up barriers and query publication.
 The initial setup/proposal notes below describe the experiment's starting point.

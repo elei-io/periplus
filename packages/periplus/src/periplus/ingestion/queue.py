@@ -169,11 +169,13 @@ async def ensure_repository_stream(jetstream) -> None:
     # Interest retention requires both roles to exist before the first publish.
     # Producers reconcile once at startup, never on request/polling paths.
     await ensure_repository_consumer(jetstream)
-    await _ensure_consumer(jetstream, ConsumerConfig(
-        durable_name=MATERIALIZER_DURABLE, ack_policy=AckPolicy.EXPLICIT,
-        ack_wait=ack_wait_seconds(), filter_subject=VISIT_SUBJECT,
-        max_ack_pending=INGESTION_CONSUMER_MAX_ACK_PENDING, max_deliver=-1,
-    ))
+    from periplus.materialization.rebuilds.control import BuildControl, RUNNING
+    from periplus.materialization.rebuilds.delivery import ensure_target_consumer
+    builds = await asyncio.to_thread(BuildControl().builds)
+    for build in builds:
+        if build.phase in RUNNING:
+            await ensure_target_consumer(jetstream, build)
+
 
 
 async def ensure_dead_letter_stream(jetstream) -> None:
@@ -241,15 +243,14 @@ async def _ensure_consumer(jetstream, expected: ConsumerConfig) -> None:
     immutable_mismatches: list[str] = []
     if config.ack_policy != AckPolicy.EXPLICIT:
         immutable_mismatches.append("explicit acknowledgements")
-    if config.filter_subject != expected.filter_subject:
-        immutable_mismatches.append(f"filter_subject={expected.filter_subject}")
     if immutable_mismatches:
         raise RuntimeError(
             f"JetStream consumer {durable} must use "
             + ", ".join(immutable_mismatches)
         )
     if (
-        config.ack_wait != expected.ack_wait
+        config.filter_subject != expected.filter_subject
+        or config.ack_wait != expected.ack_wait
         or config.max_ack_pending != expected.max_ack_pending
         or config.max_deliver != expected.max_deliver
     ):

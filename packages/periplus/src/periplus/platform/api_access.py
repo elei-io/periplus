@@ -21,7 +21,7 @@ class ApiAccessMiddleware:
         if path in {"/healthz", "/metrics"} and method == "GET":
             return await self.app(scope, receive, send)
         # Query processes may read public execution settings and append history only.
-        if path == "/access" and method == "GET":
+        if path in {"/access", "/internal/query-context"} and method == "GET":
             query_token = get_optional("PERIPLUS_QUERY_API_TOKEN")
             if query_token and compare_digest(dict(scope["headers"]).get(b"authorization", b""), f"Bearer {query_token}".encode()):
                 scope.setdefault("state", {})["api_role"] = "query"

@@ -13,3 +13,4 @@ import periplus.operations.access.models  # noqa: F401
 
 import periplus.operations.query_history.models  # noqa: F401
 import periplus.retention.models  # noqa: F401
+import periplus.materialization.rebuilds.models  # noqa: F401

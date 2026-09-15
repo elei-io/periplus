@@ -10,7 +10,7 @@ export async function generateMetadata({ searchParams }: PageProps<"/sql">): Pro
 export default async function SqlPage({ searchParams }: PageProps<"/sql">) {
   const params = await searchParams
   const sql = typeof params.sql === "string" ? params.sql : undefined
-  const mode = params.mode === "experimental" ? "experimental" : "stable"
+  const mode = "stable"
   const parameters = typeof params.parameters === "string" ? params.parameters : undefined
   return <main className="discovery-workspace">
     <header className="flex flex-wrap items-baseline justify-between gap-2 py-6"><h1 className="text-xl font-medium">SQL console</h1><p className="text-sm text-muted-foreground">Query stored page text, links and HTML structure. Inspect results and export rows as CSV.</p></header>

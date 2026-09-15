@@ -83,12 +83,13 @@ async def _run_operation(request, payload, operation, evidence):
         return JSONResponse({"code": "service_busy", "detail": "Query server is busy."}, status_code=429, headers={"Retry-After": "1"})
     try:
         async with slot:
-            limits = await request.app.state.query_limits.read()
+            context = await request.app.state.query_limits.read()
+            limits = context.limits
             denial = _input_denial(request, payload, limits)
             if denial is not None:
                 _query_outcomes.labels(operation, "input_limit").inc()
                 return denial
-            result = await run_in_threadpool(getattr(request.app.state.query_service, operation), payload, limits=limits, evidence=evidence)
+            result = await run_in_threadpool(getattr(request.app.state.query_service, operation), payload, limits=limits, evidence=evidence, publication=context.publication)
             _query_outcomes.labels(operation, "success").inc()
             return result
     except QueryLimitsUnavailable:
@@ -122,13 +123,14 @@ async def execute(payload: QueryRequest, request: Request):
         await slot.acquire()
         owned = True
         try:
-            limits = await request.app.state.query_limits.read()
+            context = await request.app.state.query_limits.read()
+            limits = context.limits
             denial = _input_denial(request, payload, limits)
             if denial is not None:
                 slot.release()
                 owned = False
                 return await _stream_denial(request, payload, denial)
-            return QueryStreamResponse(request, payload, limits)
+            return QueryStreamResponse(request, payload, limits, context.publication)
         except QueryLimitsUnavailable:
             slot.release()
             owned = False

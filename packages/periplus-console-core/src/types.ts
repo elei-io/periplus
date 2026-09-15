@@ -31,7 +31,7 @@ export interface SqlMacro {
 
 export interface SqlMetadata {
   catalogue_version?: string
-  duckdb_version: string
+  engine_version: string
   relations: SqlRelation[]
   macros: SqlMacro[]
 }

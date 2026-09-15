@@ -12,7 +12,8 @@ LINEAGE_SUBJECT = "periplus.catalogue.ingest.lineage"
 MATERIALIZATION_PLAN_SUBJECT = "periplus.catalogue.materialization.plan"
 MATERIALIZATION_BATCH_SUBJECT = "periplus.catalogue.materialization.batch"
 MATERIALIZATION_ACTIVATE_SUBJECT = "periplus.catalogue.materialization.activate"
-WORK_SUBJECTS = (VISIT_SUBJECT, LINEAGE_SUBJECT)
+BARRIER_SUBJECT = "periplus.catalogue.ingest.barrier"
+WORK_SUBJECTS = (VISIT_SUBJECT, LINEAGE_SUBJECT, BARRIER_SUBJECT)
 
 DEAD_LETTER_STREAM = "PERIPLUS_DEAD_LETTER"
 INGEST_DEAD_LETTER_SUBJECT = "periplus.dead_letter.ingest"

@@ -1,4 +1,5 @@
 """Authoritative limits cannot be supplied by query callers or skipped on policy failure."""
+from periplus.query.binding import ExecutionContext, PublicationBinding
 import asyncio
 import os
 from types import SimpleNamespace
@@ -23,20 +24,20 @@ class LimitsTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict(os.environ, PERIPLUS_QUERY_API_TOKEN='query-secret', PERIPLUS_API_URL='http://control.test'):
             reader = QueryLimitsClient()
         await reader.close()
-        responses = [httpx.Response(200, json={'sql': QueryLimits(max_rows=7).model_dump()}),
-                     httpx.Response(200, json={'sql': QueryLimits(max_rows=3).model_dump()}),
+        responses = [httpx.Response(200, json={'publication': {'database': 'public_v1', 'revision': 0}, 'limits': QueryLimits(max_rows=7).model_dump()}),
+                     httpx.Response(200, json={'publication': {'database': 'public_v1', 'revision': 0}, 'limits': QueryLimits(max_rows=3).model_dump()}),
                      httpx.Response(503, text='private origin'),
-                     httpx.Response(200, json={'sql': {'max_rows': 3}}),
-                     httpx.Response(200, json={'sql': QueryLimits().model_dump() | {'max_rows': 10_000_001}})]
+                     httpx.Response(200, json={'publication': {'database': 'public_v1', 'revision': 0}, 'limits': {'max_rows': 3}}),
+                     httpx.Response(200, json={'publication': {'database': 'public_v1', 'revision': 0}, 'limits': QueryLimits().model_dump() | {'max_rows': 10_000_001}})]
         def handler(request):
-            self.assertEqual(request.url.path, '/access')
+            self.assertEqual(request.url.path, '/internal/query-context')
             self.assertEqual(request.headers['Authorization'], 'Bearer query-secret')
             return responses.pop(0)
         reader.client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url='http://control.test/',
                                          headers={'Authorization': 'Bearer query-secret'})
         try:
-            self.assertEqual((await reader.read()).max_rows, 7)
-            self.assertEqual((await reader.read()).max_rows, 3)
+            self.assertEqual((await reader.read()).limits.max_rows, 7)
+            self.assertEqual((await reader.read()).limits.max_rows, 3)
             for _ in range(3):
                 with self.assertRaises(QueryLimitsUnavailable):
                     await reader.read()
@@ -50,14 +51,14 @@ class LimitsTests(unittest.IsolatedAsyncioTestCase):
         app.state.query_history = SimpleNamespace(record=AsyncMock())
         reader = app.state.query_limits = SimpleNamespace(read=AsyncMock())
         captured = []
-        def prepare(payload, *, limits, evidence):
+        def prepare(payload, *, limits, evidence, publication):
             captured.append(limits)
             return PreparedQuery(query_id='00000000-0000-4000-8000-000000000001', sql=payload.sql,
                                  parameters=payload.parameters, diagnostics=[], plan='plan')
         app.state.query_service = SimpleNamespace(prepare=prepare, compiler_version="public-query-v4:stable")
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://query.test') as client:
             for count in (7, 3):
-                reader.read.return_value = QueryLimits(max_rows=count)
+                reader.read.return_value = ExecutionContext(limits=QueryLimits(max_rows=count), publication=PublicationBinding(database="public_v1", revision=0))
                 self.assertEqual((await client.post('/query/prep', json={'sql': 'SELECT 1'})).status_code, 200)
             self.assertEqual([limits.max_rows for limits in captured], [7, 3])
             # Requests cannot raise any server-side limit.

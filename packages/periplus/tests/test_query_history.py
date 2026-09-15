@@ -1,4 +1,5 @@
 from periplus.operations.access.schemas import QueryLimits
+from periplus.query.binding import ExecutionContext, PublicationBinding
 import asyncio
 from datetime import UTC, datetime, timedelta
 import os
@@ -71,13 +72,13 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
     async def test_capacity_and_timeout_are_terminal_history(self):
         recorder = SimpleNamespace(record=AsyncMock())
         slot = asyncio.Semaphore(1)
-        def timeout(payload, *, limits, evidence):
+        def timeout(payload, *, limits, evidence, publication):
             evidence.plan = 'estimated scan'
             evidence.plan_truncated = False
             evidence.duckdb_version = 'test-engine'
             raise TimeoutError()
         request = SimpleNamespace(state=SimpleNamespace(), headers={}, app=SimpleNamespace(state=SimpleNamespace(
-            query_history=recorder, query_slot=slot, query_limits=SimpleNamespace(read=AsyncMock(return_value=QueryLimits())), query_service=SimpleNamespace(execute=timeout, compiler_version="public-query-v4:experimental"))))
+            query_history=recorder, query_slot=slot, query_limits=SimpleNamespace(read=AsyncMock(return_value=ExecutionContext(limits=QueryLimits(), publication=PublicationBinding(database="public_v1", revision=0)))), query_service=SimpleNamespace(execute=timeout, compiler_version="public-query-v4:experimental"))))
         await slot.acquire()
         self.assertEqual((await _run(request, QueryRequest(sql='select 1'), 'execute')).status_code, 429)
         self.assertEqual(recorder.record.call_args.args[0].outcome, 'rejected')

@@ -1,4 +1,4 @@
-// Public catalogue contract. Both schemas expose these columns.
+// Public ClickHouse catalogue.
 export const schemaReference = [
   {
     "name": "public_v1.page",
@@ -7,7 +7,7 @@ export const schemaReference = [
     "columns": [
       [
         "url",
-        "VARCHAR",
+        "String",
         "Normalized URL identity. Redirects and canonical declarations do not merge pages."
       ]
     ]
@@ -24,37 +24,37 @@ export const schemaReference = [
       ],
       [
         "page_url",
-        "VARCHAR",
+        "String",
         "Requested page URL; references page.url."
       ],
       [
         "effective_url",
-        "VARCHAR",
+        "String",
         "Final URL after navigation."
       ],
       [
         "captured_at",
-        "TIMESTAMPTZ",
+        "DateTime64(6, 'UTC')",
         "Time the page content was captured."
       ],
       [
         "http_status_code",
-        "INTEGER",
+        "UInt32",
         "HTTP response status when known; retained error bodies qualify."
       ],
       [
         "content_id",
-        "VARCHAR",
+        "String",
         "SHA-256 identity of retained bytes."
       ],
       [
         "byte_length",
-        "BIGINT",
+        "UInt64",
         "Length of logical bytes before storage compression."
       ],
       [
         "encoding",
-        "VARCHAR",
+        "String",
         "Detected character encoding when meaningful."
       ]
     ]
@@ -66,117 +66,58 @@ export const schemaReference = [
     "columns": [
       [
         "content_id",
-        "VARCHAR",
+        "String",
         "SHA-256 identity of captured bytes."
       ],
       [
         "node_index",
-        "INTEGER",
+        "UInt32",
         "Zero-based depth-first node position, scoped to the catalogue snapshot."
       ],
       [
         "parent_index",
-        "INTEGER",
+        "UInt32",
         "Nearest parent element position; null for the document element."
       ],
       [
         "subtree_end_index",
-        "INTEGER",
+        "UInt32",
         "Exclusive end of this node's subtree."
       ],
       [
         "sibling_index",
-        "INTEGER",
+        "UInt32",
         "Zero-based position among projected element siblings."
       ],
       [
         "depth",
-        "INTEGER",
+        "UInt32",
         "Element-parent depth; document element is zero."
       ],
       [
         "tag",
-        "VARCHAR",
+        "String",
         "Local element tag name."
       ],
       [
         "namespace",
-        "VARCHAR",
+        "String",
         "Namespace URI when applicable."
       ],
       [
         "attributes",
-        "MAP(VARCHAR, VARCHAR)",
+        "Map(String, String)",
         "Attribute map; namespaced keys use {namespace-uri}local-name."
       ],
       [
         "text_direct",
-        "VARCHAR",
+        "String",
         "Immediate child text concatenated in order, without normalization."
       ],
       [
         "text",
-        "VARCHAR",
+        "String",
         "All descendant text nodes concatenated in document order; empty when absent. Preserves whitespace, includes template fragments and script/style/title text, inserts no separators, ignores comments and CSS visibility."
-      ]
-    ]
-  },
-  {
-    "name": "public_v1.html_jsonld",
-    "grain": "Materialized embedded JSON-LD declarations, including invalid scripts, without semantic expansion.",
-    "key": "content_id + node_index",
-    "columns": [
-      [
-        "content_id",
-        "VARCHAR",
-        "SHA-256 identity of captured bytes."
-      ],
-      [
-        "node_index",
-        "INTEGER",
-        "Source application/ld+json script node position."
-      ],
-      [
-        "value",
-        "JSON",
-        "Complete document parsed as DuckDB JSON; SQL null on parse failure."
-      ],
-      [
-        "parse_error",
-        "VARCHAR",
-        "Empty JSON-LD script or Invalid JSON syntax; null on successful parsing."
-      ]
-    ]
-  },
-  {
-    "name": "public_v1.html_metadata",
-    "grain": "Explicit HTML metadata declarations, preserving source nodes and repeated declarations.",
-    "key": "content_id + node_index + kind + name",
-    "columns": [
-      [
-        "content_id",
-        "VARCHAR",
-        "SHA-256 identity of captured bytes."
-      ],
-      [
-        "node_index",
-        "INTEGER",
-        "Source metadata element node position."
-      ],
-      [
-        "kind",
-        "VARCHAR",
-        "Declaration kind: title, meta_name, meta_property, meta_http_equiv, meta_charset, link_rel or html_attribute."
-      ],
-      [
-        "name",
-        "VARCHAR",
-        "Declared metadata name or relation token; title, charset and lang use fixed names."
-      ],
-      [
-        "value",
-        "VARCHAR",
-        "Parsed declared value without normalization; null when the value attribute is absent."
       ]
     ]
   },
@@ -192,17 +133,17 @@ export const schemaReference = [
       ],
       [
         "node_index",
-        "INTEGER",
+        "UInt32",
         "Anchor node position in that capture's content."
       ],
       [
         "target_url",
-        "VARCHAR",
+        "String",
         "Resolved normalized destination; references page.url."
       ],
       [
         "raw_href",
-        "VARCHAR",
+        "String",
         "Original parsed href attribute value."
       ]
     ]

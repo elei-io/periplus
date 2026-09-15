@@ -15,6 +15,7 @@ from periplus.operations.access.schemas import QueryLimits
 from periplus.operations.query_history.schemas import PreparationEvidence
 from periplus.platform.clickhouse import ClickHouseClient, ClickHouseConfig
 from periplus.platform.clickhouse.public import PUBLIC_RELATIONS
+from periplus.query.binding import PublicationBinding, bind_publication
 from periplus.query.models import PreparedQuery, QueryMode, QueryRequest, QueryResult
 
 
@@ -50,15 +51,19 @@ def public_sql(payload: QueryRequest) -> str:
     tree = statements[0]
     if any(node.args.get('settings') or node.args.get('format') or isinstance(node, exp.Into) for node in tree.walk()):
         raise ValueError('Query settings, output destinations and formats are service-owned.')
-    ctes = {cte.alias_or_name for cte in tree.find_all(exp.CTE)}
+    from sqlglot.optimizer.scope import Scope, traverse_scope
     for table in tree.find_all(exp.Table):
         if not isinstance(table.this, exp.Identifier) or table.catalog:
             raise ValueError('External sources and table functions are unavailable.')
-        if not table.db and table.name in ctes:
-            continue
-        if table.db not in {'', 'public_v1'} or table.name not in PUBLIC_RELATIONS:
-            raise ValueError('Queries may reference only the installed public_v1 relations.')
-        table.set('db', exp.to_identifier('public_v1'))
+    # Resolve CTEs in their lexical scope. A CTE in one UNION branch must not
+    # prevent a public table in another branch from receiving its binding.
+    for scope in traverse_scope(tree):
+        for table in scope.tables:
+            if not table.db and isinstance(scope.sources.get(table.alias_or_name), Scope):
+                continue
+            if table.db not in {'', 'public_v1'} or table.name not in PUBLIC_RELATIONS:
+                raise ValueError('Queries may reference only the installed public_v1 relations.')
+            table.set('db', exp.to_identifier('public_v1'))
     if any(tree.find_all(exp.Placeholder, exp.Parameter)):
         raise ValueError('Only anonymous positional parameters are supported.')
     return tree.sql(dialect='clickhouse', comments=False)
@@ -109,14 +114,14 @@ class QueryService:
         self.client.interrupt_query()
 
     def prepare(self, payload: QueryRequest, *, limits: QueryLimits = QueryLimits(),
-                evidence: PreparationEvidence | None = None) -> PreparedQuery:
-        return self._run(payload, limits, evidence, execute=False)
+                evidence: PreparationEvidence | None = None, publication: PublicationBinding | None = None) -> PreparedQuery:
+        return self._run(payload, limits, evidence, execute=False, publication=publication)
 
     def execute(self, payload: QueryRequest, *, limits: QueryLimits = QueryLimits(),
-                evidence: PreparationEvidence | None = None, emit=None, cancelled=None) -> QueryResult:
-        return self._run(payload, limits, evidence, execute=True, emit=emit, cancelled=cancelled)
+                evidence: PreparationEvidence | None = None, emit=None, cancelled=None, publication: PublicationBinding | None = None) -> QueryResult:
+        return self._run(payload, limits, evidence, execute=True, emit=emit, cancelled=cancelled, publication=publication)
 
-    def _run(self, payload, limits, evidence, *, execute, emit=None, cancelled=None):
+    def _run(self, payload, limits, evidence, *, execute, emit=None, cancelled=None, publication=None):
         if not self._lock.acquire(blocking=False):
             raise BusyError('Query server is busy.')
         _active_queries.inc()
@@ -133,6 +138,8 @@ class QueryService:
             if self._closed:
                 raise RuntimeError("Query service is closed.")
             sql = public_sql(payload)
+            if publication is not None:
+                sql = bind_publication(sql, publication)
             plan = self.client.execute('EXPLAIN PLAN ' + sql, query_id=query_id + '-plan', cancelled=self._cancelled,
                 timeout_seconds=remaining(), max_response_bytes=64000).decode()
             prepared = PreparedQuery(query_mode=self.mode, compiler_version=self.compiler_version,

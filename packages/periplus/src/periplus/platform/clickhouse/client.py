@@ -153,7 +153,15 @@ class ClickHouseClient:
         return result
 
     def insert_json(self, table: str, row: Mapping[str, JsonValue]) -> None:
-        """One bounded typed row, with binary SHA-256 decoded inside the INSERT."""
+        self.insert_rows(table, [row])
+
+    def insert_rows(self, table: str, rows: list[Mapping[str, JsonValue]]) -> None:
+        """One bounded typed block, with SHA-256 decoded inside the INSERT."""
+        if not rows:
+            return
+        row = rows[0]
+        if any(item.keys() != row.keys() for item in rows):
+            raise ValueError("Insert block rows must have identical fields")
         if not re.fullmatch(r"[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*", table):
             raise ValueError("invalid ClickHouse table identifier")
         columns = self._input_schemas.get(table)
@@ -168,7 +176,7 @@ class ClickHouseClient:
         selection = ", ".join(f"unhex({key})" if "FixedString(32)" in columns[key] else key for key in row)
         sql = (f"INSERT INTO {table} ({', '.join(row)}) SELECT {selection} "
                f"FROM input('{structure}') FORMAT JSONEachRow")
-        self.execute(sql, data=(json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n").encode())
+        self.execute(sql, data="".join(json.dumps(item, ensure_ascii=False, allow_nan=False) + "\n" for item in rows).encode())
 
     def close(self) -> None:
         self._http.close()

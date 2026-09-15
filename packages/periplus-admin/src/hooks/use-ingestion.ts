@@ -1,5 +1,6 @@
-import { useQuery } from "@tanstack/react-query"
-import { apiErrorFromResponse, apiUrl } from "@/lib/api"
+import { toast } from "sonner"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { apiErrorFromResponse, apiUrl, extractApiError } from "@/lib/api"
 import type { IngestionReport } from "@/types/ingestion"
 
 export function useIngestion() {
@@ -16,4 +17,13 @@ export function useIngestion() {
       return (await response.json()) as IngestionReport
     },
   })
+}
+
+export function useRetryIngestion() {
+  const client = useQueryClient()
+  return useMutation({ mutationFn: async (sequence: number) => {
+    const response = await fetch(apiUrl(`/operations/repository/dead-letters/${sequence}/requeue`), { method: "POST" })
+    if (!response.ok) throw await apiErrorFromResponse(response)
+  }, onSuccess: () => { void client.invalidateQueries({ queryKey: ["ingestion"] }) },
+  onError: error => toast.error(extractApiError(error)) })
 }

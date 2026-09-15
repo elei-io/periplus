@@ -10,12 +10,8 @@ from periplus.ingestion.queue import (
     DEAD_LETTER_STREAM,
     DeadLetterEntry,
     decode_dead_letter,
-    ensure_dead_letter_stream,
-    ensure_ingestion_results,
-    ensure_repository_stream,
     requeue_dead_letter,
 )
-from periplus.platform.messaging.client import connect_nats
 
 
 class DeadLetterRecord(BaseModel):
@@ -31,43 +27,24 @@ class DeadLetterList(BaseModel):
     items: list[DeadLetterRecord]
 
 
-async def list_dead_letters(limit: int) -> DeadLetterList:
-    client = await connect_nats()
-    try:
-        jetstream = client.jetstream()
-        await ensure_dead_letter_stream(jetstream)
-        info = await jetstream.stream_info(DEAD_LETTER_STREAM)
-        items: list[DeadLetterRecord] = []
-        sequence = info.state.last_seq
-        while sequence >= info.state.first_seq and len(items) < limit:
-            try:
-                raw = await jetstream.get_msg(DEAD_LETTER_STREAM, seq=sequence)
-            except NotFoundError:
-                sequence -= 1
-                continue
-            if raw.subject != DEAD_LETTER_SUBJECT:
-                sequence -= 1
-                continue
-            items.append(
-                DeadLetterRecord(
-                    sequence=sequence,
-                    entry=decode_dead_letter(raw.data),
-                )
-            )
+async def list_dead_letters(jetstream, limit: int) -> DeadLetterList:
+    info = await jetstream.stream_info(DEAD_LETTER_STREAM)
+    items: list[DeadLetterRecord] = []
+    sequence = info.state.last_seq
+    scanned = 0
+    while sequence >= info.state.first_seq and len(items) < limit and scanned < 500:
+        scanned += 1
+        try:
+            raw = await jetstream.get_msg(DEAD_LETTER_STREAM, seq=sequence)
+        except NotFoundError:
             sequence -= 1
-        return DeadLetterList(items=items)
-    finally:
-        await client.drain()
+            continue
+        if raw.subject == DEAD_LETTER_SUBJECT:
+            items.append(DeadLetterRecord(sequence=sequence, entry=decode_dead_letter(raw.data)))
+        sequence -= 1
+    return DeadLetterList(items=items)
 
 
-async def requeue_repository_dead_letter(sequence: int) -> DeadLetterRecord:
-    client = await connect_nats()
-    try:
-        jetstream = client.jetstream()
-        await ensure_repository_stream(jetstream)
-        await ensure_dead_letter_stream(jetstream)
-        results = await ensure_ingestion_results(jetstream)
-        entry = await requeue_dead_letter(jetstream, results, sequence)
-        return DeadLetterRecord(sequence=sequence, entry=entry)
-    finally:
-        await client.drain()
+async def requeue_repository_dead_letter(jetstream, results, sequence: int) -> DeadLetterRecord:
+    entry = await requeue_dead_letter(jetstream, results, sequence)
+    return DeadLetterRecord(sequence=sequence, entry=entry)
