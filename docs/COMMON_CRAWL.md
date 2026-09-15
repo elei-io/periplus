@@ -48,11 +48,11 @@ The byte allowance counts potential WARC range downloads, including failed attem
 and uncertain retries. CDX lookup overhead is excluded. An exhausted allowance
 blocks further downloads; cancel that job and explicitly submit remaining URLs with
 a suitable budget. A failure after S3 publication but before its checkpoint may
-require another range download. Once the archive key is checkpointed, publication
+require another range download. Once the exact archive event reference is checkpointed, publication
 retry reads S3 without contacting CC.
 
-Raw storage retains content-addressed payloads and standalone capture envelopes
-under `raw/corpus/v1/`. Envelopes preserve WARC source identity, source location,
+Raw storage retains content-addressed payloads and batched capture metadata
+under `raw/corpus/v1/`. Embedded records preserve WARC source identity, source location,
 headers, capture time and body identity. Bodies are HTTP response bytes rather
 than browser renderings. The original compressed WARC member is not retained
 byte-for-byte. Importing later never changes the original capture time.

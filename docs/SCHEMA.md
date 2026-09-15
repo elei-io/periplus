@@ -27,17 +27,27 @@ The repository contains content-addressed payloads plus `raw/corpus/v1/`:
 
 | Path | Meaning |
 | --- | --- |
-| `captures/<prefix>/<capture-id>.json.zst` | Immutable, self-contained capture envelope |
-| `journal/<shard>/<sequence>.json.zst` | Ordered capture/retirement event; 16 independent contiguous shards |
-| `committed/<prefix>/<capture-id>.json.zst` | Stable first commit receipt for retries |
+| `journal/<shard>/<range>/<segment>.json.zst` | Immutable batch of 1–64 complete capture/retirement records; 16 independent journals |
 | `retired/<prefix>/<capture-id>.json.zst` | Permanent corpus tombstone |
-| `retirement-commits/...` | Idempotent retirement-event receipt |
 | `manifests/<sha256>.json.zst` | Sixteen journal heads, recipe, software object key and public schema version |
 | `software/<sha256>.tar` | Source, SQL, dependency lock and runtime information |
 
 A manifest is a small cut of the journal, not a copy of all captures. Object
 keys are repository-relative. No customer IDs, collections, policies, budgets,
 worker ownership or NATS sequence numbers are needed to interpret the archive.
+
+A segment is bounded to 8 MiB expanded JSON; one capture is bounded to 2 MiB.
+Its header records the shard, segment number, first logical event sequence,
+publication time and record digest. Logical event sequences remain contiguous
+across variable-size segments. `range = (segment - 1) // 4096` bounds files per
+leaf directory. There are no per-capture envelope or commit-receipt objects.
+
+An `ArchiveRef` names shard, logical sequence, segment, record offset, capture ID
+and evidence digest. `archive_record_key` in material rows is the segment key
+plus `#<record-offset>`; readers validate the capture identity and digest.
+Publisher processes maintain an expendable disk-backed SQLite identity lookup,
+replayed from metadata. It stores no authoritative facts and is unnecessary for
+direct-reference reads or archive-only sequential verification. See [STORAGE.md](STORAGE.md).
 
 ## Postgres
 

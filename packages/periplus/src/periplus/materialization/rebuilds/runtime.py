@@ -67,9 +67,8 @@ def retryable(error: Exception) -> bool:
 
 def apply_batch(archive: Archive, store: MaterialStore, batch: BatchRecord) -> int:
     captures = []
-    for sequence in range(batch.start, batch.end + 1):
-        event = archive.event(batch.shard, sequence)
-        capture = archive.read(event.capture_id, event.digest)
+    for event in archive.range_events(batch.shard, batch.start, batch.end):
+        capture = archive.read_event(event)
         if archive.retired(capture.capture_id):
             store.retire(capture, archive)
         else:

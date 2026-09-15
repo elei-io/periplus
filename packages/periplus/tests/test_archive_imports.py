@@ -49,7 +49,7 @@ class ImportTests(unittest.TestCase):
         selected = self.step(job.id)
         self.assertEqual(selected.progress.current, self.item)
         archived = self.step(job.id)
-        self.assertIsNotNone(archived.progress.archive_key)
+        self.assertIsNotNone(archived.progress.archive_ref)
         self.assertEqual(self.queue.publish.await_count, 0)
         self.assertEqual(len(tuple(Archive(self.store).events(Archive(self.store).heads()))), 1)
         self.worker = ImportWorker(self.control, Mock(), self.store, self.queue)

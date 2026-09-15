@@ -104,11 +104,9 @@ class RawHtmlRepository:
                 headers=ObjectWriteHeaders(
                     content_type=f"{content_type}; charset=utf-8",
                     content_encoding="zstd",
-                    metadata={
-                        "url": source_url,
-                        "visit-id": str(visit_id),
-                        "observed-at": observed_at.isoformat(),
-                    },
+                    # Observation metadata belongs to the batched capture archive.
+                    # A shared content object must not inherit one visit's URL,
+                    # timestamp, or S3's ASCII/size restrictions on those headers.
                 ),
             )
         return StoredHtml(

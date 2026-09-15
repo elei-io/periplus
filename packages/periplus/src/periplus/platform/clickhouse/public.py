@@ -22,9 +22,13 @@ def install_public_schema(client: ClickHouseClient, material: str = "material", 
 def install_query_user(client: ClickHouseClient) -> None:
     from periplus.platform.clickhouse.client import ClickHouseConfig
     config = ClickHouseConfig.for_query()
+    from periplus.platform.config import get_str
+    workload = get_str("PERIPLUS_CLICKHOUSE_QUERY_WORKLOAD")
     import re
     if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,62}", config.username):
         raise ValueError("invalid query user name")
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,62}", workload):
+        raise ValueError("invalid query workload name")
     client.execute(
         "CREATE USER IF NOT EXISTS {user:Identifier} IDENTIFIED WITH sha256_password BY {password:String} "
         "DEFAULT DATABASE public_v1 SETTINGS readonly=1, max_threads=2, max_memory_usage=536870912, "
@@ -33,6 +37,9 @@ def install_query_user(client: ClickHouseClient) -> None:
     )
     client.execute(f"ALTER USER `{config.username}` SETTINGS readonly=1, "
         "max_execution_time=45 MIN 0.01 MAX 45 CHANGEABLE_IN_READONLY, "
+        f"workload='{workload}' READONLY, "
+        "max_concurrent_queries_for_user=8 READONLY, "
+        "max_memory_usage_for_user=4294967296 READONLY, "
         "max_threads=2 READONLY, max_memory_usage=536870912 READONLY, "
         "max_rows_to_read=10000000 READONLY, max_bytes_to_read=1073741824 READONLY, "
         "output_format_json_quote_64bit_integers=0 READONLY, "

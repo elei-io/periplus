@@ -6,7 +6,7 @@ import re
 from types import SimpleNamespace
 from uuid import UUID
 
-from periplus.ingestion.archive import Archive, capture_key
+from periplus.ingestion.archive import Archive
 from periplus.ingestion.captures import Capture, canonical
 from periplus.ingestion.objects.html import RawHtmlRepository
 from periplus.ingestion.objects.document import ExactDocumentRepository
@@ -48,7 +48,7 @@ def output_row(value: dict) -> dict:
     return {**value, "output_digest": sha256(encoded).hexdigest()}
 
 
-def capture_row(capture: Capture, document: dict | None, links: list) -> dict:
+def capture_row(capture: Capture, document: dict | None, links: list, archive_record_key: str) -> dict:
     payload, source = capture.payload, capture.source
     return output_row(
         dict(
@@ -74,7 +74,7 @@ def capture_row(capture: Capture, document: dict | None, links: list) -> dict:
             source_provider=source.provider if source else "periplus",
             source_dataset=source.dataset if source else None,
             source_record_id=source.record_id if source else None,
-            archive_record_key=capture_key(capture.capture_id),
+            archive_record_key=archive_record_key,
             links=links,
         )
     )
@@ -218,7 +218,7 @@ class MaterialStore:
         elif payload:
             with write_claims({"content": [payload.content_id]}):
                 archive.verify_payload(capture)
-        return document, capture_row(capture, document, links)
+        return document, capture_row(capture, document, links, archive.location(capture))
 
     def _insert_verified(self, table: str, rows: dict[str, dict]) -> None:
         if not rows:

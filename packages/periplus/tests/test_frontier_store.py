@@ -553,7 +553,7 @@ class FrontierStoreTests(unittest.TestCase):
         self.complete(a.acquisition_id, work.generation, success=True, outcome='succeeded', now=self.now)
         first = next(d for d in self.store.claim_outbox(now=self.now, lease_seconds=2) if d.kind == 'observation')
         capture = from_visit(VisitEvidence.model_validate(first.payload))
-        event = ArchiveEvent(shard=3, sequence=17, capture_id=capture.capture_id,
+        event = ArchiveEvent(shard=3, sequence=17, segment=1, offset=16, capture_id=capture.capture_id,
                              digest=capture.digest, kind='capture', committed_at=self.now)
         for invalid in (None, event.model_copy(update={'digest': '0' * 64})):
             with self.assertRaises(ValueError):

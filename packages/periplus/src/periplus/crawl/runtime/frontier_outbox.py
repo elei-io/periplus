@@ -39,33 +39,53 @@ async def publish_delivery(
 
 
 async def publish_outbox_once(
-    store: FrontierStore, jetstream, ingestion: ArchivePublisher, *, batch: int = 1
+    store: FrontierStore, jetstream, ingestion: ArchivePublisher, *, batch: int = 64
 ) -> int:
-    # Claim one bounded archive write; expired claims safely replay.
-    if batch != 1:
-        raise ValueError("relay claims one write at a time")
+    if not 1 <= batch <= 64:
+        raise ValueError("relay claims 1–64 deliveries")
     deliveries = await asyncio.to_thread(
         store.claim_outbox, batch=batch, lease_seconds=610
     )
-    for delivery in deliveries:
+    observations = [d for d in deliveries if d.kind == "observation"]
+    groups = [[d] for d in deliveries if d.kind != "observation"]
+    if observations:
+        groups.append(observations)
+    for group in groups:
         try:
             async with asyncio.timeout(300):
-                receipt = await publish_delivery(delivery, jetstream, ingestion)
+                if group[0].kind == "observation":
+                    from periplus.crawl.acquisition.records import VisitEvidence
+                    from periplus.ingestion.captures import from_visit
+
+                    receipts = await ingestion.publish_many(
+                        [
+                            from_visit(VisitEvidence.model_validate(d.payload))
+                            for d in group
+                        ]
+                    )
+                    if len(receipts) != len(group):
+                        raise ValueError(
+                            "Archive receipt count differs from frozen deliveries"
+                        )
+                else:
+                    receipts = [await publish_delivery(group[0], jetstream, ingestion)]
         except asyncio.CancelledError:
-            # Claims expire even if cancellation also interrupts this best-effort release.
-            await asyncio.to_thread(store.release_outbox, delivery, "publisher stopped")
+            for delivery in group:
+                await asyncio.to_thread(
+                    store.release_outbox, delivery, "publisher stopped"
+                )
             raise
         except Exception as exc:
-            logger.warning(
-                "frontier publication failed message=%s",
-                delivery.message_id,
-                exc_info=True,
-            )
-            await asyncio.to_thread(store.release_outbox, delivery, type(exc).__name__)
+            logger.warning("frontier publication failed", exc_info=True)
+            for delivery in group:
+                await asyncio.to_thread(
+                    store.release_outbox, delivery, type(exc).__name__
+                )
         else:
-            await asyncio.to_thread(
-                store.mark_outbox_published, delivery, archive_event=receipt
-            )
+            for delivery, receipt in zip(group, receipts, strict=True):
+                await asyncio.to_thread(
+                    store.mark_outbox_published, delivery, archive_event=receipt
+                )
     return len(deliveries)
 
 

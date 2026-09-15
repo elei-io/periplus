@@ -20,7 +20,7 @@ from io_store import target_store, read_all, cleanup
 from layouts import Separate, Packed, checked, decompress
 
 
-def source_store():
+def source_store(max_pool_connections=4):
     endpoint = os.environ["ENDPOINT"]
     if not endpoint.startswith("http"):
         endpoint = "http://" + endpoint
@@ -34,7 +34,7 @@ def source_store():
             config=Config(
                 signature_version="s3v4",
                 s3={"addressing_style": "path"},
-                max_pool_connections=4,
+                max_pool_connections=max_pool_connections,
             ),
         ),
         bucket=os.environ["BUCKET"],

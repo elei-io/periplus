@@ -5,7 +5,7 @@ import asyncio
 from datetime import UTC, datetime
 import logging
 
-from periplus.ingestion.archive import Archive, capture_key, CaptureRetired
+from periplus.ingestion.archive import Archive, CaptureRetired
 from periplus.ingestion.archive_import import archive_capture
 from periplus.ingestion.common_crawl import (
     CommonCrawlClient,
@@ -70,7 +70,7 @@ class ImportWorker:
                 else:
                     await self.save(job, current=item)
                 return
-            if progress.archive_key is None:
+            if progress.archive_ref is None:
                 item = progress.current
                 if (
                     progress.reserved_download_bytes + item.length
@@ -90,18 +90,23 @@ class ImportWorker:
                 data = await asyncio.to_thread(self.client.fetch, item)
                 capture = await asyncio.to_thread(decode_record, item, data)
                 identity = capture.source.capture_id
-                key = capture_key(identity)
-                existed = await asyncio.to_thread(self.store.exists, key)
+                archive = Archive(self.store)
+                existed = await asyncio.to_thread(archive.receipt, identity)
                 # Recheck cancellation before starting a durable archive write.
                 fresh = await asyncio.to_thread(self.control.get, job.id)
                 if fresh.revision != job.revision:
                     return
                 await bounded_call(archive_capture, self.store, capture)
-                await self.save(job, archive_key=key, already_archived=existed)
+                reference = await asyncio.to_thread(archive.receipt, identity)
+                if reference is None:
+                    raise ValueError("Archive publication has no committed reference")
+                await self.save(
+                    job, archive_ref=reference, already_archived=bool(existed)
+                )
                 return
             evidence = await asyncio.to_thread(
-                Archive(self.store).read,
-                UUID(progress.archive_key.rsplit("/", 1)[1].removesuffix(".json.zst")),
+                Archive(self.store).read_event,
+                progress.archive_ref,
             )
             await self.queue.publish(evidence)
             await self.finish(
@@ -161,7 +166,7 @@ class ImportWorker:
             job,
             cursor=cursor,
             current=None,
-            archive_key=None,
+            archive_ref=None,
             already_archived=False,
             results=(*job.progress.results, result),
             status="completed" if cursor == len(job.specification.urls) else "running",

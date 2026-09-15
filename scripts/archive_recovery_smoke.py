@@ -44,7 +44,7 @@ def run():
         with source.store.open(item.key) as body:
             archive.store.put_if_absent(item.key, body)
     for event in source.events(heads):
-        capture = source.read(event.capture_id, event.digest)
+        capture = source.read_event(event)
         if source.retired(capture.capture_id):
             continue
         captures[str(capture.capture_id)] = capture
@@ -52,6 +52,7 @@ def run():
             with source.store.open(capture.payload.object_key) as body:
                 archive.store.put_if_absent(capture.payload.object_key, body)
     # A broad enough corpus to observe live worker ownership before interruption.
+    generated = []
     for index in range(256):
         identity = UUID(int=900000 + index)
         observed = datetime(2026, 9, 15, tzinfo=UTC)
@@ -81,8 +82,10 @@ def run():
             ),
         )
         if not archive.retired(identity):
-            archive.commit(capture)
+            generated.append(capture)
             captures[str(identity)] = capture
+    for offset in range(0, len(generated), 64):
+        archive.commit_many(generated[offset:offset + 64])
     retired = UUID(int=900000)
     archive.retire(retired)
     captures.pop(str(retired), None)

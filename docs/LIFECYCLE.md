@@ -4,8 +4,8 @@
 2. A crawler obtains a per-domain permit and acquires one page through standard CDP.
 3. It stores immutable payload bytes. The acquisition result and its collection
    associations are frozen transactionally with an outbox entry in Postgres.
-4. The outbox relay verifies the bytes, commits the standalone capture envelope
-   and its raw journal event, then sends a NATS hint. It verifies the returned
+4. The outbox relay verifies the bytes and conditionally publishes batches of
+   complete capture facts into the raw journal, then sends NATS hints. It verifies the returned
    capture identity/digest before marking Postgres result associations archived.
 5. Materializer planners compare each build's bounded cursors with raw journal
    heads. Lost notifications cannot conceal committed archive events.
@@ -15,8 +15,9 @@
 7. The public query API reads one publication binding for the request. Hidden
    candidates are visible only after explicit verified activation.
 
-An archive commit can survive a lost response. Replay may encounter duplicate
-journal references, but capture identities and envelope digests must agree.
+An archive commit can survive a lost response. The derived publisher lookup
+recovers the original record position. Capture identities and evidence digests
+must agree before a retry is acknowledged; conflicting facts are rejected.
 ClickHouse writes can also survive lost acknowledgements. Exact claims outlive
 bounded writers; after expiry another worker verifies existing output before
 inserting anything missing. Permanent input errors remain inspectable on their

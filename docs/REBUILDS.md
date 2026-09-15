@@ -46,7 +46,7 @@ continue executing its old recipe. Never disable the recipe check to bypass this
 ## Recovery procedure
 
 1. Preserve a manifest with `periplus-archive manifest`. Back up the complete raw
-   journal, envelopes, retained payloads, all tombstones and named software bundle.
+   metadata-batch journal, retained payloads, all tombstones and named software bundle.
    A manifest names a cut; copying only the manifest is not a backup.
 2. Start fresh Postgres, ClickHouse and NATS. Configure the archive read-only and
    use the software recipe recorded in the manifest.
@@ -62,6 +62,11 @@ continue executing its old recipe. Never disable the recipe check to bypass this
 payload integrity without a database or queue connection. Verification can take
 as long as reading the retained bytes. Tombstones are checked even when replaying
 an older manifest, so a deleted capture cannot be resurrected.
+
+Workers stream logical event ranges from metadata segments and read complete
+capture facts by segment/offset. They do not build the publisher's UUID lookup
+index. A checkpoint can fall inside a segment; retries verify the same physical
+record and preserve the existing contiguous logical cursor semantics.
 
 The software bundle includes source and the dependency lock; the runtime still
 needs the matching Python/dependency artifacts or preserved container image.

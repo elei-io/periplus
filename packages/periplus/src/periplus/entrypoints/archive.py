@@ -32,7 +32,7 @@ async def run(args):
             return
         retained = retired = 0
         for event in archive.events(manifest.heads):
-            capture = archive.read(event.capture_id, event.digest)
+            capture = archive.read_event(event)
             if archive.retired(capture.capture_id):
                 retired += 1
             else:

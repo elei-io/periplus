@@ -21,6 +21,7 @@ def recipe_files() -> dict[str, bytes]:
         root / "platform/clickhouse/public.sql",
         root / "ingestion/captures.py",
         root / "ingestion/archive.py",
+        root / "ingestion/archive_index.py",
         root / "urls.py",
     ]
     result = {str(path.relative_to(root)): path.read_bytes() for path in paths}

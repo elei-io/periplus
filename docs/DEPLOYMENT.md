@@ -1,8 +1,10 @@
 # Deployment
 
 The supported development topology is Docker Compose on this MacBook. The external
-homelab CDP endpoint remains the crawler acquisition boundary. Homelab is production;
-this branch's cutover has not been deployed there.
+homelab CDP endpoint remains the crawler acquisition boundary. The user has
+authorized treating homelab as staging for the clean cutover. Its old Periplus
+deployment is stopped; the ClickHouse release has not been deployed there.
+See the [retained archive handoff](ARCHIVE_ADOPTION.md).
 
 Compose runs Postgres, NATS JetStream, raw S3, ClickHouse, setup, API, query,
 crawler, archive ingestor, materializer, janitor, admin and public. Configure the
@@ -44,3 +46,15 @@ retry-without-automatic-rollback operational policy.
 
 Backups and recovery: [STORAGE.md](STORAGE.md), [REBUILDS.md](REBUILDS.md).
 Validation and known limits: [VALIDATION.md](VALIDATION.md).
+
+Managed clusters can select `config.clickhouse.queryWorkload` (environment:
+`PERIPLUS_CLICKHOUSE_QUERY_WORKLOAD`, default `default`). Setup pins that workload
+on the read-only query account, alongside an eight-query aggregate concurrency
+cap and 4 GiB aggregate memory cap. The server must define a non-default workload
+before selecting it. These controls do not isolate background merge CPU or disks.
+
+For a clean control database, `setup.restoreManifest` supplies the immutable raw
+manifest to the setup hook. Existing deployments still require the explicit
+maintenance upgrade coordination described above. Homelab owns placement,
+database resources, retained volumes, backup jobs and monitoring through Flux;
+the chart remains a consumer of those external services.

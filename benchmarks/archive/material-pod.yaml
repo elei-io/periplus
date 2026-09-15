@@ -1,0 +1,28 @@
+# Disposable material-capacity worker; no production state or deployment edits.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: periplus-material-benchmark
+  namespace: applications
+  labels: {diagnostic: periplus-archive-benchmark}
+spec:
+  nodeName: k3s-03
+  restartPolicy: Never
+  activeDeadlineSeconds: 21600
+  automountServiceAccountToken: false
+  containers:
+    - name: benchmark
+      image: ghcr.io/elei-io/periplus-core:sha-5e7c572@sha256:cde9020b8a551fb5180c4eb8009f1a00d76297c542f5b5e3b5e52031d1a1b129
+      command: [python, -c, "import time; time.sleep(21600)"]
+      envFrom:
+        - secretRef: {name: s3-periplus}
+      env:
+        - {name: PYTHONPATH, value: /work/project/packages/periplus/src:/work}
+      resources:
+        requests: {cpu: '2', memory: 2Gi, ephemeral-storage: 5Gi}
+        limits: {cpu: '8', memory: 8Gi, ephemeral-storage: 15Gi}
+      volumeMounts:
+        - {name: work, mountPath: /work}
+  volumes:
+    - name: work
+      emptyDir: {sizeLimit: 12Gi}

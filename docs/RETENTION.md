@@ -11,7 +11,7 @@ appends its journal notification and marks the request complete. Materializers
 remove that capture from each target. Replay always checks the tombstone directly,
 including when the notification was lost or the manifest predates retirement.
 
-Current retirement is **logical**. Raw payload bytes and archive envelopes remain
+Current retirement is **logical**. Raw payload bytes and metadata batches remain
 retained. Physical raw garbage collection is deliberately absent: shared bodies
 cannot be deleted merely because one capture was retired. A future reclamation
 pass needs a proven retained-reference mark set and backup/tombstone policy.

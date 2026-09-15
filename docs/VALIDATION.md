@@ -1,5 +1,10 @@
 # Local archive/corpus validation
 
+This records the earlier, pre-batching local cutover. For the subsequent batched
+archive implementation, repeat recovery drills and retained homelab adoption, see
+[the current handoff](ARCHIVE_ADOPTION.md). The old local archive is not a
+compatibility acceptance case for the new greenfield contract.
+
 Validated on 2026-09-15 on the MacBook Compose deployment. Homelab production
 was not changed. The existing homelab CDP endpoint was used for one depth-zero,
 one-page native crawl.

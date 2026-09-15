@@ -98,12 +98,12 @@ class FrontierRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(kwargs["batch"], 1)
             return [await asyncio.wait_for(queue.get(), kwargs["timeout"])]
 
-        async def enqueue_visit(evidence):
-            from periplus.ingestion.captures import from_visit
+        async def publish_many(evidence):
             from periplus.ingestion.archive import ArchiveEvent
-            jobs.append(evidence)
-            capture=from_visit(evidence)
-            return ArchiveEvent(shard=0,sequence=1,capture_id=capture.capture_id,digest=capture.digest,kind='capture',committed_at=datetime.now(UTC))
+            jobs.extend(evidence)
+            return [ArchiveEvent(shard=0,sequence=i+1,segment=1,offset=i,
+                                 capture_id=c.capture_id,digest=c.digest,kind='capture',
+                                 committed_at=datetime.now(UTC)) for i,c in enumerate(evidence)]
 
         async def observe_completion():
             while not stop.is_set():
@@ -136,7 +136,7 @@ class FrontierRuntimeTests(unittest.IsolatedAsyncioTestCase):
             revision=1, model="test-model", queries=("Example sources",), searches=((),),
             selected=("https://example.com/",), validation_cursor=1, urls=("https://example.com/",),
         )))
-        ingestion = SimpleNamespace(enqueue_visit=enqueue_visit, check_available=AsyncMock())
+        ingestion = SimpleNamespace(publish_many=publish_many, check_available=AsyncMock())
         pipeline = SimpleNamespace(html_repository=SimpleNamespace(store=None), queue=ingestion, check_storage_available=AsyncMock())
         with patch("periplus.crawl.runtime.frontier_runtime.connect_cdp", lease), \
              patch("periplus.crawl.runtime.frontier_capture.connect_cdp", lease), \

@@ -191,6 +191,8 @@ sum(avg_over_time(periplus_query_active_operations{ {{ $scope }} }[2m]) and (tim
 {{- end }}
 
 {{- define "periplus.clickhouseQueryEnv" -}}
+- name: PERIPLUS_CLICKHOUSE_QUERY_WORKLOAD
+  value: {{ .Values.config.clickhouse.queryWorkload | quote }}
 - name: PERIPLUS_CLICKHOUSE_QUERY_USER
   valueFrom:
     secretKeyRef:

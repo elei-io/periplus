@@ -1,7 +1,25 @@
 # Archive layout experiment
 
-This directory compares physical archives without changing the production storage
-contract. Results and the deployment recommendation belong in `REPORT.md`.
+The historical experiments compare physical archives against application source
+`19d8d9cad7b453680f58ab4ee147b06465fd0d9c`. Their old `current`/`current_shared`
+baselines and crash boundaries require that pinned runtime; they do not describe
+the new batched production contract. The original results remain in `REPORT.md`.
+
+**Launch decision (2026-09-15): separate content-addressed Zstd bodies and batched
+metadata.** The user accepted a possible later body-layout migration. See
+[production integration and adoption](../../docs/ARCHIVE_ADOPTION.md).
+`metadata_load.py --kinds production` and `production_correctness.py` exercise the
+current production protocol. A billion-document weekly rebuild remains unproven.
+
+The follow-up [metadata-only batching experiment](METADATA_BATCHING.md) keeps
+separate Zstd bodies and measures fixed-rate new uploads at 50 and 100 captures
+per second, publication latency/backlog, real S3 operations, failure recovery and
+separate materialization capacity. Its scripts do not change the runtime format.
+
+[Week-scale rebuild capacity](REBUILD_CAPACITY.md) adds verified source scans,
+native-parser versus Python projection profiling, and prepared ClickHouse bulk
+inserts. Its new requirement supersedes the earlier physical-body layout
+recommendation: ingestion throughput alone does not approve rebuild performance.
 
 ## What is compared
 

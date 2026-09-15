@@ -55,7 +55,7 @@ class ArchiveTests(unittest.TestCase):
             with self.assertRaises(ConnectionError):self.archive.commit(capture)
         event=Archive(self.store).commit(capture)
         self.assertEqual(Archive(self.store).commit(capture),event)
-        self.assertEqual(len(list(self.archive.events(self.archive.heads()))),2)
+        self.assertEqual(len(list(self.archive.events(self.archive.heads()))),1)
         self.assertEqual(self.archive.read(capture.capture_id),capture)
 
     def test_conflict_cannot_replace_existing_capture(self):

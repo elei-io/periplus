@@ -1,5 +1,21 @@
 # Archive layout comparison — 15 September 2026
 
+> Later launch decision (2026-09-15): the user selected separate Zstd bodies
+> and production metadata batching, accepting a possible later body migration.
+> [Implementation, adoption and final validation](../../docs/ARCHIVE_ADOPTION.md).
+> The measurements and earlier decision gates below are historical; weekly
+> billion-document rebuild capacity has not been established.
+
+Follow-up: [metadata-only batching](METADATA_BATCHING.md) measures actual new-body
+uploads at 50/100 captures per second. The VM CPU blocker recorded below is now
+resolved on the replacement VMs: AVX/AVX2 are exposed and the pinned ClickHouse
+26.8.2.7 image starts and answers queries. The original experiment below remains
+a record of what was measured on its earlier environment.
+
+The newer [week-scale rebuild investigation](REBUILD_CAPACITY.md) keeps physical
+body layout sign-off open: small-object cache sensitivity and Python projection
+costs require separate proof before promising fast large-corpus rebuilds.
+
 The useful direction is **Zstandard plus content addressing, with fewer archive
 writes through batching/packing**. WARC remains useful as an interchange format;
 the measured gzip WARC layout offers no native-storage advantage here. No

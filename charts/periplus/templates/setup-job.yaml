@@ -31,6 +31,9 @@ spec:
           image: {{ include "periplus.coreImage" . | quote }}
           imagePullPolicy: {{ .Values.images.core.pullPolicy }}
           command: [periplus-setup]
+          {{- with .Values.setup.restoreManifest }}
+          args: [--restore-manifest, {{ . | quote }}]
+          {{- end }}
           {{- include "periplus.envFrom" . | nindent 10 }}
           env:
             {{- include "periplus.coreEnv" . | nindent 12 }}
