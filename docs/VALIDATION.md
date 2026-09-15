@@ -127,9 +127,10 @@ rejects a conflicting restore over existing control state.
   provided Compose/Helm configuration does not automatically orchestrate two
   software releases. Source/lock preservation also needs matching dependency or
   container artifacts for an offline recovery.
-- This branch's development cutover is not a production migration procedure.
-  Production rollout, full-size recovery time and storage failure testing remain
-  separate validation work.
+- Homelab GitOps deployment and a fresh public crawl/query/raw-download smoke
+  passed on 2026-09-15. Full retained-corpus recovery remains unverified: oversized
+  materialized rows are explicit failed batches. Full-size recovery time and
+  combined-workload capacity remain separate validation work.
 
 ## Cleanup boundary
 
@@ -143,3 +144,11 @@ The explicitly named `_web_old_dont_touch/` source archive remains untouched and
 outside the active package build. Git history retains removed experiments; the
 runtime does not keep compatibility routes or dual writes for them. Local backup
 artifacts are ignored and are not shipped with the product.
+
+## Homelab restart retry
+
+ClickHouse can return code 394 (query cancelled) during server restart. Wrapped
+materialization errors now classify this as retryable, preserving the uncertain-write
+lease before replay. Malformed/oversized material output remains a permanent,
+inspectable failure. This does not shorten the existing approximately ten-minute
+drain interval or bypass ownership checks.

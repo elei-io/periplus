@@ -20,6 +20,26 @@ class RebuildControlTests(unittest.TestCase):
     def claim(self, identity, worker):
         return self.control.claim(identity, worker, recipe=self.control.get(BOOTSTRAP_ID).recipe)
 
+    def test_server_cancelled_query_retries_without_releasing_uncertain_ownership(self):
+        from uuid import uuid4
+        from periplus.materialization.rebuilds.runtime import retryable
+        from periplus.materialization.storage import MaterialInputError
+        from periplus.platform.clickhouse import ClickHouseError
+
+        cancelled = ClickHouseError("restart-proof", code="394")
+        wrapped = MaterialInputError(uuid4(), cancelled)
+        wrapped.__cause__ = cancelled
+        build = self.candidate([1] + [0] * 15)
+        planned = self.control.plan(build, [1] + [0] * 15)[0]
+        claimed, _ = self.claim(planned.id, "before-restart")
+        self.control.fail(claimed, str(wrapped), retryable(wrapped))
+        queued = self.control.batches(build.id)[0]
+        self.assertEqual(queued.status, "queued")
+        self.assertEqual(queued.owner, claimed.owner)
+        self.assertIsNotNone(queued.lease_until)
+        self.assertIsNone(self.claim(planned.id, "after-restart"))
+        self.assertFalse(retryable(ValueError("Material output exceeds row byte budget")))
+
     def test_restore_setup_can_retry_its_exact_manifest(self):
         self.control.bootstrap('manifest')
         self.assertEqual(len(self.control.builds()), 1)

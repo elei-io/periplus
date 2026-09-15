@@ -61,7 +61,7 @@ def retryable(error: Exception) -> bool:
         error, (WriteClaimUnavailable, TimeoutError, ConnectionError)
     ) or (
         isinstance(error, ClickHouseError)
-        and error.code in ("transport", "159", "241", "202", "252")
+        and error.code in ("transport", "159", "241", "202", "252", "394")
     )
 
 

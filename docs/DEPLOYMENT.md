@@ -2,8 +2,11 @@
 
 The supported development topology is Docker Compose on this MacBook. The external
 homelab CDP endpoint remains the crawler acquisition boundary. The user has
-authorized treating homelab as staging for the clean cutover. Its old Periplus
-deployment is stopped; the ClickHouse release has not been deployed there.
+authorized treating homelab as staging for the clean cutover. Its ClickHouse
+release is now managed through homelab Flux with a clean control database,
+retained local ClickHouse storage, NAS backups and bounded worker pools. The
+old writers are removed; the old databases and lake objects stay preserved while
+the initial historical rebuild remains unverified.
 See the [retained archive handoff](ARCHIVE_ADOPTION.md).
 
 Compose runs Postgres, NATS JetStream, raw S3, ClickHouse, setup, API, query,

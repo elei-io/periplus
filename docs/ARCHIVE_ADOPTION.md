@@ -171,13 +171,13 @@ locks, but matching runtime/container dependencies must also remain available.
 ## Remaining deployment work
 
 Temporary benchmark destinations, both Docker recovery stacks, and the adoption
-pod/network policy have been removed. The old homelab deployment remains stopped,
-with the old lake, raw bodies and
-Postgres dumps preserved. Durable ClickHouse installation, a clean operational
-database, the new Periplus release, a full retained-corpus materialization and
-public-service cutover are the next separate operation. None is implied by raw
-adoption or by the small Docker recovery proof. Delete old lake storage only
-after that deployment's recovery and product acceptance checks pass.
+pod/network policy have been removed. Homelab now runs the ClickHouse release
+through GitOps, using a clean operational database and this verified manifest.
+A fresh public crawl, SQL query and hash-verified raw download passed during
+historical backfill. The old maintenance service and experimental query deployment
+are removed. The old databases, lake objects and raw evidence remain retained:
+large materialized output rows have failed the current admission limit, so the
+complete retained-corpus rebuild has not passed acceptance.
 
 Materialization still needs separate capacity work. The inventory contains **three unique bodies above the current 32 MiB HTML
 input limit**; the largest is 83,815,376 decoded bytes. These bodies are verified
