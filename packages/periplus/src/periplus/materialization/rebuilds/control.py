@@ -171,6 +171,8 @@ class BuildControl:
                 or row.phase == "preparing"
             ):
                 return []
+            existing_ranges = {(batch.shard, batch.lane) for batch in s.scalars(
+                select(BatchRecord).where(BatchRecord.build_id == row.id))}
             for source in s.scalars(
                 select(RangeRecord).where(RangeRecord.build_id == row.id)
             ):
@@ -180,13 +182,7 @@ class BuildControl:
                 ):
                     if cursor >= upper or (lane == "history" and row.paused):
                         continue
-                    if s.scalar(
-                        select(BatchRecord.id).where(
-                            BatchRecord.build_id == row.id,
-                            BatchRecord.shard == source.shard,
-                            BatchRecord.lane == lane,
-                        )
-                    ):
+                    if (source.shard, lane) in existing_ranges:
                         continue
                     end = min(upper, cursor + row.page_size)
                     s.add(

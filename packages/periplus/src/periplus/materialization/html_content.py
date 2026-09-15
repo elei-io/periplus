@@ -1,31 +1,35 @@
 """Canonical HTML text and element spans, without repeated descendant strings."""
 from collections.abc import Sequence
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Annotated, TypedDict
+from pydantic import ConfigDict, Field, TypeAdapter
 
 from periplus.materialization.dom.encoder import ElementRow
 from periplus.materialization.dom.nodes import NodeRow
 
 
-class HtmlElement(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-    node_index: int = Field(ge=0)
+class HtmlElement(TypedDict):
+    __pydantic_config__ = ConfigDict(extra="forbid")
+    node_index: Annotated[int, Field(ge=0)]
     parent_index: int | None
-    subtree_end_index: int = Field(gt=0)
-    sibling_index: int = Field(ge=0)
-    depth: int = Field(ge=0)
+    subtree_end_index: Annotated[int, Field(gt=0)]
+    sibling_index: Annotated[int, Field(ge=0)]
+    depth: Annotated[int, Field(ge=0)]
     tag: str
     namespace: str | None
     attributes: dict[str, str]
     text_direct: str
-    text_start: int = Field(ge=0)
-    text_end: int = Field(ge=0)
+    text_start: Annotated[int, Field(ge=0)]
+    text_end: Annotated[int, Field(ge=0)]
 
 
-class HtmlContent(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-    content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+class HtmlContent(TypedDict):
+    __pydantic_config__ = ConfigDict(extra="forbid")
+    content_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
     document_text: str
-    elements: tuple[HtmlElement, ...]
+    elements: list[HtmlElement]
+
+
+_CONTENT = TypeAdapter(HtmlContent)
 
 
 def html_content(content_sha256: str, nodes: Sequence[NodeRow], elements: Sequence[ElementRow]) -> HtmlContent:
@@ -53,4 +57,4 @@ def html_content(content_sha256: str, nodes: Sequence[NodeRow], elements: Sequen
             tag=element.tag, namespace=element.namespace_uri, attributes=element.attributes,
             text_direct=element.text_direct, text_start=prefix[node.node_index],
             text_end=prefix[node.subtree_end_index]))
-    return HtmlContent(content_sha256=content_sha256, document_text="".join(pieces), elements=tuple(rows))
+    return _CONTENT.validate_python(dict(content_sha256=content_sha256, document_text="".join(pieces), elements=rows))

@@ -10,6 +10,19 @@ from periplus.platform.clickhouse import ClickHouseClient, ClickHouseConfig, Cli
 
 
 class ClickHouseClientTests(unittest.TestCase):
+    def test_prepared_material_row_reuses_exact_wire_bytes(self):
+        from periplus.materialization.storage import output_row
+        row = output_row({'document_text': '猫😀'})
+        requests = []
+        def handler(request):
+            requests.append(request)
+            return httpx.Response(200, content=b'')
+        client = self.client(handler)
+        client._input_schemas['material.test'] = {'document_text': 'String', 'output_digest': 'FixedString(32)'}
+        with patch('periplus.platform.clickhouse.client.json.dumps', side_effect=AssertionError('Must reuse prepared bytes')):
+            client.insert_rows('material.test', [row])
+        self.assertEqual(requests[0].content.split(b'FORMAT JSONEachRow\n', 1)[-1], row.wire)
+
     def client(self, handler):
         client = ClickHouseClient(
             ClickHouseConfig(url="http://localhost:8123", username="test", password=SecretStr("private")),

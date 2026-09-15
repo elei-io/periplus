@@ -1,6 +1,8 @@
 """One bounded, process-owned ClickHouse HTTP client per execution lane."""
 
 from collections.abc import Mapping
+from dataclasses import dataclass
+from types import MappingProxyType
 import json
 import socket
 import threading
@@ -15,6 +17,26 @@ from periplus.platform.config import get_str
 
 INSERT_TARGET_BYTES = 8 * 1024 * 1024
 MAX_INSERT_BYTES = 128 * 1024 * 1024
+
+
+@dataclass(frozen=True, eq=False)
+class EncodedRow(Mapping):
+    """Owned prepared output. Callers must not mutate nested values after encoding."""
+
+    _values: Mapping
+    wire: bytes
+
+    def __post_init__(self):
+        object.__setattr__(self, "_values", MappingProxyType(dict(self._values)))
+
+    def __getitem__(self, key):
+        return self._values[key]
+
+    def __iter__(self):
+        return iter(self._values)
+
+    def __len__(self):
+        return len(self._values)
 
 
 class ClickHouseConfig(BaseModel):
@@ -262,7 +284,7 @@ class ClickHouseClient:
         block: list[bytes] = []
         size = 0
         for item in rows:
-            encoded = (json.dumps(item, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n").encode()
+            encoded = item.wire if isinstance(item, EncodedRow) else (json.dumps(item, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n").encode()
             if len(encoded) > MAX_INSERT_BYTES:
                 identity = item.get("document_id", item.get("capture_id", "unknown"))
                 raise ValueError(f"ClickHouse row {table}/{identity} is {len(encoded)} bytes; limit is {MAX_INSERT_BYTES} bytes")

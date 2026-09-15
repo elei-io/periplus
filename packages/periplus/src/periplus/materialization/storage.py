@@ -14,10 +14,12 @@ from periplus.materialization.dom.nodes import parse_document
 from periplus.materialization.dom.links import links_from_elements
 from periplus.materialization.html_content import html_content
 from periplus.platform.clickhouse import ClickHouseClient
+from periplus.platform.clickhouse.client import EncodedRow
 from periplus.retention.identities import write_claims
 
 MAX_INPUT_BYTES = 96 * 1024 * 1024
 MAX_OUTPUT_BYTES = 127 * 1024 * 1024
+BATCH_INPUT_BYTES = 8 * 1024 * 1024
 
 
 class MaterialInputError(ValueError):
@@ -42,12 +44,18 @@ def install_material_schema(
             client.execute(statement)
 
 
-def output_row(value: dict) -> dict:
+def output_row(value: dict) -> EncodedRow:
     encoded = canonical(value)
     if len(encoded) > MAX_OUTPUT_BYTES:
         identity = value.get("document_id", value.get("capture_id", "unknown"))
         raise ValueError(f"Material row {identity} is {len(encoded)} bytes; limit is {MAX_OUTPUT_BYTES} bytes")
-    return {**value, "output_digest": sha256(encoded).hexdigest()}
+    digest = sha256(encoded).hexdigest()
+    suffix = (b',' if value else b'') + b'"output_digest":"' + digest.encode() + b'"}\n'
+    return EncodedRow({**value, "output_digest": digest}, encoded[:-1] + suffix)
+
+
+def row_bytes(row) -> int:
+    return len(row.wire) - 1 if isinstance(row, EncodedRow) else len(canonical(row))
 
 
 def capture_row(capture: Capture, document: dict | None, links: list, archive_record_key: str) -> dict:
@@ -125,22 +133,56 @@ class MaterialStore:
             raise ValueError("Duplicate material document")
         return rows[0] if rows else None
 
-    def complete(self, capture: Capture) -> bool:
+    def complete_many(self, captures: list[Capture]) -> set[UUID]:
+        if not captures:
+            return set()
+        predicates = ','.join(f'{{id{i}:UUID}}' for i in range(len(captures)))
         rows = self.client.query(
-            f"SELECT lower(hex(evidence_digest)) AS digest, "
-            f"lower(hex(document_id)) AS document FROM {self.database}.captures WHERE capture_id={{id:UUID}} LIMIT 2",
-            parameters={"id": str(capture.capture_id)},
+            f"SELECT toString(capture_id) AS id, lower(hex(evidence_digest)) AS digest, "
+            f"lower(hex(document_id)) AS document FROM {self.database}.captures "
+            f"WHERE capture_id IN ({predicates})",
+            parameters={f'id{i}': str(c.capture_id) for i, c in enumerate(captures)},
         )["data"]
-        if not rows:
-            return False
-        if len(rows) != 1 or rows[0]["digest"] != capture.digest:
-            raise ValueError("Conflicting material capture identity")
-        return rows[0]["document"] is None or bool(
-            self.digests("html_documents", [rows[0]["document"]])
+        by_id = {r['id']: r for r in rows}
+        if len(by_id) != len(rows):
+            raise ValueError("Duplicate immutable material identity")
+        documents = self.digests('html_documents', list({r['document'] for r in rows if r['document']}))
+        completed = set()
+        for capture in captures:
+            row = by_id.get(str(capture.capture_id))
+            if row is None:
+                continue
+            if row['digest'] != capture.digest:
+                raise ValueError("Conflicting material capture identity")
+            if row['document'] is None or row['document'] in documents:
+                completed.add(capture.capture_id)
+        return completed
+
+    @staticmethod
+    def _read_source(capture: Capture, archive: Archive) -> bytearray:
+        """Read and verify bounded bytes while the caller owns the source claim."""
+        payload = capture.payload
+        if payload is None:
+            raise ValueError("Capture has no payload")
+        if payload.byte_length > MAX_INPUT_BYTES:
+            raise ValueError(f"HTML {payload.content_id} is {payload.byte_length} bytes; limit is {MAX_INPUT_BYTES} bytes")
+        chunks = (
+            RawHtmlRepository(archive.store).iter_bytes(payload.object_key)
+            if payload.storage_encoding == "zstd"
+            else ExactDocumentRepository(archive.store).iter_bytes(payload.object_key)
         )
+        source = bytearray()
+        for chunk in chunks:
+            if len(source) + len(chunk) > payload.byte_length:
+                raise ValueError("Raw payload exceeds its declared byte length")
+            source.extend(chunk)
+        if len(source) != payload.byte_length or sha256(source).hexdigest() != payload.content_id:
+            raise ValueError("Raw payload identity mismatch")
+        return source
 
     def project(
-        self, capture: Capture, archive: Archive, cache: dict
+        self, capture: Capture, archive: Archive, cache: dict,
+        sources: dict | None = None, missing_documents: set[str] | None = None,
     ) -> tuple[dict | None, dict]:
         payload, document, links = capture.payload, None, []
         if payload and payload.media_type.lower() in (
@@ -149,39 +191,19 @@ class MaterialStore:
         ):
             if payload.byte_length > MAX_INPUT_BYTES:
                 raise ValueError(f"HTML {payload.content_id} is {payload.byte_length} bytes; limit is {MAX_INPUT_BYTES} bytes")
-            document = cache.get(payload.document_id) or self.content(
-                payload.document_id
-            )
+            document = cache.get(payload.document_id)
+            if document is None and (missing_documents is None or payload.document_id not in missing_documents):
+                document = self.content(payload.document_id)
             if document is None:
-                # Source protection covers only the bounded byte read. Parsing does
-                # not hold a distributed claim; final publication rechecks retirement.
-                with write_claims({"content": [payload.content_id]}):
-                    chunks = (
-                        RawHtmlRepository(archive.store).iter_bytes(payload.object_key)
-                        if payload.storage_encoding == "zstd"
-                        else ExactDocumentRepository(archive.store).iter_bytes(
-                            payload.object_key
-                        )
-                    )
-                    source = bytearray()
-                    for chunk in chunks:
-                        if len(source) + len(chunk) > payload.byte_length:
-                            raise ValueError(
-                                "Raw payload exceeds its declared byte length"
-                            )
-                        source.extend(chunk)
-                    if (
-                        len(source) != payload.byte_length
-                        or sha256(source).hexdigest() != payload.content_id
-                    ):
-                        raise ValueError("Raw payload identity mismatch")
+                source = sources.pop(payload.document_id, None) if sources is not None else None
+                if source is None:
+                    with write_claims({"content": [payload.content_id]}):
+                        source = self._read_source(capture, archive)
                 text = source.decode(payload.charset or "utf-8", errors="strict")
                 del source
                 nodes, elements = parse_document(text)
                 del text
-                parsed = html_content(payload.content_id, nodes, elements).model_dump(
-                    mode="json"
-                )
+                parsed = html_content(payload.content_id, nodes, elements)
                 parsed.pop("content_sha256")
                 del nodes, elements
                 document = output_row(
@@ -254,6 +276,41 @@ class MaterialStore:
                 raise ValueError("Conflicting capture identities in one batch")
             unique[capture.capture_id] = capture
         captures = list(unique.values())
+        completed = self.complete_many(captures)
+        identities = {c.payload.document_id for c in captures if c.payload and c.capture_id not in completed}
+        missing = identities - self.digests("html_documents", list(identities)).keys()
+        group, size = [], 0
+        for capture in captures:
+            payload = capture.payload
+            amount = payload.byte_length if payload and payload.document_id in missing else 0
+            if group and size + amount > BATCH_INPUT_BYTES:
+                self._materialize_group(group, archive, completed, missing)
+                group, size = [], 0
+            group.append(capture)
+            size += amount
+        if group:
+            self._materialize_group(group, archive, completed, missing)
+        completed = self.complete_many(captures)
+        for capture in captures:
+            if not archive.retired(capture.capture_id) and capture.capture_id not in completed:
+                raise RuntimeError("Capture verification failed")
+        return len(captures)
+
+    def _materialize_group(self, captures, archive, completed, missing):
+        # One source claim transaction protects a byte-bounded group. The owned
+        # copy outlives the read claim; publication has its own fresh fence.
+        needs = [c for c in captures if c.payload and c.payload.document_id in missing
+                 and c.capture_id not in completed
+                 and c.payload.media_type.lower() in ("text/html", "application/xhtml+xml")]
+        sources = {}
+        if needs:
+            with write_claims({"content": [c.payload.content_id for c in needs]}):
+                for capture in needs:
+                    try:
+                        if not archive.retired(capture.capture_id) and capture.payload.document_id not in sources:
+                            sources[capture.payload.document_id] = self._read_source(capture, archive)
+                    except Exception as exc:
+                        raise MaterialInputError(capture.capture_id, exc) from exc
         documents, prepared, size = {}, [], 0
 
         def flush():
@@ -279,6 +336,7 @@ class MaterialStore:
                 self._insert_verified(
                     "captures", {str(c.capture_id): row for c, row in retained}
                 )
+            missing.difference_update(needed)
             documents.clear()
             prepared.clear()
             size = 0
@@ -288,22 +346,18 @@ class MaterialStore:
                 if archive.retired(capture.capture_id):
                     self.retire(capture, archive)
                     continue
-                if self.complete(capture):
+                if capture.capture_id in completed:
                     continue
-                document, row = self.project(capture, archive, documents)
+                document, row = self.project(capture, archive, documents, sources, missing)
                 prepared.append((capture, row))
-                size += len(canonical(row)) + (
-                    len(canonical(document)) if document else 0
+                size += row_bytes(row) + (
+                    row_bytes(document) if document else 0
                 )
                 if size >= 8 * 1024 * 1024:
                     flush()
             except Exception as exc:
                 raise MaterialInputError(capture.capture_id, exc) from exc
         flush()
-        for capture in captures:
-            if not archive.retired(capture.capture_id) and not self.complete(capture):
-                raise RuntimeError("Capture verification failed")
-        return len(captures)
 
     def retire(self, capture: Capture, archive: Archive) -> None:
         if not archive.retired(capture.capture_id):
