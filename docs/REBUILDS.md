@@ -95,3 +95,22 @@ Postgres relations and JetStream usage. Raw storage inventory is explicitly unkn
 not presented as zero. Raw downloads verify bytes before HTTP success and use bounded
 temporary spooling. Ingestion failures can be inspected and retried from Data →
 Ingestion; request paths reuse startup-owned NATS handles.
+
+## Remaining rebuild implementation
+
+The current local workflow is a checkpoint, not the completed long-term rebuild
+system. Two capabilities remain unfinished; neither is a ClickHouse limitation:
+
+- Parallel backfill: keep one coordinator for planning, catch-up and publication,
+  but let all materializer replicas claim independent bounded historical batches.
+  Preserve exact identity claims for content shared across batches, checkpoint only
+  verified output, recover expired claims, and fence/drain execution on cancellation.
+- Retired-target reclamation: establish that target writers have stopped and
+  in-flight readers have finished before deleting physical output and grants.
+  Define an explicit rollback retention policy rather than retaining every target
+  indefinitely.
+
+Acceptance must demonstrate simultaneous historical work by multiple replicas,
+recovery after losing a worker, cancellation with outstanding batches, and safe
+reclamation while queries cross a publication change. The existing single-owner
+proof does not establish those properties.
