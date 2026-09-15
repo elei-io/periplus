@@ -30,6 +30,11 @@ so late completion cannot advance progress or publish the cancelled target.
 Workers batch capture/document identity checks and prefetch verified HTML bytes
 under one exact source claim per byte-bounded group. Normal groups target 8 MiB;
 a single larger document still uses the explicit input/output admission limits.
+Output accumulates across source groups toward a 96 MiB encoded target shared
+with the ClickHouse client; requests retain the 128 MiB hard ceiling. Pending
+output flushes before an oversized source and at the end of each work item.
+The default 32-observation work item can therefore produce smaller inserts;
+workers do not retain unacknowledged output across work items.
 Parsing starts after source ownership is released. Publication retains fresh
 capture/content claims, tombstone checks and post-insert digest verification.
 Validated element records and prepared JSON bytes avoid repeated per-element

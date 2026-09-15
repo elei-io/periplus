@@ -46,6 +46,18 @@ class MaterialBatchingTests(unittest.TestCase):
             material.complete_many([capture])
 
     def test_group_read_claim_releases_before_projection_and_retirement_wins(self):
+        self._check_group_publication(read_claims=1, publication_claims=1)
+
+    def test_output_accumulates_across_source_groups(self):
+        with patch('periplus.materialization.storage.BATCH_INPUT_BYTES', 20):
+            self._check_group_publication(read_claims=2, publication_claims=1)
+
+    def test_output_target_flushes_without_losing_current_document(self):
+        with patch('periplus.materialization.storage.INSERT_TARGET_BYTES', 1000000):
+            self._check_group_publication(read_claims=1, publication_claims=2,
+                                          cap_after_first=True)
+
+    def _check_group_publication(self, read_claims, publication_claims, cap_after_first=False):
         with TemporaryDirectory() as root:
             store = FileObjectStore(Path(root))
             captures = []
@@ -59,7 +71,7 @@ class MaterialBatchingTests(unittest.TestCase):
                     payload=Payload(content_id=body.sha256, byte_length=body.size_bytes,
                         stored_bytes=body.compressed_size_bytes, object_key=body.object_key,
                         storage_encoding='zstd', representation='rendered_html', media_type='text/html', charset='utf-8')))
-            retired, active, claims, written = set(), [], [], {}
+            retired, active, claims, written, written_docs = set(), [], [], {}, {}
             archive = SimpleNamespace(store=store, retired=lambda identity: identity in retired,
                                       location=lambda capture: 'raw/example#0')
             material = MaterialStore(Mock())
@@ -68,7 +80,11 @@ class MaterialBatchingTests(unittest.TestCase):
             material.content = Mock(side_effect=AssertionError('Known missing document should not be fetched'))
             def insert(table, rows):
                 self.assertTrue(active)
-                if table == 'captures':
+                if table == 'html_documents':
+                    written_docs.update(rows)
+                else:
+                    for row in rows.values():
+                        self.assertIn(row['document_id'], written_docs)
                     written.update(rows)
             material._insert_verified = insert
             project = material.project
@@ -77,6 +93,9 @@ class MaterialBatchingTests(unittest.TestCase):
                 result = project(capture, *args)
                 if capture == captures[0]:
                     retired.add(capture.capture_id)
+                    if cap_after_first:
+                        from periplus.materialization import storage
+                        storage.INSERT_TARGET_BYTES = sum(row_bytes(row) for row in result) + 1
                 return result
             material.project = projecting
             @contextmanager
@@ -89,8 +108,12 @@ class MaterialBatchingTests(unittest.TestCase):
                     active.pop()
             with patch('periplus.materialization.storage.write_claims', claim):
                 self.assertEqual(material.materialize_many(captures, archive), 2)
-            self.assertEqual(len(claims), 2)
-            self.assertEqual(set(claims[0]['content']), {c.payload.content_id for c in captures})
+            reads = [c for c in claims if 'capture' not in c]
+            publications = [c for c in claims if 'capture' in c]
+            self.assertEqual(len(reads), read_claims)
+            self.assertEqual(len(publications), publication_claims)
+            self.assertEqual({identity for c in reads for identity in c['content']},
+                             {c.payload.content_id for c in captures})
             self.assertNotIn(str(captures[0].capture_id), written)
             self.assertIn(str(captures[1].capture_id), written)
 
