@@ -27,7 +27,17 @@ def query_error(error: Exception) -> tuple[int, QueryError]:
                 code="resource_limit",
                 detail="Query execution exceeded its deadline or was cancelled.",
             )
-        if error.code in {"241", "202", "396", "response_limit"}:
+        if error.code == "241":
+            return 422, QueryError(
+                code="resource_limit",
+                detail="Query exceeded its memory budget (ClickHouse code 241).",
+            )
+        if error.code == "307":
+            return 422, QueryError(
+                code="resource_limit",
+                detail="Query exceeded its scan-byte budget (ClickHouse code 307).",
+            )
+        if error.code in {"202", "396", "response_limit"}:
             return 422, QueryError(
                 code="resource_limit",
                 detail="Query exceeded its execution or result budget.",

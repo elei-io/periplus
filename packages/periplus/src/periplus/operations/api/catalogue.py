@@ -248,6 +248,7 @@ async def admin_sql(payload: QueryRequest, request: Request):
     from periplus.platform.clickhouse import connect_clickhouse, ClickHouseError
     from periplus.query.binding import PublicationBinding, bind_publication
     from periplus.query.service import wire_value
+    from periplus.query.errors import query_error
 
     if request.state.api_role != "admin":
         raise HTTPException(403, "Administrative credential required")
@@ -301,6 +302,9 @@ async def admin_sql(payload: QueryRequest, request: Request):
         try:
             return await asyncio.to_thread(execute)
         except ClickHouseError as exc:
+            if isinstance(tree, (exp.Select, exp.SetOperation, exp.Describe, exp.Show)):
+                status, error = query_error(exc)
+                raise HTTPException(status, error.detail) from exc
             raise HTTPException(
                 422,
                 f"ClickHouse rejected the operation (code {exc.code}). A lost write response does not establish rollback.",

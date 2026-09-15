@@ -1,0 +1,8 @@
+id = "jsonld-content-cohort"
+title = "Fixed content prefix JSON-LD declarations"
+use_case = "Compare complete JSON-LD declarations in a bounded content cohort."
+classification = "schema"
+ordered = false
+memory_limit = "512MB"
+max_warm_ms = 60000
+seconds = 120

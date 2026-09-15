@@ -1,0 +1,7 @@
+id = "exact-page-history"
+title = "History for one exact page"
+use_case = "Review every retained observation of a page while investigating how it changed over time."
+classification = "both"
+ordered = true
+memory_limit = "512MB"
+max_warm_ms = 60000

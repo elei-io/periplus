@@ -1,0 +1,5 @@
+id = "html-element-count"
+title = "Count the public element corpus"
+use_case = "User-reported count requiring 9.8–13.7 seconds in admin SQL."
+classification = "unclassified"
+ordered = true

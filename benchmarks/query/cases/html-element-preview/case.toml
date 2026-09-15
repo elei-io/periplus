@@ -1,0 +1,5 @@
+id = "html-element-preview"
+title = "Preview ten complete element rows"
+use_case = "User-reported preview failing with ClickHouse code 241."
+classification = "schema-and-execution"
+ordered = false

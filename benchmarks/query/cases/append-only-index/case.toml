@@ -1,0 +1,8 @@
+id = "append-only-index"
+title = "Append-only element text index layouts"
+use_case = "Compare physical posting shapes in isolated lakes with equal complete matches"
+classification = "schema"
+ordered = true
+memory_limit = "512MB"
+max_warm_ms = 1000
+seconds = 120

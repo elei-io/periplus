@@ -1,0 +1,5 @@
+{
+  "commit": "56e2610f7145a45fac3d70a0c2722854e9079da5",
+  "branch": "codex/query-business-case-optimizations",
+  "note": "Original case SQL and metadata restored unchanged. Former classification/budgets describe the DuckDB baseline, not ClickHouse conclusions."
+}
