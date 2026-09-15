@@ -1,9 +1,14 @@
 # Public business-query baseline
 
+See [the measured ClickHouse baseline](CLICKHOUSE_BASELINE.md) for the completed
+retained-corpus run, feature gaps, physical work and next optimization order.
+
 The 24 original cases were recovered unchanged from local branch
 `codex/query-business-case-optimizations`; `origin.json` pins the source commit.
 Their SQL, ordering rules, user stories and former budgets remain reviewable.
 Two additional cases reproduce the user's element count and ten-row preview.
+`single-capture-links-public` is a separately named, namespace-only port of the
+original `experimental.capture/link` case; the original remains unchanged.
 The former `classification` and memory/latency budgets describe the DuckDB
 investigation; they are not current ClickHouse findings or settings overrides.
 

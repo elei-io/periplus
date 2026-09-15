@@ -1,0 +1,6 @@
+id = "single-capture-links-public"
+title = "Outbound links from one latest capture, current namespace"
+use_case = "Explicit namespace-only port of original business case 10; URL, selection, aggregation and ordering are unchanged."
+classification = "unclassified"
+ordered = true
+max_warm_ms = 5000
