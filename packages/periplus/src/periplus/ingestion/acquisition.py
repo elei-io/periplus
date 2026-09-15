@@ -10,9 +10,9 @@ from types import TracebackType
 from uuid import UUID
 
 from periplus.ingestion import metrics as repository_metrics
-from periplus.platform.catalogue import VisitEvidence
+from periplus.crawl.acquisition.records import VisitEvidence
 from periplus.ingestion.queue import (
-    IngestionQueueClient,
+    ArchivePublisher,
 )
 from periplus.ingestion.objects.config import object_store_from_env
 from periplus.ingestion.objects.readiness import StorageReadiness
@@ -25,19 +25,19 @@ from periplus.ingestion.objects.html import HtmlIdentity, RawHtmlRepository, Sto
 
 
 class AcquisitionPipeline:
-    """Store immutable bytes and publish visit evidence without opening DuckLake."""
+    """Store immutable bytes and publish visit evidence without waiting for materialization."""
 
     def __init__(
         self,
         *,
-        queue: IngestionQueueClient | None = None,
+        queue: ArchivePublisher | None = None,
         maximum_concurrency: int = 1,
     ) -> None:
         store = object_store_from_env(maximum_concurrency=maximum_concurrency)
         self.storage_readiness = StorageReadiness(store)
         self.html_repository = RawHtmlRepository(store)
         self.document_repository = ExactDocumentRepository(store)
-        self.queue = queue or IngestionQueueClient()
+        self.queue = queue or ArchivePublisher()
         self._running = False
 
     async def __aenter__(self) -> AcquisitionPipeline:

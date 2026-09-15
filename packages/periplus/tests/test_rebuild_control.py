@@ -1,47 +1,102 @@
-"""Operator transitions and stale-worker/publication fences."""
+"""Parallel ranges, live progress, exact ownership and publication fences."""
+from datetime import UTC, datetime, timedelta
 import unittest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from periplus.materialization.rebuilds.models import BuildRecord, RangeRecord, PublicationRecord
+from periplus.materialization.rebuilds.models import BuildRecord, RangeRecord, BatchRecord, PublicationRecord
 from periplus.materialization.rebuilds.control import BuildControl, RebuildConflict, BOOTSTRAP_ID
 
 
 class RebuildControlTests(unittest.TestCase):
     def setUp(self):
-        self.engine = create_engine('sqlite://')
-        self.addCleanup(self.engine.dispose)
-        for model in (BuildRecord, RangeRecord, PublicationRecord):
-            model.__table__.create(self.engine)
-        self.sessions = sessionmaker(self.engine, expire_on_commit=False)
-        self.control = BuildControl(self.sessions)
+        engine=create_engine('sqlite://')
+        self.addCleanup(engine.dispose)
+        for model in (BuildRecord,RangeRecord,BatchRecord,PublicationRecord):model.__table__.create(engine)
+        self.sessions=sessionmaker(engine,expire_on_commit=False)
+        self.control=BuildControl(self.sessions)
         self.control.bootstrap()
+        self.control.initialize(self.control.get(BOOTSTRAP_ID),'manifest',[0]*16)
 
-    def test_resume_fences_previous_owner_and_cancelled_page(self):
-        identity = self.control.create(32)
-        with self.assertRaises(RebuildConflict): self.control.create(32)
-        self.control.plan(identity, 0, [(202609, ['z', '2026-09-15', str(identity)])])
-        self.assertTrue(self.control.checkpoint(identity, 0, 202609, ['a', '2026-09-15', str(identity)], 3, False))
-        self.control.fence_workers()
-        self.assertFalse(self.control.checkpoint(identity, 0, 202609, ['z'], 90, True))
-        current = self.control.get(identity)
-        self.control.action(identity, 'cancel')
-        self.assertFalse(self.control.checkpoint(identity, current.revision, 202609, ['z'], 90, True))
-        self.assertEqual(self.control.ranges(identity)[0].processed, 3)
-        self.assertTrue(self.control.get(identity).protected)
-        self.assertEqual(self.control.binding()['database'], 'public_v1')
+    def claim(self, identity, worker):
+        return self.control.claim(identity, worker, recipe=self.control.get(BOOTSTRAP_ID).recipe)
 
-    def test_activation_requires_completed_fresh_candidate(self):
-        identity = self.control.create(32)
-        with self.assertRaises(RebuildConflict): self.control.action(identity, 'activate')
-        self.control.change(identity, 0, phase='ready', barrier=10, ingestion_floor=10, material_floor=9)
-        with self.assertRaises(RebuildConflict): self.control.action(identity, 'activate')
-        self.control.change(identity, 0, material_floor=10, blocker='missing raw')
-        with self.assertRaises(RebuildConflict): self.control.action(identity, 'activate')
-        self.control.action(identity, 'retry')
-        with self.assertRaises(RebuildConflict): self.control.action(identity, 'activate')
-        current = self.control.get(identity)
-        self.control.change(identity, current.revision, phase='ready')
-        self.control.action(identity, 'activate')
-        self.assertEqual(self.control.binding()['database'], 'query_' + identity.hex)
-        self.assertEqual(self.control.get(BOOTSTRAP_ID).phase, 'previous')
-        self.assertFalse(self.control.change(identity, 0, phase='ready'))
+    def test_restore_setup_can_retry_its_exact_manifest(self):
+        self.control.bootstrap('manifest')
+        self.assertEqual(len(self.control.builds()), 1)
+        with self.assertRaises(RebuildConflict):
+            self.control.bootstrap('different-manifest')
+
+    def test_wrong_recipe_cannot_claim_or_poison_another_build(self):
+        build = self.candidate([1]+[0]*15)
+        batch = self.control.plan(build,[1]+[0]*15)[0]
+        self.assertIsNone(self.control.claim(batch.id,'wrong-release',recipe='0'*64))
+        self.assertEqual(self.control.batches(build.id)[0].attempts,0)
+        self.assertIsNotNone(self.claim(batch.id,'correct-release'))
+
+    def candidate(self,heads):
+        identity=self.control.create(2)
+        build=self.control.get(identity)
+        self.control.initialize(build,'manifest',heads)
+        return self.control.get(identity)
+
+    def test_different_workers_process_parallel_shards_without_duplicate_claim(self):
+        build=self.candidate([3,3]+[0]*14)
+        batches=self.control.plan(build,[3,3]+[0]*14)
+        first=self.claim(batches[0].id,'worker-a')[0]
+        second=self.claim(batches[1].id,'worker-b')[0]
+        self.assertNotEqual(first.shard,second.shard)
+        self.assertIsNone(self.claim(first.id,'worker-b'))
+        self.assertTrue(self.control.finish(first,2))
+        self.assertFalse(self.control.finish(first,2))
+        self.assertTrue(self.control.finish(second,2))
+        self.assertEqual([r.cursor for r in self.control.ranges(build.id)][:2],[2,2])
+        self.assertEqual(len(self.control.plan(build,[3,3]+[0]*14)),2)
+
+    def test_pausing_history_keeps_live_arrivals_queryable(self):
+        build=self.candidate([5]+[0]*15)
+        self.control.action(build.id,'pause')
+        batches=self.control.plan(self.control.get(build.id),[7]+[0]*15)
+        self.assertEqual([(b.lane,b.start,b.end) for b in batches],[('live',6,7)])
+        batch,_=self.claim(batches[0].id,'live-worker')
+        self.control.finish(batch,2)
+        self.control.verify(build,[7]+[0]*15)
+        self.assertIsNone(self.control.get(build.id).verified_at)
+        self.control.action(build.id,'resume')
+        self.assertEqual(self.control.plan(self.control.get(build.id),[7]+[0]*15)[0].lane,'history')
+
+    def test_cancel_fences_worker_progress_and_protects_until_drained(self):
+        build=self.candidate([2]+[0]*15)
+        batch,_=self.claim(self.control.plan(build,[2]+[0]*15)[0].id,'old-worker')
+        self.control.action(build.id,'cancel')
+        self.assertFalse(self.control.finish(batch,2))
+        self.assertIsNone(self.claim(batch.id,'new-worker'))
+        cancelled=self.control.get(build.id)
+        self.assertTrue(cancelled.protected)
+        self.assertGreater(cancelled.drain_after,datetime.now(UTC).replace(tzinfo=None))
+        self.assertEqual(self.control.binding()['database'],'public_v1')
+
+    def test_failure_blocks_readiness_and_retry_is_explicit(self):
+        build=self.candidate([1]+[0]*15)
+        batch,_=self.claim(self.control.plan(build,[1]+[0]*15)[0].id,'worker')
+        self.control.fail(batch,'Missing raw bytes',False)
+        self.control.verify(build,[1]+[0]*15)
+        with self.assertRaises(RebuildConflict):self.control.action(build.id,'activate')
+        self.assertEqual(self.control.get(build.id).blocker,'Missing raw bytes')
+        self.control.action(build.id,'retry')
+        retried,_=self.claim(batch.id,'worker')
+        self.assertTrue(self.control.finish(retried,1))
+        self.control.verify(self.control.get(build.id),[1]+[0]*15)
+        self.control.action(build.id,'activate')
+        self.assertEqual(self.control.binding()['database'],'query_'+build.id.hex)
+        self.assertEqual(self.control.get(BOOTSTRAP_ID).phase,'previous')
+
+    def test_uncertain_write_cannot_be_reclaimed_until_old_writer_drains(self):
+        build=self.candidate([1]+[0]*15)
+        batch,_=self.claim(self.control.plan(build,[1]+[0]*15)[0].id,'old')
+        self.control.fail(batch,'Disconnected during INSERT',True)
+        self.assertIsNone(self.claim(batch.id,'replacement'))
+        with self.sessions.begin() as session:session.get(BatchRecord,batch.id).lease_until=datetime.now(UTC)-timedelta(seconds=1)
+        replacement,_=self.claim(batch.id,'replacement')
+        self.assertNotEqual(batch.owner,replacement.owner)
+        self.assertFalse(self.control.finish(batch,1))
+        self.assertTrue(self.control.finish(replacement,1))

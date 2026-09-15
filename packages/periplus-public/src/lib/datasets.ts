@@ -1,7 +1,7 @@
 import type { Dataset } from "../types/dataset"
 
 export const coverageSql = `WITH sites AS (
-  SELECT split_part(page_url, '/', 3) AS site,
+  SELECT domain(page_url) AS site,
          count(DISTINCT page_url) AS pages,
          count(*) AS captures,
          count(*) FILTER (WHERE captured_at IS NULL) AS undated_captures,
@@ -26,12 +26,12 @@ export const datasets: Dataset[] = [
     grain: "One row per matching title–price pair, with its product URL.",
     scope: "Books to Scrape is a practice website with fictional commercial data. This query uses the latest dated capture for up to 20 collected product URLs. Prices reflect those captures, not a live shop or a complete catalogue.",
     sql: `WITH pages AS (
-  SELECT page_url, captured_at, content_id
+  SELECT page_url, captured_at, document_id
   FROM public_v1.capture
-  WHERE split_part(page_url, '/', 3) = 'books.toscrape.com'
+  WHERE domain(page_url) = 'books.toscrape.com'
     AND page_url LIKE '%/catalogue/%/index.html'
     AND page_url NOT LIKE '%/category/%'
-    AND content_id IS NOT NULL
+    AND document_id IS NOT NULL
   QUALIFY row_number() OVER (
     PARTITION BY page_url
     ORDER BY captured_at DESC NULLS LAST, capture_id DESC
@@ -40,14 +40,13 @@ export const datasets: Dataset[] = [
   LIMIT 20
 )
 SELECT title.text_direct AS title,
-       try_cast(regexp_extract(price.text_direct, '[0-9]+[.][0-9]+')
-         AS DECIMAL(10, 2)) AS price_gbp,
+       toDecimal64OrNull(extract(price.text_direct, '[0-9]+[.][0-9]+'), 2) AS price_gbp,
        pages.page_url AS source_url,
        pages.captured_at AS collected_at
 FROM pages
-JOIN public_v1.html_element title USING (content_id)
+JOIN public_v1.html_element title USING (document_id)
 JOIN public_v1.html_element price
-  ON price.content_id = title.content_id
+  ON price.document_id = title.document_id
  AND price.parent_index = title.parent_index
 WHERE title.tag = 'h1'
   AND price.tag = 'p'
@@ -63,9 +62,9 @@ LIMIT 20;`,
     grain: "One row per h1 element in the selected pages; a page may have several.",
     scope: "Uses the latest dated capture for up to 20 distinct URLs. Returns up to 100 headings. Direct text excludes text inside child elements; pages without matching HTML or h1 elements are absent.",
     sql: `WITH pages AS (
-  SELECT page_url, captured_at, content_id
+  SELECT page_url, captured_at, document_id
   FROM public_v1.capture
-  WHERE content_id IS NOT NULL
+  WHERE document_id IS NOT NULL
   QUALIFY row_number() OVER (
     PARTITION BY page_url
     ORDER BY captured_at DESC NULLS LAST, capture_id DESC
@@ -75,7 +74,7 @@ LIMIT 20;`,
 )
 SELECT h.text_direct AS heading, pages.page_url AS source_url,
        pages.captured_at AS collected_at
-FROM pages JOIN public_v1.html_element h USING (content_id)
+FROM pages JOIN public_v1.html_element h USING (document_id)
 WHERE h.tag = 'h1' AND trim(h.text_direct) <> ''
 ORDER BY source_url, h.node_index
 LIMIT 100;`,

@@ -74,7 +74,7 @@ class HelmScalingTests(unittest.TestCase):
         documents = self.render()
         self.assertFalse(any(d["kind"] in ("ScaledObject", "PodMonitor") for d in documents))
         deployments = [d for d in documents if d["kind"] == "Deployment"]
-        self.assertEqual(len(deployments), 9)
+        self.assertEqual(len(deployments), 8)
         for deployment in deployments:
             self.assertIn("replicas", deployment["spec"])
 
@@ -101,48 +101,32 @@ class HelmScalingTests(unittest.TestCase):
                 self.assertIn('time() - 60', query)
                 self.assertNotIn('or vector(0)', query)
         monitors = [d for d in documents if d["kind"] == "PodMonitor"]
-        self.assertEqual(len(monitors), 7)
+        self.assertEqual(len(monitors), 6)
         for monitor in monitors:
             labels = {r['targetLabel']: r['replacement'] for r in monitor['spec']['podMetricsEndpoints'][0]['relabelings']}
             self.assertEqual(labels['namespace'], 'scaling-ns')
             self.assertEqual(labels['periplus_release'], 'scaling-test')
 
-    def test_resource_and_duckdb_overrides_are_role_local(self):
-        docs = self.render({"query": {"duckdb": {"threads": 4, "memoryLimit": "2GB", "maxTempDirectorySize": "1GB"}, "resources": {"limits": {"cpu": "4", "memory": "4Gi", "ephemeral-storage": "3Gi"}}}})
-        for role in ("api", "crawler", "ingestor", "materializer", "query", "janitor", "setup"):
-            doc = next(d for d in docs if d['kind'] in ('Deployment', 'Job') and d['metadata']['name'].endswith('-'+role))
+    def test_query_credentials_and_local_navigation_limits_are_isolated(self):
+        docs = self.render({'crawler': {'duckdb': {'threads': 3}}})
+        for role in ('api','crawler','ingestor','materializer','query','janitor','setup'):
+            doc = next(d for d in docs if d['kind'] in ('Deployment','Job') and d['metadata']['name'].endswith('-'+role))
             container = doc['spec']['template']['spec']['containers'][0]
-            env = {item['name']: item.get('value') for item in container['env']}
-            self.assertIn('PERIPLUS_DUCKDB_MEMORY_LIMIT', env)
+            env = {v['name']:v for v in container['env']}
+            self.assertEqual(len(env), len(container['env']), 'Duplicate environment contract')
+            self.assertFalse(any('DUCKLAKE' in k for k in env))
+            if role == 'crawler':
+                self.assertEqual(env['PERIPLUS_DUCKDB_THREADS']['value'], '3')
+            else:
+                self.assertNotIn('PERIPLUS_DUCKDB_MEMORY_LIMIT', env)
             if role == 'query':
-                self.assertEqual(env['PERIPLUS_DUCKDB_THREADS'], '4')
-                self.assertEqual(env['PERIPLUS_DUCKDB_MEMORY_LIMIT'], '2GB')
-                self.assertEqual(env['PERIPLUS_DUCKDB_MAX_TEMP_DIRECTORY_SIZE'], '1GB')
-                self.assertEqual(container['resources']['limits']['ephemeral-storage'], '3Gi')
+                self.assertIn('PERIPLUS_CLICKHOUSE_QUERY_PASSWORD', env)
+                self.assertNotIn('PERIPLUS_CLICKHOUSE_PASSWORD', env)
                 self.assertNotIn('PERIPLUS_CONTROL_DATABASE_URL', env)
                 self.assertNotIn('PERIPLUS_NATS_URL', env)
                 self.assertNotIn('envFrom', container)
-            else:
-                self.assertNotEqual(env['PERIPLUS_DUCKDB_MEMORY_LIMIT'], '2GB')
-
-    def test_query_modes_have_independent_selectors_limits_and_read_only_credentials(self):
-        docs = self.render({"queryExperimental": {"replicas": 2, "duckdb": {"threads": 3}}})
-        for mode, role in (("stable", "query"), ("experimental", "query-experimental")):
-            deployment = next(d for d in docs if d["kind"] == "Deployment" and d["metadata"]["name"].endswith("-" + role))
-            service = next(d for d in docs if d["kind"] == "Service" and d["metadata"]["name"] == deployment["metadata"]["name"])
-            self.assertEqual(service["spec"]["selector"], deployment["spec"]["selector"]["matchLabels"])
-            self.assertEqual(service["spec"]["selector"]["app.kubernetes.io/component"], role)
-            container = deployment["spec"]["template"]["spec"]["containers"][0]
-            env = {item["name"]: item for item in container["env"]}
-            self.assertEqual(env["PERIPLUS_QUERY_MODE"]["value"], mode)
-            self.assertEqual(env["PERIPLUS_DUCKDB_THREADS"]["value"], "3" if mode == "experimental" else "2")
-            self.assertEqual(deployment["spec"]["replicas"], 2 if mode == "experimental" else 1)
-            self.assertNotIn("PERIPLUS_CONTROL_DATABASE_URL", env)
-            self.assertNotIn("envFrom", container)
-            self.assertIn("valueFrom", env["PERIPLUS_DUCKLAKE_METADATA_PATH"])
-        public = next(d for d in docs if d["kind"] == "Deployment" and d["metadata"]["name"].endswith("-public"))
-        env = {item["name"]: item.get("value") for item in public["spec"]["template"]["spec"]["containers"][0]["env"]}
-        self.assertEqual(env["PERIPLUS_QUERY_EXPERIMENTAL_URL"], "http://scaling-test-periplus-query-experimental:8000")
+            if role in ('crawler','ingestor','janitor'):
+                self.assertNotIn('PERIPLUS_CLICKHOUSE_PASSWORD', env)
 
     def test_invalid_limits_and_missing_dependencies_fail_render(self):
         for values in (
@@ -151,10 +135,9 @@ class HelmScalingTests(unittest.TestCase):
             {'api': {'autoscaling': {'enabled': True, 'minReplicas': 5, 'maxReplicas': 2}}},
             {'api': {'autoscaling': {'enabled': True}, 'resources': {'requests': {'cpu': None}}}},
             {'api': {'autoscaling': {'threshold': '0.5'}}},
-            {'query': {'duckdb': {'memoryLimit': 'unlimited'}}},
-            {'ingestor': {'concurrency': 5}},
+            {'crawler': {'duckdb': {'memoryLimit': 'unlimited'}}},
             {'janitor': {'autoscaling': {'enabled': True}}},
-            {'query': {'duckdb': {'threads': 0}}},
+            {'crawler': {'duckdb': {'threads': 0}}},
         ):
             with self.subTest(values=values):
                 self.render(values, valid=False)

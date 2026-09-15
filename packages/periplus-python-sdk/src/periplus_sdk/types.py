@@ -11,7 +11,7 @@ class Diagnostic(BaseModel):
 
 
 class PreparedQuery(BaseModel):
-    query_mode: Literal["stable", "experimental"]
+    query_mode: Literal["stable"]
     compiler_version: str
     optimizations: list[str]
     schema_version: str

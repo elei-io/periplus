@@ -7,7 +7,7 @@ from periplus.query.service import public_sql
 
 class BindingTests(unittest.TestCase):
     def test_all_relations_use_one_binding(self):
-        binding = PublicationBinding(database='query_' + 'a' * 32, revision=2)
+        binding = PublicationBinding(expires_at="2099-01-01T00:00:00Z", database='query_' + 'a' * 32, revision=2)
         queries = [
             'SELECT c.capture_id,l.target_url FROM capture c JOIN link l USING(capture_id)',
             'SELECT capture.capture_id FROM capture',

@@ -1,35 +1,18 @@
-"""Delivery preflight reads only already-owned infrastructure handles."""
 import unittest
-from unittest.mock import AsyncMock
-
-from periplus.ingestion.queue import IngestionQueueClient, STREAM
+from unittest.mock import AsyncMock, Mock
+from periplus.ingestion.queue import ArchivePublisher
+from periplus.platform.messaging.catalogue_queue import WORK_STREAM
 
 
 class IngestionAvailabilityTests(unittest.IsolatedAsyncioTestCase):
-    def client(self):
-        client = IngestionQueueClient()
-        client.client = AsyncMock()
-        client.jetstream = AsyncMock()
-        client.results = AsyncMock()
-        return client
-
-    async def test_existing_handles_are_probed_without_mutation(self):
-        client = self.client()
-        await client.check_available()
-        client.client.flush.assert_awaited_once_with(timeout=2)
-        client.jetstream.stream_info.assert_awaited_once_with(STREAM)
-        client.results.status.assert_awaited_once()
-        client.jetstream.add_consumer.assert_not_called()
-        client.jetstream.add_stream.assert_not_called()
-        client.jetstream.publish.assert_not_called()
-        client.results.put.assert_not_called()
-
-    async def test_disconnected_or_missing_delivery_storage_fails_closed(self):
-        with self.assertRaises(RuntimeError):
-            await IngestionQueueClient().check_available()
-        for target in ('client', 'jetstream', 'results'):
-            client = self.client()
-            operation = {'client': 'flush', 'jetstream': 'stream_info', 'results': 'status'}[target]
-            getattr(getattr(client, target), operation).side_effect = OSError('unavailable')
-            with self.assertRaises(OSError):
-                await client.check_available()
+    async def test_preflight_reuses_handles_without_provisioning(self):
+        connection=Mock()
+        connection.flush=AsyncMock()
+        js=connection.jetstream.return_value
+        js.stream_info=AsyncMock()
+        publisher=ArchivePublisher(client=connection,archive=Mock())
+        await publisher.check_available()
+        connection.flush.assert_awaited_once()
+        js.stream_info.assert_awaited_once_with(WORK_STREAM)
+        js.add_stream.assert_not_called()
+        js.add_consumer.assert_not_called()

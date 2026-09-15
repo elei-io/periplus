@@ -1,24 +1,20 @@
-nameOverride: ""
-fullnameOverride: ""
-
+# External Postgres, NATS, ClickHouse, raw S3 and CDP services are required.
+nameOverride: ''
+fullnameOverride: ''
 imagePullSecrets: []
-
 images:
   core:
     repository: ghcr.io/elei-io/periplus-core
-    tag: ""
+    tag: ''
     pullPolicy: IfNotPresent
   admin:
     repository: ghcr.io/elei-io/periplus-admin
-    tag: ""
+    tag: ''
     pullPolicy: IfNotPresent
   public:
     repository: ghcr.io/elei-io/periplus-public
-    tag: ""
+    tag: ''
     pullPolicy: IfNotPresent
-
-# Periplus deliberately does not install PostgreSQL, NATS, S3, or a CDP service.
-# These references bind the chart to credentials projected by the platform.
 secrets:
   apiAccess:
     name: periplus-api-access
@@ -28,18 +24,6 @@ secrets:
   controlDatabase:
     name: postgres-periplus-control
     urlKey: DATABASE_URL
-  ducklakeMetadata:
-    name: postgres-periplus-lake
-    # Periplus normalizes this standard URL into DuckLake's postgres: attach form.
-    pathKey: DATABASE_URL
-  queryDucklakeMetadata:
-    name: postgres-periplus-lake-reader
-    pathKey: DATABASE_URL
-  queryS3:
-    name: s3-periplus-lake-reader
-    regionKey: REGION
-    accessKeyIdKey: ACCESS_KEY_ID
-    secretAccessKeyKey: SECRET_ACCESS_KEY
   nats:
     name: nats-periplus
     urlKey: NATS_URL
@@ -51,18 +35,17 @@ secrets:
     bucketKey: BUCKET
     accessKeyIdKey: ACCESS_KEY_ID
     secretAccessKeyKey: SECRET_ACCESS_KEY
-
+  clickhouse:
+    name: periplus-clickhouse-writer
+    userKey: USERNAME
+    passwordKey: PASSWORD
+  queryClickhouse:
+    name: periplus-clickhouse-reader
+    userKey: USERNAME
+    passwordKey: PASSWORD
 config:
   cdpUrl: http://browserless.browserless.svc.cluster.local:3000
   logLevel: INFO
-  ducklake:
-    alias: periplus
-    metadataSchema: ducklake
-    dataPath: s3://periplus/ducklake/
-    # DuckDB expects host[:port] here, without an http(s) scheme.
-    s3Endpoint: s3.elei.io:9000
-    s3UrlStyle: path
-    s3UseSSL: true
   repository:
     prefix: repository
     s3UrlStyle: path
@@ -70,12 +53,10 @@ config:
   nats:
     operationalReplicas: 3
     catalogueWorkStreamReplicas: 3
-    ingestResultReplicas: 3
-
-# Additional optional Periplus settings.
+  clickhouse:
+    url: http://clickhouse:8123
 extraEnvFrom: []
 extraEnv: []
-
 api:
   replicas: 1
   autoscaling:
@@ -83,17 +64,9 @@ api:
     minReplicas: 2
     maxReplicas: 6
     metric: cpu
-    # CPU utilization percent, or total demand per replica for Prometheus.
-    threshold: "70"
-    # Optional replacement PromQL; Helm templates can scope it to this release.
-    query: ""
-    # Empty uses autoscaling.behavior; supply a complete HPA behavior to override.
+    threshold: '70'
+    query: ''
     behavior: {}
-  # Per connection, including coordinator connections; allow process overhead.
-  duckdb:
-    threads: 2
-    memoryLimit: 512MB
-    maxTempDirectorySize: 512MB
   resources:
     requests:
       cpu: 250m
@@ -105,21 +78,17 @@ api:
     type: ClusterIP
     port: 8000
     annotations:
-      prometheus.io/scrape: "true"
+      prometheus.io/scrape: 'true'
       prometheus.io/path: /metrics
-      prometheus.io/port: "8000"
-
+      prometheus.io/port: '8000'
 admin:
   autoscaling:
     enabled: false
     minReplicas: 2
     maxReplicas: 4
     metric: cpu
-    # CPU utilization percent, or total demand per replica for Prometheus.
-    threshold: "70"
-    # Optional replacement PromQL; Helm templates can scope it to this release.
-    query: ""
-    # Empty uses autoscaling.behavior; supply a complete HPA behavior to override.
+    threshold: '70'
+    query: ''
     behavior: {}
   replicas: 1
   resources:
@@ -133,22 +102,18 @@ admin:
     type: ClusterIP
     port: 80
     annotations: {}
-
 public:
   autoscaling:
     enabled: false
     minReplicas: 2
     maxReplicas: 8
     metric: cpu
-    # CPU utilization percent, or total demand per replica for Prometheus.
-    threshold: "70"
-    # Optional replacement PromQL; Helm templates can scope it to this release.
-    query: ""
-    # Empty uses autoscaling.behavior; supply a complete HPA behavior to override.
+    threshold: '70'
+    query: ''
     behavior: {}
   ai:
-    model: ""
-    existingSecret: ""
+    model: ''
+    existingSecret: ''
     apiKeyKey: OPENAI_API_KEY
   replicas: 1
   resources:
@@ -162,27 +127,22 @@ public:
     type: ClusterIP
     port: 80
     annotations: {}
-
 crawler:
   autoscaling:
     enabled: false
     minReplicas: 2
     maxReplicas: 10
     metric: prometheus
-    # CPU utilization percent, or total demand per replica for Prometheus.
-    threshold: "8.4"
-    # Optional replacement PromQL; Helm templates can scope it to this release.
-    query: ""
-    # Empty uses autoscaling.behavior; supply a complete HPA behavior to override.
+    threshold: '8.4'
+    query: ''
     behavior: {}
-  # Per connection, including coordinator connections; allow process overhead.
   duckdb:
     threads: 1
     memoryLimit: 128MB
     maxTempDirectorySize: 128MB
   discovery:
-    model: ""
-    existingSecret: ""
+    model: ''
+    existingSecret: ''
     openaiKeyKey: OPENAI_API_KEY
     braveKeyKey: BRAVE_SEARCH_API_KEY
   replicas: 1
@@ -193,26 +153,16 @@ crawler:
     limits:
       cpu: 2
       memory: 4Gi
-
 ingestor:
   autoscaling:
     enabled: false
     minReplicas: 2
     maxReplicas: 10
-    metric: prometheus
-    # CPU utilization percent, or total demand per replica for Prometheus.
-    threshold: "200"
-    # Optional replacement PromQL; Helm templates can scope it to this release.
-    query: ""
-    # Empty uses autoscaling.behavior; supply a complete HPA behavior to override.
+    metric: cpu
+    threshold: '70'
+    query: ''
     behavior: {}
-  # Per connection, including coordinator connections; allow process overhead.
-  duckdb:
-    threads: 2
-    memoryLimit: 256MB
-    maxTempDirectorySize: 512MB
   replicas: 2
-  concurrency: 4
   resources:
     requests:
       cpu: 500m
@@ -220,28 +170,16 @@ ingestor:
     limits:
       cpu: 2
       memory: 4Gi
-
 materializer:
   autoscaling:
     enabled: false
     minReplicas: 2
     maxReplicas: 10
-    metric: prometheus
-    # CPU utilization percent, or total demand per replica for Prometheus.
-    threshold: "4"
-    # Optional replacement PromQL; Helm templates can scope it to this release.
-    query: ""
-    # Empty uses autoscaling.behavior; supply a complete HPA behavior to override.
+    metric: cpu
+    threshold: '70'
+    query: ''
     behavior: {}
-  # Per connection, including coordinator connections; allow process overhead.
-  duckdb:
-    threads: 2
-    memoryLimit: 512MB
-    maxTempDirectorySize: 512MB
   replicas: 2
-  concurrency: 2
-  # Spawned parser processes per materializer lane; size against the pod CPU quota.
-  parserProcesses: 1
   resources:
     requests:
       cpu: 500m
@@ -249,13 +187,7 @@ materializer:
     limits:
       cpu: 2
       memory: 4Gi
-
 janitor:
-  # Per connection, including coordinator connections; allow process overhead.
-  duckdb:
-    threads: 1
-    memoryLimit: 128MB
-    maxTempDirectorySize: 128MB
   resources:
     requests:
       cpu: 50m
@@ -263,13 +195,7 @@ janitor:
     limits:
       cpu: 1
       memory: 512Mi
-
 setup:
-  # Per connection, including coordinator connections; allow process overhead.
-  duckdb:
-    threads: 1
-    memoryLimit: 256MB
-    maxTempDirectorySize: 256MB
   backoffLimit: 3
   activeDeadlineSeconds: 900
   resources:
@@ -279,12 +205,10 @@ setup:
     limits:
       cpu: 2
       memory: 2Gi
-
 metricsService:
   annotations:
-    prometheus.io/scrape: "true"
+    prometheus.io/scrape: 'true'
     prometheus.io/path: /metrics
-
 podAnnotations: {}
 podLabels: {}
 nodeSelector: {}
@@ -292,24 +216,15 @@ tolerations: []
 affinity: {}
 topologySpreadConstraints: []
 terminationGracePeriodSeconds: 330
-
 query:
   autoscaling:
     enabled: false
     minReplicas: 2
     maxReplicas: 10
     metric: prometheus
-    # CPU utilization percent, or total demand per replica for Prometheus.
-    threshold: "0.7"
-    # Optional replacement PromQL; Helm templates can scope it to this release.
-    query: ""
-    # Empty uses autoscaling.behavior; supply a complete HPA behavior to override.
+    threshold: '0.7'
+    query: ''
     behavior: {}
-  # Per connection, including coordinator connections; allow process overhead.
-  duckdb:
-    threads: 2
-    memoryLimit: 512MB
-    maxTempDirectorySize: 256MB
   replicas: 1
   resources:
     requests:
@@ -322,73 +237,37 @@ query:
     type: ClusterIP
     port: 8000
     annotations:
-      prometheus.io/scrape: "true"
+      prometheus.io/scrape: 'true'
       prometheus.io/path: /metrics
-      prometheus.io/port: "8000"
-
-# Platform installs KEDA; this chart only creates ScaledObjects when enabled.
+      prometheus.io/port: '8000'
 autoscaling:
   behavior:
     scaleUp:
       stabilizationWindowSeconds: 0
       policies:
-        - type: Percent
-          value: 100
-          periodSeconds: 60
-        - type: Pods
-          value: 2
-          periodSeconds: 60
+      - type: Percent
+        value: 100
+        periodSeconds: 60
+      - type: Pods
+        value: 2
+        periodSeconds: 60
       selectPolicy: Max
     scaleDown:
       stabilizationWindowSeconds: 300
       policies:
-        - type: Pods
-          value: 1
-          periodSeconds: 60
+      - type: Pods
+        value: 1
+        periodSeconds: 60
   prometheus:
-    serverAddress: ""
-    # Existing KEDA TriggerAuthentication/ClusterTriggerAuthentication, if needed.
+    serverAddress: ''
     authenticationRef: {}
-    # E.g. authModes for the referenced authentication; no credentials here.
     metadata: {}
   pollingInterval: 15
-
-# Optional Prometheus Operator discovery. External collectors must provide the
-# same namespace/periplus_release/periplus_component labels and scrape every pod.
 podMonitor:
   enabled: false
   labels: {}
   interval: 15s
   scrapeTimeout: 10s
-
-# Experimental SQL has its own fixed-capacity process and reader connection.
-queryExperimental:
-  autoscaling:
-    enabled: false
-  # Per connection, including coordinator connections; allow process overhead.
-  duckdb:
-    threads: 2
-    memoryLimit: 512MB
-    maxTempDirectorySize: 256MB
-  replicas: 1
-  resources:
-    requests:
-      cpu: 250m
-      memory: 512Mi
-    limits:
-      cpu: 2
-      memory: 1Gi
-  service:
-    type: ClusterIP
-    port: 8000
-    annotations:
-      prometheus.io/scrape: "true"
-      prometheus.io/path: /metrics
-      prometheus.io/port: "8000"
-
-# Explicit maintenance only: drain runtime pods, run setup, then restore KEDA.
-# Leave disabled for ordinary image/configuration/scaling upgrades.
-# Requires Kubernetes API egress and a retry-without-rollback release strategy.
 upgradeCoordination:
   enabled: false
   timeoutSeconds: 600

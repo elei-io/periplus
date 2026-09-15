@@ -1,116 +1,81 @@
-# ClickHouse rebuilds
+# Rebuilds and archive-only recovery
 
-The ClickHouse experiment runs in this MacBook's Docker Compose. The crawler uses
-the configured homelab CDP endpoint; no other production service is a test target.
+A build is a set of derived ClickHouse tables plus sixteen pairs of checkpoints.
+Creating one does not rewrite or publish the whole archive. The initial manifest
+pins a small journal cut; historical ranges cover that cut while separate live
+ranges cover later arrivals. Pausing a build pauses historical scheduling only.
 
-## Operator workflow
+## Execution and publication
 
-Open the admin application's **Data → Materialization** page. Start one candidate
-with a bounded page size (1–128 visits; default 32). Queries continue using the
-serving target. Pause affects historical work only; live delivery continues.
+The API creates a candidate with a recipe digest, target names and page size
+(1–128 captures). A matching worker preserves its source/lock bundle, creates the
+manifest and installs hidden tables/views. One planner per recipe publishes batch
+UUIDs; all workers running that recipe execute the shared queue.
 
-A candidate moves through preparing, building, verifying and ready. Inspect its
-partition ranges, verified visit count, last durable scan key, live pending count,
-barrier and acknowledgment floors. A blocked build displays its failure class and,
-for material input failures, its visit identity. Repair the cause and choose Retry.
-Infrastructure/claim contention retries automatically after a bounded delay.
+There is at most one historical and one live batch per shard per build: 32
+outstanding records, independent of total corpus size. Workers record batch ID,
+worker ID, attempts and errors. Successful records collapse into contiguous
+range cursors. Retry requeues failed records; cancellation changes the revision
+so late completion cannot advance progress or publish the cancelled target.
 
-Choose Activate only after the worker reports readiness and live catch-up. This
-changes one Postgres publication pointer. Every query captures its binding through
-the internal execution-context API before executing; all relations in that query
-use the same immutable query namespace. This does not freeze incoming crawl data.
-The existing execution-policy request also supplies the binding, so there is no
-second manifest polling system or public parser-generation parameter.
+A candidate becomes ready only when every initial range and the observed live
+cut are covered without failed batches. Activation requires verification within
+15 seconds and changes one Postgres publication pointer transactionally. A query
+pins that pointer once; it cannot mix old HTML structure with new capture tables.
+Bindings expire after 30 seconds and ClickHouse queries are bounded to 45 seconds.
+A new rebuild waits while an older target is draining, bounding storage to the
+serving, previous and candidate targets. The previous build stays available and receives live updates while its matching
+workers remain deployed. On the next activation, the older previous target drains
+and is physically dropped. Cancelled candidates also drain and are dropped.
 
-Cancel fences checkpoints immediately. The controller waits 610 seconds, exceeding
-the bounded writer/remote-operation window, before deleting the candidate consumer
-and releasing its source protection. The UI shows the drain deadline. Candidate
-files are not deleted by cancellation. Killing the worker does not shorten this
-protection interval. A replacement operation owner fences the previous owner's
-checkpoints before resuming.
+Workers fail-stop after 300 seconds of bounded I/O. Ownership/draining lasts 610
+seconds to cover an uncertain writer and remote work. A killed worker can therefore
+cause a roughly ten-minute retry delay; shortening this without a server-side
+fence would sacrifice correctness. Process suspension beyond that deadline is
+outside this ownership contract.
 
-## What owns what
+## Changing parser software
 
-- Postgres: build intent/status, one range per source month, verified range cursor,
-  and the selected publication. There is no per-document success table.
-- ClickHouse: immutable ingestion evidence and target-specific derived output.
-- JetStream: retained and future ingestion delivery, including typed catch-up
-  barriers. Every target has its own durable `DeliverAll` consumer.
-- Raw repository: immutable content-addressed bytes shared across targets.
+The recipe hashes projection source, SQL and parser dependency versions. Old and
+new workers use disjoint material subjects/consumers and planner leases. Keep the
+old image's workers running while the new image backfills its candidate, so the
+serving old interpretation continues receiving live captures. After publication
+and drain, remove obsolete workers. Simply replacing every old worker cannot
+continue executing its old recipe. Never disable the recipe check to bypass this.
 
-The materializer process runs one elected operation owner with one live execution
-lane and one independent historical lane. Additional replicas are failover owners;
-this implementation does not claim parallel historical throughput from replicas.
-The range checkpoint itself is sufficient delivery for this bounded historical
-lane; no second backfill queue or permanent per-page notification ledger is added.
+## Recovery procedure
 
-Range planning reads active partition metadata and the last sorting key in each
-month. Pages follow `(requested_url, finished_at, visit_id)` without OFFSET or a
-corpus-sized ID plan. Content is parsed only when missing in the target; stored DOM
-structure supplies relative-link resolution for subsequent visits. Historical
-inserts are batched and verified before advancing the cursor.
+1. Preserve a manifest with `periplus-archive manifest`. Back up the complete raw
+   journal, envelopes, retained payloads, all tombstones and named software bundle.
+   A manifest names a cut; copying only the manifest is not a backup.
+2. Start fresh Postgres, ClickHouse and NATS. Configure the archive read-only and
+   use the software recipe recorded in the manifest.
+3. Run `periplus-setup --restore-manifest <repository-key>` once against the empty
+   control database, then start materializer workers. An exact retry with the same
+   bootstrap manifest is safe; conflicting restore intent is rejected.
+4. Wait until the serving build has a verification timestamp and zero source lag
+   and failed batches. Initial bootstrap queries may otherwise see partial recovery.
+5. Verify counts, stable identities and representative public queries. Business
+   tables remain empty. Restore Postgres separately to recover customer operations.
 
-The candidate consumer exists before scanning. It covers retained events, future
-arrivals, and delayed base commits behind completed scan positions. Live visits
-are acknowledged only after complete material output and matching base evidence
-are visible. Unresolved ingestion failures remain pending; dead letters also block
-readiness. A named barrier and both contiguous ACK floors bound catch-up.
-Stream/consumer replacement invalidates readiness; retry never recreates a recorded
-consumer to conceal lost coverage.
+`periplus-archive verify --manifest <key>` verifies archived events and retained
+payload integrity without a database or queue connection. Verification can take
+as long as reading the retained bytes. Tombstones are checked even when replaying
+an older manifest, so a deleted capture cannot be resurrected.
 
-## Publication and retained targets
+The software bundle includes source and the dependency lock; the runtime still
+needs the matching Python/dependency artifacts or preserved container image.
+Keep image artifacts too for offline disaster recovery. This is reproducible
+input preservation, not an automatic old-software deployment service.
 
-The active and most recent previous target continue receiving live data. On the
-next activation an older previous target drains and its consumer is retired.
-Physical retired targets and query grants remain retained. Automatic physical
-reclamation, rollback controls and distributed reader reclamation are not enabled.
-This conservative policy prevents dropping tables beneath old in-flight readers.
-Raw destructive retention remains disabled.
+## Reproducible proof
 
-Targets pin `html-links-v1` semantics. This release rebuilds that family; introducing
-a different parser semantic version requires an explicit worker-version rollout.
-It does not silently reinterpret an existing target using changed semantics.
+`scripts/archive_recovery_smoke.py` copies a bounded local archive and creates a
+fresh Docker stack on an internal network with no original service access. The
+copy is mounted read-only. It checks empty business tables, parallel workers,
+kill/restart recovery, exact capture digests, duplicates and tombstones. Evidence
+is written beneath `.artifacts/archive-recovery/`; generated files are not committed.
 
-## Local checks
-
-```sh
-docker compose build periplus-setup periplus-admin periplus-public
-docker compose up -d --wait periplus-api periplus-query periplus-crawler periplus-ingestor periplus-materializer periplus-admin periplus-public
-uv run --project packages/periplus python scripts/clickhouse_smoke.py --query-url http://127.0.0.1:8010
-# Run the capture smoke three times on a fresh corpus before the rebuild smoke.
-uv run --project packages/periplus python scripts/clickhouse_rebuild_smoke.py
-make check
-PERIPLUS_TEST_CLICKHOUSE=1 uv run --project packages/periplus python -m unittest discover -s packages/periplus/tests -p 'test_clickhouse_rebuild_storage_integration.py'
-```
-
-The rebuild smoke uses the actual HTTP APIs, pauses history while a fresh crawl
-arrives, stops/restarts the Compose materializer, verifies exact source/target
-coverage, activates, and exercises public SQL including CTE shadowing. It refuses
-non-local database/NATS endpoints. The storage integration test uses a disposable
-private target and removes it afterwards.
-
-Admin: <http://localhost:8081/data/materialization>. Public SQL:
-<http://localhost:8080/sql>. Storage reports active ClickHouse parts, disks, merges,
-Postgres relations and JetStream usage. Raw storage inventory is explicitly unknown,
-not presented as zero. Raw downloads verify bytes before HTTP success and use bounded
-temporary spooling. Ingestion failures can be inspected and retried from Data →
-Ingestion; request paths reuse startup-owned NATS handles.
-
-## Remaining rebuild implementation
-
-The current local workflow is a checkpoint, not the completed long-term rebuild
-system. Two capabilities remain unfinished; neither is a ClickHouse limitation:
-
-- Parallel backfill: keep one coordinator for planning, catch-up and publication,
-  but let all materializer replicas claim independent bounded historical batches.
-  Preserve exact identity claims for content shared across batches, checkpoint only
-  verified output, recover expired claims, and fence/drain execution on cancellation.
-- Retired-target reclamation: establish that target writers have stopped and
-  in-flight readers have finished before deleting physical output and grants.
-  Define an explicit rollback retention policy rather than retaining every target
-  indefinitely.
-
-Acceptance must demonstrate simultaneous historical work by multiple replicas,
-recovery after losing a worker, cancellation with outstanding batches, and safe
-reclamation while queries cross a publication change. The existing single-owner
-proof does not establish those properties.
+The canonical proof result and remaining scale limits belong in
+[VALIDATION.md](VALIDATION.md). Unit tests additionally cover journal races, lost
+responses, permanent failures, retry, pause, cancellation and publication fences.

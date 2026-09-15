@@ -4,7 +4,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, JsonValue
 
-from periplus.platform.catalogue.records import AttemptUsage, VisitEvidence
+from periplus.crawl.acquisition.records import AttemptUsage, VisitEvidence
 
 
 class AcquisitionStepEvidence(BaseModel):

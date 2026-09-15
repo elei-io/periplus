@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from periplus.ingestion.objects.publication import claim
 
 import hashlib
 import tempfile
@@ -60,7 +59,9 @@ class RawHtmlRepository:
         self.store = store
         self.compression_level = compression_level
 
-    def identify(self, captured_html: str, *, chunk_chars: int = 1_048_576) -> HtmlIdentity:
+    def identify(
+        self, captured_html: str, *, chunk_chars: int = 1_048_576
+    ) -> HtmlIdentity:
         """Hash UTF-8 canonical bytes without allocating one complete byte copy."""
 
         return identify_html(captured_html, chunk_chars=chunk_chars)
@@ -77,7 +78,6 @@ class RawHtmlRepository:
         chunk_chars: int = 1_048_576,
     ) -> StoredHtml:
         identity = identity or self.identify(captured_html, chunk_chars=chunk_chars)
-        claim(self.store, identity.sha256, visit_id)
         key = identity.object_key
         if self.store.exists(key):
             self.verify(key, expected=identity)
@@ -199,7 +199,9 @@ class RawHtmlRepository:
 
 
 def html_object_key(sha256: str) -> str:
-    if len(sha256) != 64 or any(character not in "0123456789abcdef" for character in sha256):
+    if len(sha256) != 64 or any(
+        character not in "0123456789abcdef" for character in sha256
+    ):
         raise ValueError("HTML SHA-256 must be 64 lowercase hexadecimal characters")
     return f"html/sha256/{sha256[:2]}/{sha256[2:4]}/{sha256}.html.zst"
 

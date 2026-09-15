@@ -7,7 +7,6 @@ from periplus.platform.telemetry import event
 
 _query_outcomes = Counter("periplus_query_operations_total", "Query operation outcomes including rejection.", ("operation", "outcome"))
 
-import duckdb
 from periplus.platform.clickhouse import ClickHouseError
 from fastapi import APIRouter, Request
 from starlette.concurrency import run_in_threadpool
@@ -95,7 +94,7 @@ async def _run_operation(request, payload, operation, evidence):
     except QueryLimitsUnavailable:
         _query_outcomes.labels(operation, "access_unavailable").inc()
         return JSONResponse({"code": "access_unavailable", "detail": "Query limits are temporarily unavailable."}, status_code=503)
-    except (BusyError, ResultLimitError, TimeoutError, ValueError, duckdb.Error, ClickHouseError) as exc:
+    except (BusyError, ResultLimitError, TimeoutError, ValueError, ClickHouseError) as exc:
         status, error = query_error(exc)
         _query_outcomes.labels(operation, error.code).inc()
         event("query_failed", operation=operation, code=error.code)

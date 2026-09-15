@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from periplus.crawl.control.domain_policies.service import ensure_default_domain_policy
 
-from sqlalchemy import create_engine
+from sqlalchemy import select, create_engine
 from sqlalchemy.orm import sessionmaker
 
 from frontier_fixtures import policy_snapshot
@@ -27,7 +27,7 @@ from periplus.crawl.control.content_policies.schemas import EffectivePolicySnaps
 from periplus.crawl.runtime.frontier_models import FrontierControlRecord
 from periplus.crawl.runtime.frontier_runtime import run_frontier, run_dispatch, service_collection
 from periplus.crawl.runtime.frontier_store import FrontierStore
-from periplus.platform.catalogue.records import VisitEvidence, VisitRecord
+from periplus.crawl.acquisition.records import VisitEvidence, VisitRecord
 
 
 class FrontierRuntimeTests(unittest.IsolatedAsyncioTestCase):
@@ -98,19 +98,17 @@ class FrontierRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(kwargs["batch"], 1)
             return [await asyncio.wait_for(queue.get(), kwargs["timeout"])]
 
-        async def enqueue(job):
-            jobs.append(job)
-
-        async def reconcile(job):
-            from periplus.ingestion.queue import IngestionState
-            return IngestionState(job=job, status="pending", updated_at=datetime.now(UTC))
+        async def enqueue_visit(evidence):
+            from periplus.ingestion.captures import from_visit
+            from periplus.ingestion.archive import ArchiveEvent
+            jobs.append(evidence)
+            capture=from_visit(evidence)
+            return ArchiveEvent(shard=0,sequence=1,capture_id=capture.capture_id,digest=capture.digest,kind='capture',committed_at=datetime.now(UTC))
 
         async def observe_completion():
             while not stop.is_set():
                 record = await asyncio.to_thread(self.store.get_collection, identity)
-                if record.status == "settled" and any(
-                    item.kind == "lineage" and item.lineage.kind == "fulfillment" for item in jobs
-                ):
+                if record.status == "settled" and jobs:
                     stop.set()
                     return
                 await asyncio.sleep(0.01)
@@ -119,7 +117,7 @@ class FrontierRuntimeTests(unittest.IsolatedAsyncioTestCase):
             context = kwargs["context"]
             captures.append(context.acquisition_id)
             now = datetime.now(UTC)
-            from periplus.platform.catalogue.records import AttemptRecord, AttemptUsage, attempt_id_for
+            from periplus.crawl.acquisition.records import AttemptRecord, AttemptUsage, attempt_id_for
             evidence = VisitEvidence(visit=VisitRecord(
                 capture_policy=capture_policy(),
                 visit_id=context.acquisition_id, requested_url=kwargs["url"], admitted_at=context.admitted_at,
@@ -138,7 +136,7 @@ class FrontierRuntimeTests(unittest.IsolatedAsyncioTestCase):
             revision=1, model="test-model", queries=("Example sources",), searches=((),),
             selected=("https://example.com/",), validation_cursor=1, urls=("https://example.com/",),
         )))
-        ingestion = SimpleNamespace(enqueue=enqueue, reconcile=reconcile, check_available=AsyncMock())
+        ingestion = SimpleNamespace(enqueue_visit=enqueue_visit, check_available=AsyncMock())
         pipeline = SimpleNamespace(html_repository=SimpleNamespace(store=None), queue=ingestion, check_storage_available=AsyncMock())
         with patch("periplus.crawl.runtime.frontier_runtime.connect_cdp", lease), \
              patch("periplus.crawl.runtime.frontier_capture.connect_cdp", lease), \
@@ -158,10 +156,13 @@ class FrontierRuntimeTests(unittest.IsolatedAsyncioTestCase):
         terminal = self.store.get_collection(identity)
         self.assertEqual(terminal.seed_provenance["discovery"]["model"], "test-model")
         self.assertEqual(terminal.seed_provenance["discovery"]["queries"], ["Example sources"])
-        self.assertTrue(all(job.kind == "visit" or job.lineage.kind in {"fulfillment", "acquisition_reason"} for job in jobs))
         self.assertEqual(len(captures), 1)
-        self.assertEqual(sum(job.kind == "visit" for job in jobs), 1)
-        self.assertEqual(sum(job.kind == "lineage" and job.lineage.kind == "fulfillment" for job in jobs), 1)
+        self.assertEqual(len(jobs), 1)
+        from periplus.crawl.control.collections.models import CollectionResultRecord
+        with self.sessions() as session:
+            results=list(session.scalars(select(CollectionResultRecord)))
+            self.assertEqual(len(results),1)
+            self.assertIsNotNone(results[0].archived_at)
         self.assertEqual(self.store.get_collection(identity).status, "settled")
         message.ack.assert_awaited_once()
 

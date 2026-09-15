@@ -10,7 +10,7 @@ from sqlalchemy.engine import Engine, URL
 def create_engine(
     base_url: str | None = None,
     *,
-    mode: Literal["stable", "experimental"] = "stable",
+    mode: Literal["stable"] = "stable",
     timeout: float = 620,
     schema_version: str | None = None,
     allow_partial: bool = False,

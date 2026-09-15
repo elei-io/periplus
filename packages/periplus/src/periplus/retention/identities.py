@@ -1,8 +1,9 @@
-"""Postgres retirement receipts and bounded, exact-identity lake write claims.
+"""Postgres retirement receipts and bounded, exact-identity corpus write claims.
 
-No Postgres transaction spans lake I/O. A claim outlives the fail-stop deadline,
+No Postgres transaction spans object-store or ClickHouse I/O. A claim outlives the fail-stop deadline,
 so another worker cannot take over while the previous bounded writer can commit.
 """
+
 from collections.abc import Iterable, Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -12,31 +13,31 @@ import time
 from threading import Timer, local
 from uuid import uuid4
 
-import duckdb
 
 from sqlalchemy import delete, func, select, tuple_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-from periplus.platform.catalogue.exceptions import CatalogueConflictError
 from periplus.platform.postgres.session import session_scope
-from periplus.retention.models import LakeWriteClaimRecord, RetiredEvidenceRecord
+from periplus.retention.models import WriteClaimRecord
 
-from periplus.platform.config.performance import (
-    LAKE_WRITE_TIMEOUT_SECONDS as WRITE_TIMEOUT_SECONDS,
-    LAKE_WRITE_CLAIM_SECONDS as CLAIM_SECONDS,
+from periplus.platform.execution import (
+    WRITE_SECONDS as WRITE_TIMEOUT_SECONDS,
+    DRAIN_SECONDS as CLAIM_SECONDS,
 )
+
 _owned = local()
 
 
-class EvidenceRetired(CatalogueConflictError):
-    """A delayed producer cannot resurrect explicitly retired evidence."""
-
-
-class WriteClaimUnavailable(CatalogueConflictError):
+class WriteClaimUnavailable(ValueError):
     """Another bounded writer still owns an overlapping identity."""
 
-    def __init__(self, message: str, *, blocked_until: Mapping[tuple[str, str], datetime] | None = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        blocked_until: Mapping[tuple[str, str], datetime] | None = None,
+    ):
         super().__init__(message)
         self.blocked_until = dict(blocked_until or {})
 
@@ -46,54 +47,76 @@ def _utc(value: datetime) -> datetime:
 
 
 def _insert(session, model):
-    return (sqlite_insert if session.get_bind().dialect.name == 'sqlite' else pg_insert)(model)
+    return (
+        sqlite_insert if session.get_bind().dialect.name == "sqlite" else pg_insert
+    )(model)
 
 
 def _fail_stop() -> None:
-    logging.critical('Lake write exceeded its 300-second ownership bound; terminating process')
+    logging.critical(
+        "Corpus write exceeded its 300-second ownership bound; terminating process"
+    )
     os._exit(70)
 
 
-def _acquire(keys, owner, allow_retired):
+def _acquire(keys, owner):
     with session_scope() as session:
         now = _utc(session.scalar(select(func.current_timestamp())))
         expiry = now + timedelta(seconds=CLAIM_SECONDS)
-        session.execute(_insert(session, LakeWriteClaimRecord).values([
-            dict(kind=k, identity=i, owner=owner, expires_at=expiry) for k, i in keys
-        ]).on_conflict_do_nothing(index_elements=['kind', 'identity']))
-        rows = list(session.scalars(select(LakeWriteClaimRecord).where(
-            tuple_(LakeWriteClaimRecord.kind, LakeWriteClaimRecord.identity).in_(keys)
-        ).order_by(LakeWriteClaimRecord.kind, LakeWriteClaimRecord.identity).with_for_update()))
+        session.execute(
+            _insert(session, WriteClaimRecord)
+            .values(
+                [
+                    dict(kind=k, identity=i, owner=owner, expires_at=expiry)
+                    for k, i in keys
+                ]
+            )
+            .on_conflict_do_nothing(index_elements=["kind", "identity"])
+        )
+        rows = list(
+            session.scalars(
+                select(WriteClaimRecord)
+                .where(
+                    tuple_(WriteClaimRecord.kind, WriteClaimRecord.identity).in_(keys)
+                )
+                .order_by(WriteClaimRecord.kind, WriteClaimRecord.identity)
+                .with_for_update()
+            )
+        )
         if len(rows) != len(keys):
-            raise WriteClaimUnavailable('write claim changed during acquisition')
-        blocked = {(row.kind, row.identity): _utc(row.expires_at) for row in rows
-                   if row.owner != owner and _utc(row.expires_at) > now}
+            raise WriteClaimUnavailable("write claim changed during acquisition")
+        blocked = {
+            (row.kind, row.identity): _utc(row.expires_at)
+            for row in rows
+            if row.owner != owner and _utc(row.expires_at) > now
+        }
         if blocked:
-            raise WriteClaimUnavailable('overlapping lake write is still active', blocked_until=blocked)
-        if not allow_retired and session.scalar(select(RetiredEvidenceRecord.identity).where(
-            tuple_(RetiredEvidenceRecord.kind, RetiredEvidenceRecord.identity).in_(keys)
-        ).limit(1)) is not None:
-            raise EvidenceRetired('evidence has been retired')
+            raise WriteClaimUnavailable(
+                "overlapping corpus write is still active", blocked_until=blocked
+            )
         for row in rows:
             row.owner, row.expires_at = owner, expiry
 
 
 @contextmanager
-def write_claims(identities: Mapping[str, Iterable[str]], *, allow_retired: bool = False,
-                 wait_seconds: float = 10):
-    """Exclude overlapping writes; generation claims serialize publication commits.
+def write_claims(identities: Mapping[str, Iterable[str]], *, wait_seconds: float = 10):
+    """Exclude overlapping capture/body writes within the fail-stop deadline.
 
-    Parsing and file encoding belong outside this scope. Dictionary reservations
-    use a short generation-scoped transaction; final remote writes and their
-    Postgres completion receipt also belong inside. A waiting caller holds no claims or lake
-    transaction. Process suspension beyond the hard deadline is outside the
-    bounded-worker contract, as with physical object reclamation.
+    Parsing stays outside the claim. A waiting caller owns no claim. Claims
+    remain after uncertain writes, outliving both worker and server deadlines.
+    Suspending a process beyond its deadline is outside this worker contract.
     """
-    keys = sorted({(kind, str(identity)) for kind, values in identities.items() for identity in values})
-    if any(kind not in {'observation', 'content', 'collection', 'generation'} for kind, _ in keys):
-        raise ValueError('unknown lake write identity kind')
-    if getattr(_owned, 'keys', None):
-        raise RuntimeError('lake write claims must be acquired together, not nested')
+    keys = sorted(
+        {
+            (kind, str(identity))
+            for kind, values in identities.items()
+            for identity in values
+        }
+    )
+    if any(kind not in {"capture", "content"} for kind, _ in keys):
+        raise ValueError("unknown corpus write identity kind")
+    if getattr(_owned, "keys", None):
+        raise RuntimeError("corpus write claims must be acquired together, not nested")
     if not keys:
         yield
         return
@@ -102,7 +125,7 @@ def write_claims(identities: Mapping[str, Iterable[str]], *, allow_retired: bool
     while True:
         started = time.monotonic()
         try:
-            _acquire(keys, owner, allow_retired)
+            _acquire(keys, owner)
             break
         except WriteClaimUnavailable:
             if time.monotonic() >= deadline:
@@ -111,7 +134,7 @@ def write_claims(identities: Mapping[str, Iterable[str]], *, allow_retired: bool
     remaining = WRITE_TIMEOUT_SECONDS - (time.monotonic() - started)
     if remaining <= 0:
         _fail_stop()
-        raise TimeoutError('write claim acquisition exceeded its safe deadline')
+        raise TimeoutError("write claim acquisition exceeded its safe deadline")
     timer = Timer(remaining, _fail_stop)
     timer.daemon = True
     timer.start()
@@ -120,7 +143,7 @@ def write_claims(identities: Mapping[str, Iterable[str]], *, allow_retired: bool
     try:
         yield
         completed = True
-    except (duckdb.TransactionException, CatalogueConflictError):
+    except WriteClaimUnavailable:
         # These errors establish rollback or rejection, not an unknown commit.
         completed = True
         raise
@@ -130,10 +153,12 @@ def write_claims(identities: Mapping[str, Iterable[str]], *, allow_retired: bool
             # until both the worker and server transaction bounds have elapsed.
             if completed:
                 with session_scope() as session:
-                    session.execute(delete(LakeWriteClaimRecord).where(LakeWriteClaimRecord.owner == owner))
+                    session.execute(
+                        delete(WriteClaimRecord).where(WriteClaimRecord.owner == owner)
+                    )
         except Exception:
             # Work has finished; an unreleased claim safely expires later.
-            logging.exception('Could not release completed lake write claims')
+            logging.exception("Could not release completed corpus write claims")
         finally:
             _owned.keys = frozenset()
             timer.cancel()
@@ -143,31 +168,15 @@ def write_claims(identities: Mapping[str, Iterable[str]], *, allow_retired: bool
 def cleanup_expired_claims(limit: int = 1000) -> None:
     with session_scope() as session:
         now = func.current_timestamp()
-        keys = select(LakeWriteClaimRecord.kind, LakeWriteClaimRecord.identity).where(
-            LakeWriteClaimRecord.expires_at < now).order_by(LakeWriteClaimRecord.expires_at).limit(limit)
-        session.execute(delete(LakeWriteClaimRecord).where(
-            tuple_(LakeWriteClaimRecord.kind, LakeWriteClaimRecord.identity).in_(keys),
-            LakeWriteClaimRecord.expires_at < now))
-
-
-def retire(kind: str, identity: str, now: datetime) -> None:
-    key = kind, str(identity)
-    if key not in getattr(_owned, 'keys', ()):
-        raise RuntimeError('retirement requires the exact write claim')
-    with session_scope() as session:
-        session.execute(_insert(session, RetiredEvidenceRecord).values(
-            kind=kind, identity=str(identity), retired_at=now
-        ).on_conflict_do_nothing(index_elements=['kind', 'identity']))
-
-
-def retired_ids(kind: str, identities: Iterable[str]) -> frozenset[str]:
-    selected = sorted(set(map(str, identities)))
-    if not selected:
-        return frozenset()
-    with session_scope() as session:
-        return frozenset(session.scalars(select(RetiredEvidenceRecord.identity).where(
-            RetiredEvidenceRecord.kind == kind, RetiredEvidenceRecord.identity.in_(selected))))
-
-
-def retired(kind: str, identity: str) -> bool:
-    return str(identity) in retired_ids(kind, [identity])
+        keys = (
+            select(WriteClaimRecord.kind, WriteClaimRecord.identity)
+            .where(WriteClaimRecord.expires_at < now)
+            .order_by(WriteClaimRecord.expires_at)
+            .limit(limit)
+        )
+        session.execute(
+            delete(WriteClaimRecord).where(
+                tuple_(WriteClaimRecord.kind, WriteClaimRecord.identity).in_(keys),
+                WriteClaimRecord.expires_at < now,
+            )
+        )

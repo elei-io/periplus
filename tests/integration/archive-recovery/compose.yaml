@@ -1,0 +1,67 @@
+name: periplus-recovery
+x-runtime: &runtime
+  image: periplus-core:local
+  working_dir: /app/packages/periplus
+  environment: &environment
+    PERIPLUS_CONTROL_DATABASE_URL: postgresql://recovery:recovery@postgres:5432/recovery
+    PERIPLUS_CLICKHOUSE_URL: http://clickhouse:8123
+    PERIPLUS_CLICKHOUSE_USER: recovery
+    PERIPLUS_CLICKHOUSE_PASSWORD: recovery
+    PERIPLUS_CLICKHOUSE_QUERY_USER: recovery_query
+    PERIPLUS_CLICKHOUSE_QUERY_PASSWORD: recovery_query
+    PERIPLUS_NATS_URL: nats://nats:4222
+    PERIPLUS_REPOSITORY_STORAGE: disk
+    PERIPLUS_REPOSITORY_ROOT: /archive
+  volumes:
+    - ${RECOVERY_ARCHIVE_DIRECTORY:?Provide the isolated archive copy}:/archive:ro
+  networks: [isolated]
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: recovery
+      POSTGRES_USER: recovery
+      POSTGRES_PASSWORD: recovery
+    networks: [isolated]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U recovery"]
+      interval: 1s
+      timeout: 2s
+      retries: 60
+  nats:
+    image: nats:2.11-alpine
+    command: [-js]
+    networks: [isolated]
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.8.2.7@sha256:fa394da808cc53f76d0344429421d6c422a6ee85fe7450135c0e3cff4df9bcbb
+    environment:
+      CLICKHOUSE_DB: material
+      CLICKHOUSE_USER: recovery
+      CLICKHOUSE_PASSWORD: recovery
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: '1'
+    mem_limit: 2g
+    cpus: 2
+    networks: [isolated]
+    healthcheck:
+      test: [CMD-SHELL, "wget -qO- http://127.0.0.1:8123/ping"]
+      interval: 1s
+      timeout: 2s
+      retries: 60
+  setup:
+    <<: *runtime
+    command: [periplus-setup, --restore-manifest, '${RECOVERY_MANIFEST:?Provide a manifest}']
+    depends_on:
+      postgres: {condition: service_healthy}
+      clickhouse: {condition: service_healthy}
+  worker:
+    <<: *runtime
+    command: [periplus-worker, materializer]
+    depends_on:
+      setup: {condition: service_completed_successfully}
+  inspect:
+    <<: *runtime
+    profiles: [tools]
+    entrypoint: [python, -c]
+networks:
+  isolated:
+    internal: true

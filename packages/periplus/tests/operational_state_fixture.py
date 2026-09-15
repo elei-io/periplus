@@ -4,14 +4,12 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 from unittest.mock import patch
 from periplus.platform.postgres import session
-from periplus.materialization.models import MaterializationStateRecord, MaterializationAppliedBatchRecord, MaterializationRunRecord, MaterializationBatchRecord
-from periplus.retention.models import LakeWriteClaimRecord, RetiredEvidenceRecord, RetentionObjectRecord
+from periplus.retention.models import WriteClaimRecord
 
 
 def operational_state(test):
     engine = create_engine('sqlite://', connect_args={'check_same_thread': False}, poolclass=StaticPool)
-    for model in (MaterializationStateRecord, MaterializationAppliedBatchRecord, MaterializationRunRecord, MaterializationBatchRecord,
-                  LakeWriteClaimRecord, RetiredEvidenceRecord, RetentionObjectRecord):
+    for model in (WriteClaimRecord,):
         model.__table__.create(engine)
     test.addCleanup(engine.dispose)
     factory = sessionmaker(bind=engine, expire_on_commit=False)

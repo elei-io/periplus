@@ -22,9 +22,6 @@
         },
         "autoscaling": {
           "$ref": "#/definitions/scaling"
-        },
-        "duckdb": {
-          "$ref": "#/definitions/duckdb"
         }
       }
     },
@@ -120,21 +117,12 @@
         },
         "autoscaling": {
           "$ref": "#/definitions/scaling"
-        },
-        "duckdb": {
-          "$ref": "#/definitions/duckdb"
-        },
-        "concurrency": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 4
         }
       }
     },
     "materializer": {
       "type": "object",
       "properties": {
-        "parserProcesses": { "type": "integer", "minimum": 1, "maximum": 8 },
         "resources": {
           "type": "object",
           "properties": {
@@ -152,13 +140,6 @@
         },
         "autoscaling": {
           "$ref": "#/definitions/scaling"
-        },
-        "duckdb": {
-          "$ref": "#/definitions/duckdb"
-        },
-        "concurrency": {
-          "type": "integer",
-          "minimum": 1
         }
       }
     },
@@ -182,9 +163,6 @@
         },
         "autoscaling": {
           "$ref": "#/definitions/scaling"
-        },
-        "duckdb": {
-          "$ref": "#/definitions/duckdb"
         }
       }
     },
@@ -202,9 +180,6 @@
             }
           }
         },
-        "duckdb": {
-          "$ref": "#/definitions/duckdb"
-        },
         "autoscaling": false
       }
     },
@@ -221,9 +196,6 @@
               "type": "object"
             }
           }
-        },
-        "duckdb": {
-          "$ref": "#/definitions/duckdb"
         },
         "autoscaling": false
       }
@@ -300,33 +272,8 @@
               "type": "integer",
               "minimum": 1,
               "maximum": 5
-            },
-            "ingestResultReplicas": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 5
             }
           }
-        }
-      }
-    },
-    "queryExperimental": {
-      "type": "object",
-      "properties": {
-        "replicas": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "autoscaling": {
-          "type": "object",
-          "properties": {
-            "enabled": {
-              "const": false
-            }
-          }
-        },
-        "duckdb": {
-          "$ref": "#/definitions/duckdb"
         }
       }
     },

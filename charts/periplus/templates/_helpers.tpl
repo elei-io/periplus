@@ -74,11 +74,7 @@ topologySpreadConstraints:
     secretKeyRef:
       name: {{ .Values.secrets.controlDatabase.name | quote }}
       key: {{ .Values.secrets.controlDatabase.urlKey | quote }}
-- name: PERIPLUS_DUCKLAKE_METADATA_PATH
-  valueFrom:
-    secretKeyRef:
-      name: {{ .Values.secrets.ducklakeMetadata.name | quote }}
-      key: {{ .Values.secrets.ducklakeMetadata.pathKey | quote }}
+
 - name: PERIPLUS_NATS_URL
   valueFrom:
     secretKeyRef:
@@ -114,33 +110,15 @@ topologySpreadConstraints:
     secretKeyRef:
       name: {{ .Values.secrets.s3.name | quote }}
       key: {{ .Values.secrets.s3.secretAccessKeyKey | quote }}
-- name: PERIPLUS_DUCKLAKE_S3_ENDPOINT
-  value: {{ .Values.config.ducklake.s3Endpoint | quote }}
-- name: PERIPLUS_DUCKLAKE_S3_REGION
-  valueFrom:
-    secretKeyRef:
-      name: {{ .Values.secrets.s3.name | quote }}
-      key: {{ .Values.secrets.s3.regionKey | quote }}
-- name: PERIPLUS_DUCKLAKE_S3_KEY_ID
-  valueFrom:
-    secretKeyRef:
-      name: {{ .Values.secrets.s3.name | quote }}
-      key: {{ .Values.secrets.s3.accessKeyIdKey | quote }}
-- name: PERIPLUS_DUCKLAKE_S3_SECRET_ACCESS_KEY
-  valueFrom:
-    secretKeyRef:
-      name: {{ .Values.secrets.s3.name | quote }}
-      key: {{ .Values.secrets.s3.secretAccessKeyKey | quote }}
-- name: PERIPLUS_DUCKLAKE_ALIAS
-  value: {{ .Values.config.ducklake.alias | quote }}
-- name: PERIPLUS_DUCKLAKE_METADATA_SCHEMA
-  value: {{ .Values.config.ducklake.metadataSchema | quote }}
-- name: PERIPLUS_DUCKLAKE_DATA_PATH
-  value: {{ .Values.config.ducklake.dataPath | quote }}
-- name: PERIPLUS_DUCKLAKE_S3_URL_STYLE
-  value: {{ .Values.config.ducklake.s3UrlStyle | quote }}
-- name: PERIPLUS_DUCKLAKE_S3_USE_SSL
-  value: {{ .Values.config.ducklake.s3UseSSL | quote }}
+
+
+
+
+
+
+
+
+
 - name: PERIPLUS_REPOSITORY_STORAGE
   value: s3
 - name: PERIPLUS_REPOSITORY_S3_PREFIX
@@ -153,8 +131,6 @@ topologySpreadConstraints:
   value: {{ .Values.config.nats.operationalReplicas | quote }}
 - name: PERIPLUS_CATALOGUE_WORK_STREAM_REPLICAS
   value: {{ .Values.config.nats.catalogueWorkStreamReplicas | quote }}
-- name: PERIPLUS_INGEST_RESULT_REPLICAS
-  value: {{ .Values.config.nats.ingestResultReplicas | quote }}
 - name: PERIPLUS_LOG_LEVEL
   value: {{ .Values.config.logLevel | quote }}
 {{- with .Values.extraEnv }}
@@ -190,15 +166,39 @@ imagePullSecrets:
 
 {{- define "periplus.scalingQuery" -}}
 {{- $scope := printf "namespace=%q,periplus_release=%q,periplus_component=%q" .root.Release.Namespace .root.Release.Name .role -}}
-{{- if eq .role "ingestor" -}}
-max((periplus_repository_ingestion_jobs_pending{ {{ $scope }} } + periplus_repository_ingestion_jobs_ack_pending{ {{ $scope }} }) and (periplus_repository_ingestion_queue_observed_timestamp_seconds{ {{ $scope }} } > time() - 60))
-{{- else if eq .role "materializer" -}}
-sum(max by (state) (periplus_materialization_queue_messages{ {{ $scope }},state=~"pending|ack_pending" } and ignoring(state) (periplus_materialization_queue_observed_timestamp_seconds{ {{ $scope }} } > time() - 60)))
-{{- else if eq .role "crawler" -}}
+{{- if eq .role "crawler" -}}
 sum(avg_over_time(periplus_crawler_active_captures{ {{ $scope }} }[2m]) and (timestamp(periplus_crawler_active_captures{ {{ $scope }} }) > time() - 60))
 {{- else if eq .role "query" -}}
 sum(avg_over_time(periplus_query_active_operations{ {{ $scope }} }[2m]) and (timestamp(periplus_query_active_operations{ {{ $scope }} }) > time() - 60))
 {{- else -}}
 {{- fail (printf "%s.autoscaling.query is required for a custom Prometheus policy" .role) -}}
 {{- end -}}
+{{- end }}
+
+{{- define "periplus.clickhouseWriterEnv" -}}
+- name: PERIPLUS_CLICKHOUSE_URL
+  value: {{ .Values.config.clickhouse.url | quote }}
+- name: PERIPLUS_CLICKHOUSE_USER
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.secrets.clickhouse.name | quote }}
+      key: {{ .Values.secrets.clickhouse.userKey | quote }}
+- name: PERIPLUS_CLICKHOUSE_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.secrets.clickhouse.name | quote }}
+      key: {{ .Values.secrets.clickhouse.passwordKey | quote }}
+{{- end }}
+
+{{- define "periplus.clickhouseQueryEnv" -}}
+- name: PERIPLUS_CLICKHOUSE_QUERY_USER
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.secrets.queryClickhouse.name | quote }}
+      key: {{ .Values.secrets.queryClickhouse.userKey | quote }}
+- name: PERIPLUS_CLICKHOUSE_QUERY_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.secrets.queryClickhouse.name | quote }}
+      key: {{ .Values.secrets.queryClickhouse.passwordKey | quote }}
 {{- end }}

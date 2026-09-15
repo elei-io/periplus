@@ -20,7 +20,7 @@ const DEFAULT_HISTORY_KEY = "periplus.sql.history"
 
 interface ShellStatus {
   connection: "connecting" | "connected" | "disconnected"
-  duckdbVersion?: string
+  engineVersion?: string
   apiLatencyMilliseconds?: number
   error?: string
 }
@@ -210,16 +210,16 @@ class BrowserSqlSession {
     const startedAt = performance.now()
     try {
       const result = await this.sqlConsole.api.query(
-        "SELECT version() AS duckdb_version"
+        "SELECT version() AS engine_version"
       )
-      const duckdbVersion = result.rows[0]?.[0]
-      if (typeof duckdbVersion !== "string") {
-        throw new Error("Periplus API did not return the DuckDB version.")
+      const engineVersion = result.rows[0]?.[0]
+      if (typeof engineVersion !== "string") {
+        throw new Error("Periplus API did not return the ClickHouse version.")
       }
       if (this.closed) return
       this.onStatus({
         connection: "connected",
-        duckdbVersion,
+        engineVersion,
         apiLatencyMilliseconds: performance.now() - startedAt,
       })
     } catch (error) {
@@ -258,7 +258,7 @@ function ShellFooter({ status, access }: { status: ShellStatus; access: "public"
       title={status.error}
       aria-live="polite"
     >
-      <span>DuckDB {status.duckdbVersion ?? "—"}</span>
+      <span>ClickHouse {status.engineVersion ?? "—"}</span>
       <span>catalogue {access === "admin" ? "admin · writable" : "public"}</span>
       <span className="periplus-web-shell-footer-end">
         API{" "}

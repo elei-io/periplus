@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, Mock
 from pydantic import ValidationError
 from operational_state_fixture import operational_state
 from test_common_crawl import fixture
-from periplus.ingestion.archive import archived_jobs
+from periplus.ingestion.archive import Archive
 from periplus.ingestion.imports.control import ImportConflict, ImportControl
 from periplus.ingestion.imports.models import ImportRecord
 from periplus.ingestion.imports.schemas import ImportSpec
@@ -32,7 +32,7 @@ class ImportTests(unittest.TestCase):
         self.remote = Mock()
         self.remote.lookup.return_value = self.item
         self.remote.fetch.return_value = self.data
-        self.queue = SimpleNamespace(reconcile=AsyncMock(return_value=SimpleNamespace(status="pending")))
+        self.queue = SimpleNamespace(publish=AsyncMock(return_value=SimpleNamespace(status="pending")))
         self.worker = ImportWorker(self.control, self.remote, self.store, self.queue)
         self.spec = ImportSpec(dataset=self.item.dataset, urls=(self.item.url,),
             captured_from=datetime(2026, 8, 1, tzinfo=UTC), captured_until=datetime(2026, 9, 1, tzinfo=UTC))
@@ -50,26 +50,26 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(selected.progress.current, self.item)
         archived = self.step(job.id)
         self.assertIsNotNone(archived.progress.archive_key)
-        self.assertEqual(self.queue.reconcile.await_count, 0)
-        self.assertEqual(len(tuple(archived_jobs(self.store))), 1)
+        self.assertEqual(self.queue.publish.await_count, 0)
+        self.assertEqual(len(tuple(Archive(self.store).events(Archive(self.store).heads()))), 1)
         self.worker = ImportWorker(self.control, Mock(), self.store, self.queue)
         done = self.step(job.id)
         self.assertEqual(done.status, "completed")
         self.assertEqual(done.progress.results[0].captured_at, self.item.captured_at)
         self.assertEqual(self.remote.fetch.call_count, 1)
-        self.assertEqual(self.queue.reconcile.await_count, 1)
+        self.assertEqual(self.queue.publish.await_count, 1)
 
     def test_publish_failure_blocks_and_retry_uses_same_archived_capture(self):
         job = self.create()
         self.step(job.id)
         self.step(job.id)
-        self.queue.reconcile.side_effect = RuntimeError("offline")
+        self.queue.publish.side_effect = RuntimeError("offline")
         self.assertEqual(self.step(job.id).status, "blocked")
-        self.queue.reconcile.side_effect = None
+        self.queue.publish.side_effect = None
         self.control.action(job.id, "retry")
         self.assertEqual(self.step(job.id).status, "completed")
         self.assertEqual(self.remote.fetch.call_count, 1)
-        identities = [call.args[0].identity for call in self.queue.reconcile.await_args_list]
+        identities = [call.args[0].capture_id for call in self.queue.publish.await_args_list]
         self.assertEqual(len(set(identities)), 1)
 
     def test_missing_and_unsupported_do_not_publish_or_create_raw_evidence(self):
@@ -82,8 +82,8 @@ class ImportTests(unittest.TestCase):
         self.step(unsupported.id)
         result = self.step(unsupported.id)
         self.assertEqual(result.progress.results[0].status, "unsupported")
-        self.assertFalse(tuple(archived_jobs(self.store)))
-        self.queue.reconcile.assert_not_awaited()
+        self.assertFalse(tuple(Archive(self.store).events(Archive(self.store).heads())))
+        self.queue.publish.assert_not_awaited()
 
     def test_budget_is_reserved_before_fetch_and_limits_failed_retries(self):
         job = self.create(max_download_bytes=len(self.data))
@@ -104,8 +104,8 @@ class ImportTests(unittest.TestCase):
         with self.assertRaises(ImportConflict):
             self.control.save(archived, progress=archived.progress, status="completed")
         self.assertEqual(self.step(job.id).status, cancelled.status)
-        self.assertEqual(len(tuple(archived_jobs(self.store))), 1)
-        self.queue.reconcile.assert_not_awaited()
+        self.assertEqual(len(tuple(Archive(self.store).events(Archive(self.store).heads()))), 1)
+        self.queue.publish.assert_not_awaited()
 
     def test_reimport_has_same_capture_and_shared_body(self):
         first, second = self.create(), self.create()
@@ -116,7 +116,7 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(one.capture_id, two.capture_id)
         self.assertFalse(one.already_archived)
         self.assertTrue(two.already_archived)
-        self.assertEqual(len(tuple(archived_jobs(self.store))), 1)
+        self.assertEqual(len(tuple(Archive(self.store).events(Archive(self.store).heads()))), 1)
 
     def test_intent_idempotency_and_removed_collection_contract(self):
         job = self.create()

@@ -13,7 +13,7 @@ class PreparationEvidence(BaseModel):
     plan_truncated: bool | None = None
     plan_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     diagnostics: list[dict[str, str]] | None = Field(default=None, max_length=100)
-    duckdb_version: str | None = Field(default=None, max_length=80)
+    engine_version: str | None = Field(default=None, max_length=80)
     compiler_version: str | None = Field(default=None, max_length=80)
     effective_limits: dict[str, int | float] | None = None
 
@@ -69,7 +69,7 @@ class PlanVariant(Stats):
     first_seen: datetime
     last_seen: datetime
     example_execution_id: UUID
-    duckdb_version: str | None
+    engine_version: str | None
     compiler_version: str | None
     timeouts: int
 

@@ -8,7 +8,7 @@ import { extractApiError, responseJson } from "@/lib/api"
 import { usePublicAccess } from "@/hooks/use-public-access"
 import { sameSqlDraft, sqlAssistantInputSchema, type SqlAssistantInput, type SqlAssistantActivity, type SqlDraft } from "@/types/sql-assistant"
 
-export function useSqlAssistant(draft: SqlDraft, selection: string, failure: SqlAssistantInput["failure"], onChange: (draft: SqlDraft) => void, queryMode: "stable" | "experimental" = "stable") {
+export function useSqlAssistant(draft: SqlDraft, selection: string, failure: SqlAssistantInput["failure"], onChange: (draft: SqlDraft) => void, queryMode: "stable" = "stable") {
   const access = usePublicAccess("assistant")
   const [activities, setActivities] = useState<SqlAssistantActivity[]>([])
   const [open, setOpen] = useState(false)

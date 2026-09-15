@@ -23,17 +23,17 @@ export function LandingExample() {
       </Card>)}
     </div>
     <Card className="landing-query-panel">
-      <CardHeader><CardTitle><h3>Discover pages about artificial intelligence</h3></CardTitle><CardDescription>Find up to 100 matching contents with matching snippets and text-node IDs. Join captures when you want URLs.</CardDescription></CardHeader>
+      <CardHeader><CardTitle><h3>Discover pages about artificial intelligence</h3></CardTitle><CardDescription>Search headings from the ten most recent captures. Return up to 100 matches with their document and element identities.</CardDescription></CardHeader>
       <CardContent className="flex min-w-0 flex-col gap-4">
         <SqlExample sql={landingSql} />
         <Table>
           <TableCaption>Illustrative results · fictional pages</TableCaption>
-          <TableHeader><TableRow><TableHead>content_id</TableHead><TableHead>snippet</TableHead><TableHead>node_indexes</TableHead><TableHead>score</TableHead></TableRow></TableHeader>
+          <TableHeader><TableRow><TableHead>document_id</TableHead><TableHead>node_index</TableHead><TableHead>heading</TableHead></TableRow></TableHeader>
           <TableBody>{[
-            ["abc123…", "Artificial intelligence research", "[42]", 6],
-            ["def456…", "Investing in artificial intelligence companies", "[18, 20]", 4],
-            ["ghi789…", "Our team studies artificial intelligence applications", "[71]", 2],
-          ].map(([content, snippet, nodes, score]) => <TableRow key={content}><TableCell>{content}</TableCell><TableCell>{snippet}</TableCell><TableCell>{nodes}</TableCell><TableCell>{score}</TableCell></TableRow>)}</TableBody>
+            ["abc123…", 42, "Artificial intelligence research"],
+            ["def456…", 18, "Investing in artificial intelligence companies"],
+            ["ghi789…", 71, "Our team studies artificial intelligence applications"],
+          ].map(([document, node, heading]) => <TableRow key={document}><TableCell>{document}</TableCell><TableCell>{node}</TableCell><TableCell>{heading}</TableCell></TableRow>)}</TableBody>
         </Table>
       </CardContent>
     </Card>

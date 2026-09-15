@@ -48,6 +48,11 @@ export const schemaReference = [
         "SHA-256 identity of retained bytes."
       ],
       [
+        "document_id",
+        "String",
+        "Identity of bytes and their HTML interpretation; joins html_element.document_id."
+      ],
+      [
         "byte_length",
         "UInt64",
         "Length of logical bytes before storage compression."
@@ -62,8 +67,9 @@ export const schemaReference = [
   {
     "name": "public_v1.html_element",
     "grain": "Parsed HTML elements with materialized complete text.",
-    "key": "content_id + node_index",
+    "key": "document_id + node_index",
     "columns": [
+      ["document_id", "String", "Identity of bytes and their HTML interpretation."],
       [
         "content_id",
         "String",

@@ -12,7 +12,7 @@ from . import dbapi
 
 
 class SQLType(types.UserDefinedType):
-    """Preserve DuckDB type names, including nested types, during reflection."""
+    """Preserve ClickHouse type names, including nested types, during reflection."""
 
     cache_ok = True
 
@@ -24,28 +24,21 @@ class SQLType(types.UserDefinedType):
 
     @property
     def python_type(self) -> type:
-        if self.name in dbapi._INTEGER_TYPES:
-            return int
-        if self.name in dbapi._FLOAT_TYPES:
-            return float
-        if self.name == "BOOLEAN":
-            return bool
-        if self.name.startswith("DECIMAL("):
-            return dbapi.Decimal
-        if self.name == "DATE":
-            return dbapi.date
-        if self.name in dbapi._TIMESTAMP_TYPES:
-            return dbapi.datetime
-        if self.name in dbapi._TIME_TYPES:
-            return dbapi.time
-        if self.name == "BLOB":
-            return bytes
+        name = dbapi._base_type(self.name)
+        if name in dbapi._INTEGER_TYPES:return int
+        if name in dbapi._FLOAT_TYPES:return float
+        if name == 'Bool':return bool
+        if name.startswith('Decimal'):return dbapi.Decimal
+        if name in ('Date','Date32'):return dbapi.date
+        if name.startswith('DateTime'):return dbapi.datetime
+        if name.startswith('Time'):return dbapi.time
         return str
 
 
+
 class PeriplusDialect(default.DefaultDialect):
-    # The server speaks DuckDB SQL; this enables the correct notebook SQL dialect.
-    name = "duckdb"
+    # The server speaks ClickHouse SQL; this enables the correct notebook SQL dialect.
+    name = "clickhouse"
     driver = "periplus"
     supports_statement_cache = False
     supports_sane_rowcount = False

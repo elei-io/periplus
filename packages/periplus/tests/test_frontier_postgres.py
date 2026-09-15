@@ -562,7 +562,7 @@ class FrontierPostgresTests(unittest.TestCase):
     def test_navigation_retirement_serializes_with_branch_reuse(self):
         from datetime import timedelta
         from frontier_fixtures import navigation_package
-        from periplus.platform.catalogue.records import VisitEvidence, VisitRecord
+        from periplus.crawl.acquisition.records import VisitEvidence, VisitRecord
         parent = self.store.admit(self.collection(), "https://example.com/", self.context, self.policy, now=self.now)
         package = navigation_package().model_copy(update={"object_name": f"runtime/navigation/{parent.acquisition_id.hex}/{'a' * 64}.arrow"})
         with self.sessions.begin() as session:

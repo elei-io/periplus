@@ -35,7 +35,7 @@ cron evaluation uses the independently specified IANA timezone.
 Crawler replicas evaluate schedules once per second, using the existing control
 transaction lock. Up to 20 due schedules are evaluated per pass. Creating a request,
 writing its lineage outbox, updating the execution count and moving the next tick
-commit together. No database lock spans network or DuckLake work. A normal five-second
+commit together. No database lock spans network or ClickHouse work. A normal five-second
 polling tolerance allows dispatch jitter; older ticks are skipped after downtime,
 with no catch-up burst. The following also skip a tick without increasing the count:
 
@@ -52,7 +52,7 @@ service and freezes its result through the existing selection checkpoint.
 Postgres owns only editable `request_definitions` and `request_schedules` control
 state, including the count, next tick, latest request identity and latest tick
 result. There is no schedule-execution history table or new queue. Durable request
-intent and outcomes continue to belong to DuckLake.
+intent and outcomes continue to belong to ClickHouse.
 
 ## Replacing background exploration
 

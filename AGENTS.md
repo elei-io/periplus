@@ -1,182 +1,55 @@
 # Working in Periplus
 
-Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
-[docs/SCHEMA.md](docs/SCHEMA.md), and
-[docs/LIFECYCLE.md](docs/LIFECYCLE.md) before changing frontier execution, crawling, worker
-ownership, repository storage, DOM generation, NATS, DuckLake, or managed DuckDB use. Read
-[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) before changing service names, process roles, deployment
-topology, environment contracts, container scaling, or infrastructure ownership. Read
-[docs/CUTOFF.md](docs/CUTOFF.md) before adding a service, queue, persistence path,
-compatibility layer, or abstraction. Read [docs/QUERY.md](docs/QUERY.md) before changing
-`web.*`, `content.*`, SDK, or DuckDB extension boundaries. Read
-[docs/EXTENSION_DEVELOPMENT.md](docs/EXTENSION_DEVELOPMENT.md) before building, testing, or
-changing the DuckLake CDC extension.
+Read `docs/ARCHITECTURE.md`, `docs/SCHEMA.md` and `docs/LIFECYCLE.md` before
+changing persistence, crawling or worker ownership. Read `docs/DEPLOYMENT.md`
+before changing topology/environment contracts, `docs/REBUILDS.md` before
+changing materialization, and `docs/CUTOFF.md` before adding an abstraction or
+persistence path. Query work follows `docs/QUERY.md` and `docs/QUERY_OPTIMIZATION.md`.
 
-For query performance work, follow [docs/QUERY_OPTIMIZATION.md](docs/QUERY_OPTIMIZATION.md)
-and use the shared `benchmarks/query/` bench.
+Periplus is greenfield. Change contracts directly and remove superseded paths;
+no compatibility shims, dual writes or migration bridges. Keep homelab production
+untouched unless explicitly authorized. Local crawling uses the configured
+standard CDP endpoint; do not replace it with a local browser implicitly.
 
-For every query performance issue, first classify it as schema/catalogue design, compiler/optimizer
-behavior, or both, using the evidence and decision rules in [docs/QUERY.md](docs/QUERY.md).
-Compiler actions include warnings, boundedness errors, and semantics-preserving SQL or plan
-rewrites. Do not use a rewrite to conceal a poor public schema, and do not change the schema merely
-to encode around one accidental optimizer plan.
+## Authorities
 
-## Non-negotiable boundaries
+- Postgres owns customer intent, collection results, policies, current frontier,
+  transactional outbox, import/rebuild controls, publication and retirement work.
+- Raw storage owns immutable capture facts, payload bytes, journal events,
+  tombstones, recovery manifests and preserved software. The corpus must rebuild
+  without the original Postgres, NATS or ClickHouse contents.
+- NATS owns delivery, expiring operation leases, crawler presence and domain permits.
+  Reconcile contracts at startup; never provision them from request/polling paths.
+- ClickHouse owns only disposable material corpus and versioned public views.
+  No business records, acquisition reasons or fulfillment mirrors live there.
+- DuckDB is bounded page-local navigation/follow SQL only. No DuckLake/CDC runtime.
 
-- Periplus is 100% greenfield. Do not add backwards-compatibility shims, legacy aliases, dual
-  reads/writes, fallback routes, deprecated environment variables, or migration bridges. Change
-  the contract directly and delete the superseded path. Prefer resetting disposable development
-  state over carrying compatibility code unless the user explicitly requires a real data
-  migration.
-- Periplus Postgres owns editable control state and current frontier execution: collections, shared acquisitions,
-  interests, selection checkpoints, admission deduplication, budgets, progress counters, policies,
-  catalogue definitions, materialization publication and batch receipts, retirement
-  decisions, raw-object deletion work, exact lake-write claims, and the transactional frontier outbox.
-- NATS JetStream/KV owns frontier, ingestion, and materialization work delivery, worker presence,
-  operation leases, and per-domain crawl pacing/concurrency. It is not authoritative frontier state.
-- Crawl history belongs only in DuckLake; never reintroduce it into Periplus Postgres.
-- Raw HTML is immutable, content-addressed, and stored through
-  `packages/periplus/src/periplus/ingestion/objects/`.
-- `crawl` is the only page-acquisition primitive. Manual and scheduled finite requests admit URL interests into one shared frontier. Preserve collection-local URL deduplication,
-  budgets, selection context, and immutable lineage when acquisitions are shared or reused.
-- Crawler replicas acquire one page, store immutable raw HTML, publish frozen ingestion jobs, and
-  independently advance bounded selection. Derive navigation when request follow selection
-  requires it. Never wait for catalogue ingestion on the capture path. Cross-replica website
-  concurrency and pacing are keyed per domain; process-owned clients remain locally bounded.
-- A standard CDP endpoint is the sole acquisition boundary. Periplus has one crawl queue; the CDP
-  service owns transport choice, browser-farm capacity, profiles, and acquisition strategy.
-- Ingestor replicas own base crawl evidence writes. Replicas are symmetric consumers of one
-  durable lane: each process owns one NATS session and bounded configurable writer lanes, each
-  with an independent DuckLake connection. They are independently observable `critical`
-  catalogue work, never settle collection traversal, and never wait for user materialization.
-- Complete materialization rebuilds use one visit-scoped workload. Every non-private module under
-  `materialization/projections/` is one self-contained, auto-discovered projection declaration;
-  adding, editing, or deleting a materialization touches only that file before redeploy and rebuild.
-  Public views and macros belong to the separate public-catalogue registry. A planner pins a source
-  snapshot and publishes bounded visit-ID batches to JetStream. Horizontally scalable materializers
-  build one shared parse context, register final Parquet using each projection's partition policy,
-  append missing deterministic derived identities in one DuckLake transaction, then record the applied
-  batch in control Postgres and ACK only after both commits. Exact Postgres claims serialize
-  generation commits and protect evidence retirement; no Postgres transaction spans lake I/O. All
-  discovered relations belong to one
-  registry-digested hidden generation, catch up inserted visits to a source high-water mark, and
-  activate atomically. After activation, one insert-only DuckLake CDC consumer publishes
-  deterministic visit batches to the same JetStream lane. Every materializer replica is an
-  eligible coordinator; a NATS operation lease elects one connection, which then holds the
-  DuckLake consumer's owner-token lease. No worker is statically designated and the durable cursor
-  remains only in DuckLake. The CDC cursor advances only after all applied markers are durable.
-- Follow SQL uses bounded standalone DuckDB connections over the current page's navigation
-  package. Corpus seed SQL uses the isolated query service; follow SQL cannot join history.
-- LakeDucktor owns compaction, old-file cleanup, and physical lake maintenance. The Periplus janitor
-  reclaims Periplus-owned staging/navigation objects and coordinates opt-in logical retention
-  and snapshot-safe raw-object deletion. See `docs/RETENTION.md`; it never deletes registered lake files.
-- Per-domain crawl permits and operation leases are distinct. Domain permits enforce website
-  politeness and leases suppress duplicate durable execution. Do not hold a PostgreSQL advisory
-  lock across a remote DuckLake operation.
-- Periplus attaches its own DuckLake directly through the official DuckDB extensions and owns logical
-  table layout and generation transactions. LakeDucktor owns physical lake maintenance.
-- Crawler replicas connect to the configured standard CDP endpoint. Periplus owns content correctness,
-  including when scrolling is required; the CDP service owns rendering and physical capacity.
-- API and CLI code validate and adapt. Frontier execution belongs in runtime, acquisition belongs in
-  crawl, derived navigation belongs in bounded catalogue SQL, and durable writes belong behind the
-  repository boundary.
-- JetStream streams, consumers, and KV contracts are reconciled at process startup. Request and
-  polling paths reuse process-owned handles and must never call `add_consumer()` or otherwise
-  provision infrastructure.
+Keep one shared frontier and one CDP acquisition primitive. Preserve collection-local
+deduplication, independent budgets and result associations when acquisitions are
+shared or reused. Capture never waits for materialization. Domain politeness is
+separate from operation ownership. Never hold a Postgres transaction across
+object-store or ClickHouse I/O. Exact claims and bounded workers protect uncertain
+writes; do not shorten their drain without a proof.
 
 ## Code map
 
-- `packages/periplus/src/periplus/crawl/control/` — Periplus Postgres-backed collection intent and crawler policies.
-- `packages/periplus/src/periplus/crawl/runtime/` — current frontier execution, transactional outbox, work
-  delivery, navigation, progress, and per-domain pacing.
-- `packages/periplus/src/periplus/crawl/acquisition/` — standard-CDP page capture, readiness, response
-  classification, and acquisition evidence; do not add traversal loops here.
-- `packages/periplus/src/periplus/crawl/crawler.py` — crawler process composition.
-- `packages/periplus/src/periplus/ingestion/` — immutable objects, ingestion contracts, queue, writer,
-  health, and recovery.
-- `packages/periplus/src/periplus/ingestion/ingestor.py` — ingestor process composition.
-- `packages/periplus/src/periplus/materialization/` — fixed document and visit projections, maintenance, and
-  materialization lifecycle.
-- `packages/periplus/src/periplus/materialization/materializer.py` — materializer process composition.
-- `packages/periplus/src/periplus/materialization/dom/` — versioned structural DOM projection.
-- `packages/periplus/src/periplus/query/` — bounded physical SQL inspection.
-- `packages/periplus/src/periplus/operations/janitor.py` — janitor process composition.
-- `packages/periplus/src/periplus/operations/api/` — status and dead-letter operations.
-- `packages/periplus/src/periplus/platform/` — configuration, worker health/lifecycle, and Postgres, NATS, and
-  DuckLake adapters; business workflows do not belong here.
-- `packages/periplus/src/periplus/entrypoints/` — thin API, worker CLI, and setup composition roots.
-- `packages/periplus-web-shell/` — distributable browser SQL shell built on `periplus-console-core`.
-- `packages/periplus-public/` — Next.js public catalogue and crawl-submission application.
-- `packages/periplus-admin/` — Vite operator application for crawl and catalogue maintenance.
+`crawl/control/` owns intent/policies; `crawl/runtime/` owns frontier execution;
+`crawl/acquisition/` acquires one page; `ingestion/` owns archive/contracts/imports;
+`materialization/` owns derived output and rebuilds; `query/` owns corpus SQL;
+`retention/` owns exact claims/tombstone work; `operations/` owns the janitor/admin;
+`platform/` contains adapters; `entrypoints/` only composes processes.
 
-Keep collection intent and policy definitions under `crawl/control/`, current frontier execution under
-`crawl/runtime/`, acquisition behavior in the shared crawl path, durable evidence under
-`ingestion/`, fixed projections under `materialization/`, and generic adapters under `platform/`.
-Entrypoints validate, compose, and run these capabilities; they do not own domain transitions. Do
-not add generic deployment-wide resource locking; bound clients locally and keep distributed
-coordination scoped to the exact domain or operation identity. Do not add another execution primitive or action-specific traversal loop when collection intent
-and bounded seed/follow SQL express the behavior.
+Use typed Pydantic boundaries and SQLAlchemy 2 models. Manage control schema changes
+with Alembic. Object keys are repository-relative; never expose local paths.
+Do not commit generated artifacts, raw local data, virtual environments or secrets.
 
 ## Workflow
 
-Use `uv` from `packages/periplus/`; the project targets Python 3.14. Common root commands:
+Use `uv` from `packages/periplus/` (Python 3.14). Run `make check` after Python
+changes, with targeted behavioral tests. The isolated archive-only recovery drill
+is `scripts/archive_recovery_smoke.py`. For crawl changes, exercise one low-depth
+URL at low concurrency. Read package-local frontend `AGENTS.md` before editing;
+run both frontend typechecks/builds, plus admin lint/tests when admin changes.
 
-```sh
-make sync
-make check
-make api
-make setup
-make catalogue-check
-make compose-up
-```
-
-Run `make check` after Python changes. Add targeted tests for changed behavior. For crawl changes,
-exercise one low-depth URL with low concurrency. For frontend changes, run:
-
-```sh
-cd packages/periplus-public
-npm run typecheck
-npm run build
-cd ../periplus-admin
-npm run typecheck
-npm run build
-```
-
-### DuckLake CDC extension
-
-Periplus uses standard DuckDB and has no custom query extension. Query validation and future
-optimizations belong behind the query API. The separately maintained DuckLake CDC extension is
-loaded only by live materialization; keep its community package revision and DuckDB ABI pinned together.
-See [docs/EXTENSION_DEVELOPMENT.md](docs/EXTENSION_DEVELOPMENT.md) for that boundary.
-
-`./ducklake.sh` opens the standard DuckDB CLI on PATH with the configured lake attached read-only.
-Pass `--sql "..."` to execute a statement and exit. No sibling query extension build is required.
-
-## DuckLake upstream
-
-Periplus runtime code uses the official DuckDB `ducklake` and metadata-store extensions directly.
-The pinned DuckLake CDC extension is loaded only by the dedicated live-materialization connection;
-it owns the durable `ingest.visits` cursor while JetStream remains delivery only. Do not introduce
-a Basin SDK, Quack transport, compatibility attachment, or second Periplus-owned incremental cursor.
-When Periplus reveals a missing DuckLake primitive, record actionable evidence in
-[UPSTREAM.md](UPSTREAM.md) and prefer a coherent upstream fix over a Periplus-only compatibility
-layer.
-
-## Implementation rules
-
-- Prefer typed Pydantic boundaries and SQLAlchemy 2 models.
-- Keep content completion and response handling in the content policy boundary. Keep per-domain
-  politeness in DomainPolicy. The CDP service owns transport configuration and browser-fleet capacity.
-- Keep object keys repository-relative and local filesystem paths out of public contracts.
-- Add formats, services, queues, and abstractions only for an active caller.
-- Do not model resource acquisition as durable `lock.request`, `lock.acquired`, `lock.release`, or
-  generic `work.complete` message chains. Use bounded local pools, and keep the per-domain
-  distributed permit inside website politeness.
-- Do not commit generated artifacts, local `.periplus/` data, virtual environments, or secrets.
-- Manage schema changes with Alembic; do not add compatibility models for removed storage paths.
-
-Before changing either frontend, read its package-local `AGENTS.md` in full.
-
-For the frontend, use shadcn components, React Query for server state, shared API types under
-each application’s `src/types/`, and named exports except for `App.tsx`. Every mutation must surface
-`extractApiError` through `toast.error()`.
+Frontend code uses shadcn, React Query, shared API types and named exports except
+`App.tsx`. Every mutation surfaces `toast.error(extractApiError(error))`.

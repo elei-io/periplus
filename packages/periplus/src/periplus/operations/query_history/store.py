@@ -59,9 +59,9 @@ class QueryHistoryStore:
             plans = rows(f"""SELECT plan_fingerprint, min(started_at) AS first_seen,
                 max(started_at) AS last_seen,
                 (array_agg(execution_id ORDER BY started_at DESC, execution_id DESC))[1] AS example_execution_id,
-                duckdb_version, compiler_version,
+                engine_version, compiler_version,
                 count(*) FILTER (WHERE outcome = 'timeout') AS timeouts, {STATS} {base}
-                GROUP BY plan_fingerprint, duckdb_version, compiler_version
+                GROUP BY plan_fingerprint, engine_version, compiler_version
                 ORDER BY last_seen DESC LIMIT 50""") if pattern is not None else []
             count = rows(f"SELECT count(DISTINCT coalesce(query_fingerprint, 'unparsed')) AS count {base}")[0]['count']
             failures = rows(f"SELECT coalesce(error_code, outcome) AS name, count(*) AS count {base} AND outcome <> 'success' GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 20")

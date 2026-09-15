@@ -1,63 +1,28 @@
-from __future__ import annotations
-
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
-
+from nats.js.api import DiscardPolicy, RetentionPolicy
 from nats.js.errors import NotFoundError
-from nats.js.api import DiscardPolicy
-
-from periplus.platform.messaging.catalogue_queue import (
-    DEAD_LETTER_STREAM,
-    DEAD_LETTER_SUBJECTS,
-    WORK_STREAM,
-    WORK_SUBJECTS,
-    ensure_catalogue_work_stream,
-    ensure_dead_letter_stream,
-)
+from periplus.platform.messaging.catalogue_queue import WORK_STREAM, MATERIAL_STREAM, ensure_catalogue_work_stream
 
 
 class FakeJetStream:
-    def __init__(self) -> None:
-        self.streams = {}
-
-    async def stream_info(self, name: str):
-        if name not in self.streams:
-            raise NotFoundError
+    def __init__(self):self.streams={}
+    async def stream_info(self,name):
+        if name not in self.streams:raise NotFoundError
         return SimpleNamespace(config=self.streams[name])
-
-    async def add_stream(self, *, config) -> None:
-        self.streams[config.name] = config
+    async def add_stream(self,*,config):self.streams[config.name]=config
 
 
-class CatalogueQueueTests(unittest.IsolatedAsyncioTestCase):
-    async def test_shared_stream_topology_is_concrete_and_idempotent(self) -> None:
-        jetstream = FakeJetStream()
-        with (
-            patch(
-                "periplus.platform.messaging.catalogue_queue.get_int",
-                side_effect=lambda name: {
-                    "PERIPLUS_CATALOGUE_WORK_STREAM_REPLICAS": 1,
-                    "PERIPLUS_CATALOGUE_WORK_MAX_BYTES": 1024,
-                    "PERIPLUS_DEAD_LETTER_MAX_BYTES": 2048,
-                }[name],
-            ),
-            patch("periplus.platform.messaging.catalogue_queue.get_float", return_value=3600.0),
-        ):
-            await ensure_catalogue_work_stream(jetstream)
-            await ensure_catalogue_work_stream(jetstream)
-            await ensure_dead_letter_stream(jetstream)
-            await ensure_dead_letter_stream(jetstream)
-
-        work = jetstream.streams[WORK_STREAM]
-        self.assertEqual(set(work.subjects), set(WORK_SUBJECTS))
-        self.assertEqual(work.max_age, 0)
-        self.assertEqual(work.max_bytes, 1024)
-        self.assertEqual(work.discard, DiscardPolicy.NEW)
-        dead = jetstream.streams[DEAD_LETTER_STREAM]
-        self.assertEqual(set(dead.subjects), set(DEAD_LETTER_SUBJECTS))
-        self.assertEqual(dead.max_age, 3600.0)
-
-
-if __name__ == "__main__":
-    unittest.main()
+class QueueTests(unittest.IsolatedAsyncioTestCase):
+    async def test_notifications_are_bounded_and_material_work_cannot_silently_expire(self):
+        js=FakeJetStream()
+        with patch('periplus.platform.messaging.catalogue_queue.get_int',side_effect=lambda key:1 if key.endswith('REPLICAS') else 1024):
+            await ensure_catalogue_work_stream(js)
+            await ensure_catalogue_work_stream(js)
+        self.assertEqual(set(js.streams),{WORK_STREAM,MATERIAL_STREAM})
+        work=js.streams[MATERIAL_STREAM]
+        self.assertEqual(work.retention,RetentionPolicy.WORK_QUEUE)
+        self.assertEqual(work.max_age,0)
+        self.assertEqual(work.discard,DiscardPolicy.NEW)
+        self.assertEqual(js.streams[WORK_STREAM].max_age,86400)

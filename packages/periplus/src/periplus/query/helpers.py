@@ -1,8 +1,9 @@
 """Read-only helper documentation derived from the public catalogue manifest."""
+
 from pydantic import BaseModel
 from periplus.platform.clickhouse.public import PUBLIC_RELATIONS
 
-from periplus.platform.catalogue.public import PUBLIC_CATALOGUE_VERSION, PUBLIC_SCHEMA, known_public_objects, public_objects
+PUBLIC_SCHEMA = "public_v1"
 
 
 class HelperField(BaseModel):
@@ -28,25 +29,28 @@ class QueryHelpers(BaseModel):
 
 
 def query_helpers(schema: str = PUBLIC_SCHEMA) -> QueryHelpers:
-    objects = [QueryHelper(
-        name=f"{item.schema}.{item.name}", kind=item.kind,
-        description=item.comment or "",
-        parameters=[HelperField(name=name, description=kind) for name, kind in item.parameters],
-        columns=[HelperField(name=name, description=description) for name, description in item.column_comments],
-        notes=list(item.notes), examples=list(item.examples),
-    ) for item in public_objects(schema) if item.exposed and item.kind == "view" and item.name in PUBLIC_RELATIONS]
+    if schema != PUBLIC_SCHEMA:
+        raise ValueError("Unsupported public schema")
+    descriptions = {
+        "capture": "Archived HTML observations with stable capture, content and document identities.",
+        "html_element": "DOM elements, attributes and text spans, identified within a document.",
+        "link": "Link occurrences resolved against the captured page URL.",
+        "page": "Page URLs present as captures or link destinations.",
+    }
     return QueryHelpers(
-        catalogue_version="clickhouse-public-v1", schema_version=schema,
-        helpers=[item for item in objects if item.kind in {"macro", "table_macro"}],
-        relations=[item for item in objects if item.kind == "view"],
+        catalogue_version="public_v1",
+        schema_version=schema,
+        helpers=[],
+        relations=[
+            QueryHelper(
+                name=f"public_v1.{name}",
+                kind="view",
+                description=description,
+                parameters=[],
+                columns=[],
+                notes=[],
+                examples=[f"SELECT * FROM public_v1.{name} LIMIT 10"],
+            )
+            for name, description in descriptions.items()
+        ],
     )
-
-
-def safe_helper_error(message: str) -> str | None:
-    """Expose only exact, registry-owned errors, never arbitrary DuckDB details."""
-    first_line = message.splitlines()[0] if message else ""
-    for helper in known_public_objects():
-        for error in helper.errors:
-            if first_line == f"Invalid Input Error: {error}":
-                return error
-    return None

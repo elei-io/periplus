@@ -6,7 +6,6 @@ from uuid import uuid4
 
 from periplus.crawl.runtime.frontier_outbox import publish_delivery, publish_outbox_once
 from periplus.crawl.runtime.frontier_store import FrontierDelivery
-from periplus.platform.catalogue.lineage import AcquisitionReason
 
 
 class FrontierOutboxTests(unittest.IsolatedAsyncioTestCase):
@@ -20,7 +19,7 @@ class FrontierOutboxTests(unittest.IsolatedAsyncioTestCase):
         calls = []
         store = MagicMock()
         store.claim_outbox.return_value = [delivery]
-        store.mark_outbox_published.side_effect = lambda _: calls.append("marked")
+        store.mark_outbox_published.side_effect = lambda _, **kwargs: calls.append("marked")
         jetstream = AsyncMock()
         jetstream.publish.side_effect = lambda *args, **kwargs: calls.append("published")
         await publish_outbox_once(store, jetstream, AsyncMock())
@@ -37,35 +36,3 @@ class FrontierOutboxTests(unittest.IsolatedAsyncioTestCase):
         await publish_outbox_once(store, jetstream, AsyncMock())
         store.release_outbox.assert_called_once_with(delivery, "OSError")
         store.mark_outbox_published.assert_not_called()
-
-    async def test_lineage_uses_existing_ingestion_lane(self):
-        identity = uuid4()
-        evidence = AcquisitionReason(
-            record_id=identity, collection_id=identity, observation_id=uuid4(),
-            recorded_at=datetime.now(UTC), reason="collection", policy_version="1", rule_id="seed",
-        )
-        delivery = self.delivery("lineage", evidence.model_dump(mode="json"))
-        ingestion, jetstream = AsyncMock(), AsyncMock()
-        await publish_delivery(delivery, jetstream, ingestion)
-        job = ingestion.enqueue.await_args.args[0]
-        self.assertEqual(job.lineage, evidence)
-        self.assertEqual(job.kind, "lineage")
-        jetstream.publish.assert_not_awaited()
-
-    async def test_receipt_loop_never_treats_pending_or_failed_delivery_as_commit(self):
-        from periplus.crawl.runtime.frontier_outbox import reconcile_receipts_once
-        from periplus.ingestion.queue import IngestionState
-        identity = uuid4()
-        evidence = AcquisitionReason(record_id=identity, collection_id=identity, observation_id=uuid4(),
-            recorded_at=datetime.now(UTC), reason="collection", policy_version="1", rule_id="seed")
-        delivery = self.delivery("lineage", evidence.model_dump(mode="json"))
-        for status in ("pending", "failed"):
-            store = MagicMock()
-            store.claim_ingestion_receipts.return_value = [delivery]
-            state = IngestionState(job=delivery.ingestion_job(), status=status, updated_at=datetime.now(UTC),
-                                   error="unavailable" if status == "failed" else None)
-            ingestion = AsyncMock()
-            ingestion.reconcile.return_value = state
-            await reconcile_receipts_once(store, ingestion)
-            store.record_ingestion_receipt.assert_not_called()
-            store.defer_ingestion_receipt.assert_called_once_with(delivery, f"ingestion_{status}")

@@ -1,1 +1,0 @@
-SELECT c.capture_id, h.node_index, h.text FROM public_v1.capture c JOIN (SELECT content_id, node_index, substr(tag, 2, 1)::INTEGER AS level, text FROM public_v1.html_element WHERE namespace = 'http://www.w3.org/1999/xhtml' AND tag IN ('h1','h2','h3','h4','h5','h6')) h USING(content_id) WHERE c.effective_url = 'https://www.ssa.gov/deposit/' ORDER BY c.capture_id, h.node_index;

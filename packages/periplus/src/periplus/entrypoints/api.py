@@ -13,9 +13,7 @@ from periplus.crawl.api import (
 )
 from periplus.operations.api import ingestion_status
 from periplus.operations.api.access import router as access_router
-from periplus.operations.api import ingestion as repository_operations
 from periplus.operations.api import metrics as operational_metrics
-from periplus.platform.messaging.catalogue_workers import ensure_catalogue_worker_storage
 from periplus.operations.api import catalogue as sql_console
 from periplus.platform.api_access import ApiAccessMiddleware
 from periplus.crawl.control.collections.results import CrawlResults
@@ -42,21 +40,21 @@ async def lifespan(app: FastAPI):
         app.state.frontier = frontier
         app.state.frontier_sessions = SessionLocal
         from periplus.operations.query_history.store import QueryHistoryStore
+
         class LocalHistory:
             async def record(self, value):
                 await asyncio.to_thread(QueryHistoryStore(SessionLocal).record, value)
+
         app.state.query_history = LocalHistory()
         app.state.jetstream = jetstream
-        from periplus.ingestion.queue import ensure_dead_letter_stream, ensure_ingestion_results
-        await ensure_dead_letter_stream(jetstream)
-        app.state.ingestion_results = await ensure_ingestion_results(jetstream)
         await ensure_crawler_presence(jetstream)
         app.state.crawler_presence = CrawlerPresenceReader(jetstream)
-        app.state.catalogue_workers = await ensure_catalogue_worker_storage(jetstream)
         app.state.document_store = object_store_from_env()
         app.state.download_slot = asyncio.Semaphore(2)
         app.state.admin_sql_slot = asyncio.Semaphore(1)
-        crawl_results = CrawlResults(await asyncio.to_thread(connect_clickhouse), SessionLocal)
+        crawl_results = CrawlResults(
+            await asyncio.to_thread(connect_clickhouse), SessionLocal
+        )
         app.state.crawl_results = crawl_results
         yield
     finally:
@@ -76,7 +74,6 @@ async def healthz():
 
 app.include_router(operational_metrics.router)
 app.include_router(ingestion_status.router)
-app.include_router(repository_operations.router)
 app.include_router(sql_console.router)
 app.include_router(content_policies.router)
 app.include_router(domain_policies.router)
@@ -91,10 +88,17 @@ app.add_middleware(HttpTelemetry, service="api")
 app.include_router(access_router)
 
 from periplus.operations.api.query_history import router as query_history_router
+
 app.include_router(query_history_router)
 
 from periplus.materialization.rebuilds.http import router as rebuild_router
+
 app.include_router(rebuild_router)
 
 from periplus.operations.api.archive_imports import router as archive_import_router
+
 app.include_router(archive_import_router)
+
+from periplus.operations.api.retirement import router as retirement_router
+
+app.include_router(retirement_router)

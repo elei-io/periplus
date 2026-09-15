@@ -10,7 +10,6 @@ from nats.js.errors import BucketNotFoundError
 from periplus.crawl.runtime.domain_pacing import ensure_domain_pacing_storage
 from periplus.crawl.runtime.frontier_queue import ensure_crawler_presence
 from periplus.platform.config.environment import ConfigurationError
-from periplus.platform.messaging.catalogue_workers import ensure_catalogue_worker_storage
 from periplus.platform.messaging.leases import ensure_operation_lease_storage
 from periplus.platform.messaging.topology import operational_replicas
 
@@ -18,7 +17,7 @@ from periplus.platform.messaging.topology import operational_replicas
 class OperationalReplicationTests(unittest.IsolatedAsyncioTestCase):
     async def test_create_reopen_and_reject_replica_drift(self):
         for ensure in (ensure_domain_pacing_storage, ensure_crawler_presence,
-                       ensure_catalogue_worker_storage, ensure_operation_lease_storage):
+                       ensure_operation_lease_storage):
             with self.subTest(store=ensure.__name__), patch.dict(os.environ, {"PERIPLUS_NATS_OPERATIONAL_REPLICAS": "3"}):
                 js = AsyncMock()
                 js.key_value.side_effect = BucketNotFoundError()

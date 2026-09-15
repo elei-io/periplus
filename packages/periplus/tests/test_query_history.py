@@ -75,10 +75,10 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
         def timeout(payload, *, limits, evidence, publication):
             evidence.plan = 'estimated scan'
             evidence.plan_truncated = False
-            evidence.duckdb_version = 'test-engine'
+            evidence.engine_version = 'test-engine'
             raise TimeoutError()
         request = SimpleNamespace(state=SimpleNamespace(), headers={}, app=SimpleNamespace(state=SimpleNamespace(
-            query_history=recorder, query_slot=slot, query_limits=SimpleNamespace(read=AsyncMock(return_value=ExecutionContext(limits=QueryLimits(), publication=PublicationBinding(database="public_v1", revision=0)))), query_service=SimpleNamespace(execute=timeout, compiler_version="public-query-v4:experimental"))))
+            query_history=recorder, query_slot=slot, query_limits=SimpleNamespace(read=AsyncMock(return_value=ExecutionContext(limits=QueryLimits(), publication=PublicationBinding(expires_at="2099-01-01T00:00:00Z", database="public_v1", revision=0)))), query_service=SimpleNamespace(execute=timeout, compiler_version="public-query-v4:experimental"))))
         await slot.acquire()
         self.assertEqual((await _run(request, QueryRequest(sql='select 1'), 'execute')).status_code, 429)
         self.assertEqual(recorder.record.call_args.args[0].outcome, 'rejected')
@@ -145,10 +145,10 @@ class StoreTests(unittest.TestCase):
 
     def test_plan_roundtrip_and_comparison(self):
         first = execution(plan='scan a', plan_fingerprint='a'*64, plan_truncated=False,
-            diagnostics=[], duckdb_version='test', compiler_version='v1',
+            diagnostics=[], engine_version='test', compiler_version='v1',
             effective_limits={'max_rows': 10, 'max_duration_seconds': 2, 'max_result_bytes': 1048576})
         self.store.record(first)
-        self.store.record(execution(plan='scan a', plan_fingerprint='a'*64, duckdb_version='test',
+        self.store.record(execution(plan='scan a', plan_fingerprint='a'*64, engine_version='test',
             compiler_version='v1', outcome='timeout', elapsed_ms=2000))
         self.store.record(execution(plan='scan b', plan_fingerprint='b'*64, elapsed_ms=20))
         self.store.record(execution())

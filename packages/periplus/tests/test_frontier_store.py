@@ -10,8 +10,9 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 from frontier_fixtures import navigation_package, policy_snapshot
-from periplus.platform.catalogue.records import AttemptRecord, AttemptUsage, attempt_id_for
-from periplus.crawl.control.collections.models import CollectionRecord
+from periplus.crawl.acquisition.records import AttemptRecord, AttemptUsage, attempt_id_for
+from periplus.crawl.control.collections.models import CollectionRecord, CollectionResultRecord
+from periplus.retention.models import CaptureRetirementRecord
 from periplus.crawl.control.collections.schemas import CollectionSpec, SelectionContext
 from periplus.crawl.control.content_policies.schemas import EffectivePolicySnapshot
 from periplus.crawl.runtime.frontier_models import (
@@ -23,7 +24,7 @@ from periplus.crawl.runtime.frontier_store import (
 
 from periplus.crawl.control.domain_policies.models import DomainPolicy
 
-TABLES = (DomainPolicy.__table__, CollectionRecord.__table__, FrontierControlRecord.__table__,
+TABLES = (DomainPolicy.__table__, CollectionRecord.__table__, CollectionResultRecord.__table__, CaptureRetirementRecord.__table__, FrontierControlRecord.__table__,
           AcquisitionRecord.__table__, InterestRecord.__table__, FrontierOutboxRecord.__table__)
 
 
@@ -207,12 +208,8 @@ class FrontierStoreTests(unittest.TestCase):
         self.assertEqual(self.store.reconcile_orphans(now=self.now), 0)
         self.assertEqual(self.store.get_acquisition(shared.acquisition_id).status, "queued")
         self.assertEqual(self.store.get_acquisition(orphan.acquisition_id).status, "cancelled")
-        self.assertEqual(self.store.cleanup_acquisitions(cutoff=self.now + timedelta(hours=2)).removed, 0)
-        with self.sessions.begin() as session:
-            for message in session.scalars(select(FrontierOutboxRecord).where(
-                    FrontierOutboxRecord.acquisition_id == orphan.acquisition_id)):
-                message.committed_at = datetime.now(UTC)
         self.assertEqual(self.store.cleanup_acquisitions(cutoff=self.now + timedelta(hours=2)).removed, 1)
+        self.assertEqual(self.store.cleanup_acquisitions(cutoff=self.now + timedelta(hours=2)).removed, 0)
 
     def collection(self, **kwargs):
         identity = uuid4()
@@ -223,7 +220,7 @@ class FrontierStoreTests(unittest.TestCase):
         return self.store.admit(collection, url, self.context, self.policy, now=self.now)
 
     def complete(self, acquisition_id, generation, *, success, outcome, now, navigation=None):
-        from periplus.platform.catalogue.records import VisitEvidence, VisitRecord
+        from periplus.crawl.acquisition.records import VisitEvidence, VisitRecord
         acquisition = self.store.get_acquisition(acquisition_id)
         if acquisition.status == "dispatched" and acquisition.generation == generation:
             self.store.begin_attempt(acquisition_id, generation, now=self.now)
@@ -362,7 +359,10 @@ class FrontierStoreTests(unittest.TestCase):
         with self.sessions() as session:
             events = list(session.scalars(select(FrontierOutboxRecord)))
         self.assertEqual(sum(e.kind == "observation" for e in events), 1)
-        self.assertEqual(sum(e.kind == "lineage" and e.payload["kind"] == "fulfillment" for e in events), 2)
+        with self.sessions() as session:
+            results = list(session.scalars(select(CollectionResultRecord)))
+        self.assertEqual({r.collection_id for r in results}, {first, second})
+        self.assertEqual({r.capture_id for r in results}, {a.acquisition_id})
 
     def test_first_context_wins_even_if_later_path_is_shallower(self):
         identity = self.collection(max_depth=4)
@@ -532,7 +532,7 @@ class FrontierStoreTests(unittest.TestCase):
         a = self.admit(self.collection())
         self.store.dispatch(a.acquisition_id, now=self.now)
         first = self.store.claim_outbox(now=self.now, lease_seconds=2)
-        self.assertEqual(len(first), 2)
+        self.assertEqual(len(first), 1)
         self.assertEqual(self.store.claim_outbox(now=self.now), [])
         later = self.now + timedelta(seconds=3)
         second = self.store.claim_outbox(now=later)
@@ -543,6 +543,32 @@ class FrontierStoreTests(unittest.TestCase):
         for delivery in second:
             self.assertTrue(self.store.mark_outbox_published(delivery, now=later))
         self.assertEqual(self.store.claim_outbox(now=later + timedelta(minutes=2)), [])
+
+    def test_archive_receipt_binds_result_and_rejects_stale_or_conflicting_publishers(self):
+        from periplus.crawl.acquisition.records import VisitEvidence
+        from periplus.ingestion.captures import from_visit
+        from periplus.ingestion.archive import ArchiveEvent
+        a = self.admit(self.collection())
+        work = self.store.dispatch(a.acquisition_id, now=self.now)
+        self.complete(a.acquisition_id, work.generation, success=True, outcome='succeeded', now=self.now)
+        first = next(d for d in self.store.claim_outbox(now=self.now, lease_seconds=2) if d.kind == 'observation')
+        capture = from_visit(VisitEvidence.model_validate(first.payload))
+        event = ArchiveEvent(shard=3, sequence=17, capture_id=capture.capture_id,
+                             digest=capture.digest, kind='capture', committed_at=self.now)
+        for invalid in (None, event.model_copy(update={'digest': '0' * 64})):
+            with self.assertRaises(ValueError):
+                self.store.mark_outbox_published(first, archive_event=invalid, now=self.now)
+        with self.sessions() as session:
+            self.assertIsNone(session.get(CollectionResultRecord, a.interest_id).archived_at)
+        later = self.now + timedelta(seconds=3)
+        second = next(d for d in self.store.claim_outbox(now=later) if d.kind == 'observation')
+        self.assertFalse(self.store.mark_outbox_published(first, archive_event=event, now=later))
+        self.assertTrue(self.store.mark_outbox_published(second, archive_event=event, now=later))
+        with self.sessions() as session:
+            result = session.get(CollectionResultRecord, a.interest_id)
+            self.assertIsNotNone(result.archived_at)
+            self.assertEqual((result.archive_shard, result.archive_sequence), (3, 17))
+            self.assertIsNotNone(session.get(AcquisitionRecord, a.acquisition_id).evidence_committed_at)
 
     def test_outbox_failed_publication_has_bounded_backoff(self):
         a = self.admit(self.collection())
@@ -591,7 +617,7 @@ class FrontierStoreTests(unittest.TestCase):
         self.assertEqual(self.store.settle_collection(identity, now=self.now), "eligible_links_exhausted")
 
     def test_outcome_identity_and_navigation_are_part_of_frozen_acceptance(self):
-        from periplus.platform.catalogue.records import VisitEvidence, VisitRecord
+        from periplus.crawl.acquisition.records import VisitEvidence, VisitRecord
         a = self.admit(self.collection())
         work = self.store.dispatch(a.acquisition_id, now=self.now)
         wrong = VisitEvidence(visit=VisitRecord(
@@ -1007,7 +1033,7 @@ class FrontierStoreTests(unittest.TestCase):
             self.assertEqual(self.store.control_view().dispatched_acquisitions, 0)
 
     def test_known_time_overrun_is_not_clipped_and_mismatched_reservation_is_rejected(self):
-        from periplus.platform.catalogue.records import VisitEvidence, VisitRecord
+        from periplus.crawl.acquisition.records import VisitEvidence, VisitRecord
         a = self.admit(self.collection())
         work = self.store.dispatch(a.acquisition_id, now=self.now)
         self.store.begin_attempt(a.acquisition_id, work.generation, now=self.now)
@@ -1033,7 +1059,7 @@ class FrontierStoreTests(unittest.TestCase):
         from periplus.crawl.acquisition.models import AcquisitionAttemptEvidence, AcquisitionResult
         from periplus.crawl.acquisition.evidence import attempt_records
         from periplus.crawl.runtime.frontier_evidence import acquisition_context
-        from periplus.platform.catalogue.records import VisitEvidence, VisitRecord
+        from periplus.crawl.acquisition.records import VisitEvidence, VisitRecord
         identity = self.collection()
         a = self.admit(identity)
         first = self.store.dispatch(a.acquisition_id, now=self.now)
@@ -1069,66 +1095,7 @@ class FrontierStoreTests(unittest.TestCase):
         self.assertEqual(self.store.get_collection(identity).consumed, 1)
         self.assertEqual(self.store.get_acquisition(a.acquisition_id).outcome["attempts"][0]["resource_usage"]["measured_ms"], 100)
 
-    def test_ingestion_receipts_prove_evidence_and_lineage_separately_from_query_readiness(self):
-        from periplus.ingestion.queue import IngestionState
-        from evidence_receipt_fixture import receipt_for
-        from periplus.crawl.runtime.frontier_views import collection_views
-        identity = self.collection(max_depth=0)
-        a = self.admit(identity)
-        self.store.finish_seed_selection(identity)
-        work = self.store.dispatch(a.acquisition_id, now=self.now)
-        self.complete(a.acquisition_id, work.generation, success=True, outcome={}, now=self.now)
-        self.store.finish_link_selection(a.interest_id)
-        self.store.settle_collection(identity, now=self.now)
-        for delivery in self.store.claim_outbox(now=self.now):
-            self.store.mark_outbox_published(delivery, now=self.now)
-        self.assertIsNone(self.store.get_acquisition(a.acquisition_id).evidence_committed_at)
-        before, = collection_views(self.sessions, identity=identity)
-        self.assertEqual(before.ingested_pages, 0)
-        self.assertFalse(before.lineage_ready)
-        receipts = self.store.claim_ingestion_receipts(now=self.now)
-        self.assertTrue(receipts)
-        self.assertTrue(all(delivery.kind != "capture" for delivery in receipts))
-        for delivery in receipts:
-            job = delivery.ingestion_job()
-            state = IngestionState(job=job, status="succeeded", updated_at=self.now,
-                result=receipt_for(job, ingested_at=self.now))
-            self.assertTrue(self.store.record_ingestion_receipt(delivery, state, now=self.now))
-            self.assertFalse(self.store.record_ingestion_receipt(delivery, state, now=self.now))
-        self.assertEqual(self.store.get_acquisition(a.acquisition_id).evidence_committed_at.replace(tzinfo=UTC), self.now)
-        self.assertEqual(self.store.claim_ingestion_receipts(now=self.now + timedelta(days=1)), [])
-        after, = collection_views(self.sessions, identity=identity)
-        self.assertEqual(after.ingested_pages, 1)
-        self.assertTrue(after.lineage_ready)
-        self.assertIsNone(after.query_ready)
-        self.assertEqual(after.query_readiness_reason, "materialization_commit_not_verified")
 
-    def test_ingestion_receipts_reject_wrong_evidence_and_expired_claims(self):
-        from periplus.ingestion.queue import IngestionState
-        from evidence_receipt_fixture import receipt_for
-        own = self.admit(self.collection())
-        self.store.dispatch(own.acquisition_id, now=self.now)
-        publications = self.store.claim_outbox(now=self.now)
-        publication, = [item for item in publications if item.kind == "lineage"]
-        self.store.mark_outbox_published(publication, now=self.now)
-        old, = self.store.claim_ingestion_receipts(now=self.now)
-        self.assertEqual(self.store.claim_ingestion_receipts(now=self.now), [])
-        later = self.now + timedelta(seconds=61)
-        current, = self.store.claim_ingestion_receipts(now=later)
-        job = old.ingestion_job()
-        state = IngestionState(job=job, status="succeeded", updated_at=later,
-            result=receipt_for(job, created=False, ingested_at=later))
-        self.assertFalse(self.store.record_ingestion_receipt(old, state, now=later))
-        wrong_job = job.model_copy(update={"lineage": job.lineage.model_copy(update={"rule_id": "different"})})
-        with self.assertRaisesRegex(ValueError, "different immutable evidence"):
-            self.store.record_ingestion_receipt(current, state.model_copy(update={"job": wrong_job}), now=later)
-        pending = IngestionState(job=job, status="pending", updated_at=later)
-        with self.assertRaisesRegex(ValueError, "successful durable result"):
-            self.store.record_ingestion_receipt(current, pending, now=later)
-        self.assertTrue(self.store.defer_ingestion_receipt(current, "ingestion_pending", now=later))
-        self.assertEqual(self.store.claim_ingestion_receipts(now=later + timedelta(seconds=19)), [])
-        retried, = self.store.claim_ingestion_receipts(now=later + timedelta(seconds=20))
-        self.assertTrue(self.store.record_ingestion_receipt(retried, state, now=later + timedelta(seconds=20)))
 
 
 
@@ -1304,7 +1271,7 @@ class FrontierStoreTests(unittest.TestCase):
 
 
     def test_retired_navigation_preserves_exact_completion_replay_and_forces_branch_capture(self):
-        from periplus.platform.catalogue.records import VisitEvidence
+        from periplus.crawl.acquisition.records import VisitEvidence
         own, package = self.retention_parent()
         self.store.finish_link_selection(own.interest_id)
         self.allow_retention_receipts(own.acquisition_id)
@@ -1529,4 +1496,4 @@ class FrontierStoreTests(unittest.TestCase):
         self.assertEqual(self.store.get_collection(identity).outcome, "duration_limit")
         self.assertEqual(self.store.get_collection(identity).status, "settled")
         with self.sessions() as session:
-            self.assertIsNotNone(session.get(FrontierOutboxRecord, f"lineage:fulfillment:{a.interest_id}"))
+            self.assertIsNotNone(session.get(CollectionResultRecord, a.interest_id))

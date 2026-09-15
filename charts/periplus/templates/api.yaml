@@ -49,7 +49,7 @@ spec:
             - name: PERIPLUS_SERVICE_VERSION
               value: {{ .Values.images.core.tag | quote }}
             {{- include "periplus.coreEnv" . | nindent 12 }}
-            {{- include "periplus.duckdbEnv" .Values.api.duckdb | nindent 12 }}
+            {{- include "periplus.clickhouseWriterEnv" . | nindent 12 }}
             - name: PERIPLUS_ADMIN_API_TOKEN
               valueFrom:
                 secretKeyRef:

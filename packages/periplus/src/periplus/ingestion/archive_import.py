@@ -1,49 +1,66 @@
-"""External observations join the ordinary immutable-object ingestion boundary."""
+"""External observations enter the same operationally independent raw archive."""
 
 import asyncio
-
-from periplus.ingestion.archive import journal
-from periplus.ingestion.common_crawl import CommonCrawlClient, CommonCrawlRecord, DecodedCapture, decode_record
-from periplus.ingestion.objects.html import HtmlIdentity, RawHtmlRepository
+from periplus.ingestion.archive import Archive
+from periplus.ingestion.captures import Capture, Payload
+from periplus.ingestion.common_crawl import (
+    CommonCrawlClient,
+    CommonCrawlRecord,
+    DecodedCapture,
+    decode_record,
+)
+from periplus.ingestion.objects.html import RawHtmlRepository
 from periplus.ingestion.objects.store import ObjectStore
-from periplus.ingestion.queue import IngestionQueueClient, visit_ingestion_job
-from periplus.platform.catalogue.records import DocumentRecord, VisitEvidence, VisitRecord, document_id_for
-from periplus.retention.identities import EvidenceRetired, retired
+from periplus.ingestion.queue import ArchivePublisher
+from periplus.retention.identities import write_claims
 
 
-def archive_record(store: ObjectStore, item: CommonCrawlRecord, data: bytes) -> VisitEvidence:
+def archive_record(store: ObjectStore, item: CommonCrawlRecord, data: bytes) -> Capture:
     return archive_capture(store, decode_record(item, data))
 
 
-def archive_capture(store: ObjectStore, capture: DecodedCapture) -> VisitEvidence:
-    identity, observed = capture.source.capture_id, capture.captured_at
-    if retired("observation", str(identity)):
-        raise EvidenceRetired("archived observation was evicted; automatic reimport is forbidden")
-    stored = RawHtmlRepository(store).put(capture.html, source_url=capture.url,
-        visit_id=identity, observed_at=observed, content_type="text/html")
-    RawHtmlRepository(store).verify(stored.object_key,
-        expected=HtmlIdentity(sha256=stored.sha256, size_bytes=stored.size_bytes))
-    # The archive provides a timestamped observation, not a measured execution
-    # interval. Equal timestamps encode that point; no native attempts are added.
-    evidence = VisitEvidence(visit=VisitRecord(visit_id=identity,
-        requested_url=capture.url, effective_url=capture.url, admitted_at=observed,
-        started_at=observed, observed_at=observed, finished_at=observed,
-        outcome="succeeded", status_code=200, document_id=document_id_for(identity),
-        archive_source=capture.source), attempts=(), document=DocumentRecord(
-        document_id=document_id_for(identity), visit_id=identity, observed_at=observed,
-        representation="response_body", declared_media_type=capture.content_type,
-        detected_media_type="text/html", charset="utf-8", content_sha256=stored.sha256,
-        content_bytes=stored.size_bytes, object_key=stored.object_key,
-        storage_encoding="zstd", stored_bytes=stored.compressed_size_bytes))
-    journal(store, visit_ingestion_job(evidence))
-    return evidence
+def archive_capture(store: ObjectStore, decoded: DecodedCapture) -> Capture:
+    identity = decoded.source.capture_id
+    stored = RawHtmlRepository(store).put(
+        decoded.html,
+        source_url=decoded.url,
+        visit_id=identity,
+        observed_at=decoded.captured_at,
+        content_type="text/html",
+    )
+    capture = Capture(
+        capture_id=identity,
+        requested_url=decoded.url,
+        effective_url=decoded.url,
+        captured_at=decoded.captured_at,
+        timestamp_precision="second",
+        http_status=200,
+        completeness="complete",
+        source=decoded.source,
+        payload=Payload(
+            content_id=stored.sha256,
+            byte_length=stored.size_bytes,
+            object_key=stored.object_key,
+            storage_encoding="zstd",
+            stored_bytes=stored.compressed_size_bytes,
+            representation="response_body",
+            media_type="text/html",
+            declared_media_type=decoded.content_type,
+            charset="utf-8",
+        ),
+    )
+    with write_claims({"capture": [str(identity)], "content": [stored.sha256]}):
+        Archive(store).commit(capture)
+    return capture
 
 
-async def import_record(client: CommonCrawlClient, store: ObjectStore,
-                        queue: IngestionQueueClient, item: CommonCrawlRecord) -> VisitEvidence:
+async def import_record(
+    client: CommonCrawlClient,
+    store: ObjectStore,
+    queue: ArchivePublisher,
+    item: CommonCrawlRecord,
+) -> Capture:
     data = await asyncio.to_thread(client.fetch, item)
     evidence = await asyncio.to_thread(archive_record, store, item, data)
-    # Losing this publish does not lose the capture: archive replay republishes
-    # the same frozen identity through the normal ingestor/materializer workers.
-    await queue.reconcile(visit_ingestion_job(evidence))
+    await queue.publish(evidence)
     return evidence

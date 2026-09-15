@@ -1,10 +1,34 @@
 from unittest import TestCase
 from unittest.mock import MagicMock, call, patch
+from types import SimpleNamespace
 
 from periplus.entrypoints import setup
 
 
 class DeploymentTests(TestCase):
+    @patch("periplus.entrypoints.setup.grant_query_target")
+    @patch("periplus.entrypoints.setup.install_query_user")
+    @patch("periplus.entrypoints.setup.install_public_schema")
+    @patch("periplus.entrypoints.setup.install_material_schema")
+    @patch("periplus.entrypoints.setup.connect_clickhouse")
+    @patch("periplus.entrypoints.setup.BuildControl")
+    def test_setup_preserves_published_and_reclaimed_targets(
+        self, controls, connect, material, public, query_user, grant
+    ) -> None:
+        control = controls.return_value
+        control.builds.return_value = [
+            SimpleNamespace(protected=True, query_database="query_" + "a" * 32),
+            SimpleNamespace(protected=False, query_database="public_v1"),
+        ]
+        for phase in ("serving", "previous", "retired"):
+            with self.subTest(phase=phase):
+                control.get.return_value = SimpleNamespace(phase=phase)
+                setup.bootstrap_catalogue()
+                material.assert_not_called()
+                public.assert_not_called()
+        self.assertEqual(query_user.call_count, 3)
+        self.assertEqual(grant.call_args, call(connect.return_value, "query_" + "a" * 32))
+
     @patch("periplus.entrypoints.setup.bootstrap_catalogue")
     @patch("periplus.entrypoints.setup.seed_system_control_plane")
     @patch("periplus.entrypoints.setup.migrate_control_database")
@@ -23,7 +47,7 @@ class DeploymentTests(TestCase):
             [
                 call.migrate(),
                 call.seed_control(),
-                call.bootstrap(),
+                call.bootstrap(None),
             ],
         )
 

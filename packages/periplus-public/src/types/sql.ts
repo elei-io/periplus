@@ -1,10 +1,10 @@
-export type QueryMode = "stable" | "experimental"
+export type QueryMode = "stable"
 
 export type PreparedQuery = {
   query_mode: QueryMode
   compiler_version: string
   optimizations: string[]
-  schema_version: "public_v1" | "experimental"
+  schema_version: "public_v1"
   query_id: string
   sql: string
   parameters: unknown[]

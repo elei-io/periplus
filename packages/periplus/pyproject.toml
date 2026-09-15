@@ -28,7 +28,6 @@ dependencies = [
     "duckdb==1.5.5",
     "croniter>=6,<7",
     "selectolax==0.4.11",
-    "PyICU==2.16.2",
     "warcio==1.8.1",
 ]
 
@@ -52,14 +51,12 @@ where = ["src"]
 exclude = ["tests*", "build*"]
 
 [tool.setuptools.package-data]
-"periplus.ingestion" = ["schema.sql"]
 "periplus.materialization" = ["schema.sql"]
 "periplus.platform.clickhouse" = ["public.sql"]
 "periplus.platform.postgres" = [
     "alembic.ini",
     "alembic/script.py.mako",
 ]
-"periplus.platform.catalogue" = [
-    "sql/*/*/*.sql",
-    "helpers/README.md",
-]
+
+[tool.setuptools.data-files]
+"share/periplus" = ["pyproject.toml", "uv.lock"]

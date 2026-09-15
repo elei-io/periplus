@@ -104,7 +104,7 @@ export function QueryWorkbench({ initialSql, initialParameters, autoRun = false,
           <div className="flex flex-wrap items-center justify-between gap-2 p-3"><div className="flex flex-wrap items-center gap-3"><CardDescription role="status">{query.access.message ?? query.phase}</CardDescription><Badge variant="secondary">{namespace}</Badge></div><CardDescription>{query.access.data ? `${query.access.data.sql.max_rows.toLocaleString()} rows / ${query.access.data.sql.max_result_bytes / (1024 * 1024)} MiB · ${query.access.data.sql.max_duration_seconds}s limit` : query.access.message === "Checking availability…" ? "Loading query limits…" : "Query limits unavailable"}</CardDescription></div>
         </Card>
         <Card size="sm" aria-label="Query output" className="sql-output-surface min-h-72" aria-busy={query.isPending}>
-          {query.data && <CardDescription className="px-3 py-2">{query.data.query_mode === "experimental" ? "Experimental" : "Stable"} result</CardDescription>}
+          {query.data && <CardDescription className="px-3 py-2">Query result</CardDescription>}
           <Tabs defaultValue="results">
             <div className="flex flex-wrap items-center justify-between gap-3 px-3"><TabsList variant="line" aria-label="Query output"><TabsTrigger value="results"><Table2 />Results</TabsTrigger><TabsTrigger value="plan">Execution plan</TabsTrigger></TabsList><div className="flex flex-wrap gap-2"><QueryExport operationId={query.operationId} result={query.data} disabled={query.isPending} /></div></div>
             <div className="relative">

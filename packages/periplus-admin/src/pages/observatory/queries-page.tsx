@@ -398,7 +398,7 @@ export function QueriesPage() {
         />
       </div>
       <p className="text-xs text-muted-foreground">
-        Best-effort server history, not visitor counts. Direct DuckLake queries
+        Best-effort server history, not visitor counts. Direct ClickHouse queries
         and requests rejected before SQL admission are not recorded. Duration
         excludes history delivery and browser transport.
       </p>
@@ -556,8 +556,8 @@ export function QueriesPage() {
                 <CardContent><Table><TableHeader><TableRow>
                   {["Plan / engine", "Executions", "p50", "p95 / samples", "Timeout rate", "First / last seen"].map(h => <TableHead key={h}>{h}</TableHead>)}
                 </TableRow></TableHeader><TableBody>
-                  {data.plans.map(p => <TableRow key={`${p.plan_fingerprint}-${p.duckdb_version}-${p.compiler_version}`}>
-                    <TableCell><Button variant="link" onClick={() => setSelected(p.example_execution_id)}>{p.plan_fingerprint?.slice(0, 12) ?? "No complete plan"}</Button><p className="text-xs">DuckDB {p.duckdb_version ?? "unknown"} · {p.compiler_version ?? "unknown compiler"}</p></TableCell>
+                  {data.plans.map(p => <TableRow key={`${p.plan_fingerprint}-${p.engine_version}-${p.compiler_version}`}>
+                    <TableCell><Button variant="link" onClick={() => setSelected(p.example_execution_id)}>{p.plan_fingerprint?.slice(0, 12) ?? "No complete plan"}</Button><p className="text-xs">ClickHouse {p.engine_version ?? "unknown"} · {p.compiler_version ?? "unknown compiler"}</p></TableCell>
                     <TableCell>{number(p.executions)}</TableCell><TableCell>{ms(p.p50_ms)}</TableCell>
                     <TableCell>{ms(p.p95_ms)}<p className="text-xs">{number(p.successes)} samples{p.successes < 20 ? " · small sample" : ""}</p></TableCell>
                     <TableCell>{percent(p.timeouts, p.executions)}<p className="text-xs">{number(p.timeouts)} timeouts</p></TableCell>
@@ -735,7 +735,7 @@ export function QueriesPage() {
                 <TabsContent value="plan" className="space-y-4 pt-4">
                   <p className="text-sm text-muted-foreground">Estimated preparation preview for the submitted SQL, before the service adds its result-row wrapper. This is not a runtime profile; no query was rerun to collect it.</p>
                   <dl className="grid grid-cols-2 gap-3 text-sm">
-                    {Object.entries({"DuckDB": detail.data.duckdb_version, "Compiler": detail.data.compiler_version, "Plan fingerprint": detail.data.plan_fingerprint, "Preview truncated": detail.data.plan_truncated}).map(([k,v]) => <div key={k}><dt className="text-muted-foreground">{k}</dt><dd className="break-all">{v == null ? "—" : String(v)}</dd></div>)}
+                    {Object.entries({"ClickHouse": detail.data.engine_version, "Compiler": detail.data.compiler_version, "Plan fingerprint": detail.data.plan_fingerprint, "Preview truncated": detail.data.plan_truncated}).map(([k,v]) => <div key={k}><dt className="text-muted-foreground">{k}</dt><dd className="break-all">{v == null ? "—" : String(v)}</dd></div>)}
                   </dl>
                   {detail.data.plan_truncated && <Badge variant="outline">Truncated preview · excluded from plan fingerprinting</Badge>}
                   <pre tabIndex={0} aria-label="Query plan" className="overflow-auto rounded-md bg-muted p-3 text-xs">{detail.data.plan ?? "No plan was captured. Older records, early rejections, SHOW requests and privileged admin SQL have no preparation plan."}</pre>

@@ -37,6 +37,6 @@ class QueryExecution(Base):
     plan_truncated: Mapped[bool | None] = mapped_column(Boolean)
     plan_fingerprint: Mapped[str | None] = mapped_column(String(64))
     diagnostics: Mapped[list | None] = mapped_column(json_type)
-    duckdb_version: Mapped[str | None] = mapped_column(String(80))
+    engine_version: Mapped[str | None] = mapped_column(String(80))
     compiler_version: Mapped[str | None] = mapped_column(String(80))
     effective_limits: Mapped[dict | None] = mapped_column(json_type)

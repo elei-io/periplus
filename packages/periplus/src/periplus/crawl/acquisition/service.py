@@ -18,8 +18,8 @@ from periplus.crawl.acquisition.evidence import attempt_records, step_records
 from periplus.crawl.acquisition.errors import RetryableAcquisitionFailure
 from periplus.crawl.acquisition.models import AcquisitionResult
 from periplus.urls import normalize_url
-from periplus.platform.catalogue.records import AttemptUsage
-from periplus.platform.catalogue import (
+from periplus.crawl.acquisition.records import AttemptUsage
+from periplus.crawl.acquisition.records import (
     DocumentRecord,
     VisitEvidence,
     VisitRecord,
@@ -48,7 +48,9 @@ async def acquire_page(
     persist_retryable_failure: bool = True,
     include_html: bool = False,
 ) -> AcquisitionResult:
-    if (domain_start_reserved and domain_permit is None) or (domain_pacing is not None and not domain_start_reserved):
+    if (domain_start_reserved and domain_permit is None) or (
+        domain_pacing is not None and not domain_start_reserved
+    ):
         raise ValueError("a reserved domain start requires a held permit")
     effective = context.policy
     policy = effective.content
@@ -62,27 +64,46 @@ async def acquire_page(
             raise ValueError("capture requires a frozen timeout")
         started = time.perf_counter()
         result = await capture_page(
-            normalized, policy, attempt_number=attempt_number, browser=browser,
+            normalized,
+            policy,
+            attempt_number=attempt_number,
+            browser=browser,
             timeout_seconds=(context.attempt_reserved_ms - 5000) / 1000,
             exclusions=context.exclusions,
         )
-        from periplus.operations.metrics import capture_outcomes, capture_duration, capture_throttled
+        from periplus.operations.metrics import (
+            capture_outcomes,
+            capture_duration,
+            capture_throttled,
+        )
+
         capture_duration.observe(time.perf_counter() - started)
-        status_class = f"{result.status_code // 100}xx" if result.status_code and 100 <= result.status_code < 600 else "unknown"
-        capture_outcomes.labels("succeeded" if result.success else "failed", status_class).inc()
+        status_class = (
+            f"{result.status_code // 100}xx"
+            if result.status_code and 100 <= result.status_code < 600
+            else "unknown"
+        )
+        capture_outcomes.labels(
+            "succeeded" if result.success else "failed", status_class
+        ).inc()
         if result.status_code == 429:
             capture_throttled.inc()
         if result.attempt_evidence is None:
             raise ValueError("capture returned no physical attempt evidence")
         usage = AttemptUsage(
             policy_version=context.dispatch_policy_version,
-            domain_policy=context.policy.domain, exclusion_policy_version=context.exclusion_policy_version,
+            domain_policy=context.policy.domain,
+            exclusion_policy_version=context.exclusion_policy_version,
             reserved_ms=context.attempt_reserved_ms,
             measured_ms=math.ceil((time.perf_counter() - started) * 1000),
         )
-        return result.model_copy(update={"attempt_evidence": result.attempt_evidence.model_copy(
-            update={"resource_usage": usage},
-        )})
+        return result.model_copy(
+            update={
+                "attempt_evidence": result.attempt_evidence.model_copy(
+                    update={"resource_usage": usage},
+                )
+            }
+        )
 
     if domain_permit is not None:
         async with domain_permit:
@@ -103,11 +124,7 @@ async def acquire_page(
                 remote_domain,
                 exc_info=True,
             )
-    if (
-        not page.success
-        and page.failure_retryable
-        and not persist_retryable_failure
-    ):
+    if not page.success and page.failure_retryable and not persist_retryable_failure:
         raise RetryableAcquisitionFailure(page)
     html_identity = (
         identify_html(page.html) if page.html is not None and page.success else None
@@ -120,20 +137,18 @@ async def acquire_page(
         if page.document_bytes is not None and page.success
         else None
     )
-    attempt_evidence = context.prior_attempts + ((page.attempt_evidence,) if page.attempt_evidence is not None else ())
+    attempt_evidence = context.prior_attempts + (
+        (page.attempt_evidence,) if page.attempt_evidence is not None else ()
+    )
     attempts = attempt_records(context.acquisition_id, attempt_evidence)
     if not attempts:
         raise RuntimeError("visit acquisition produced no attempt evidence")
     finished_at = datetime.now(UTC)
     observed_at = (
-        finished_at
-        if html_identity is not None or exact_identity is not None
-        else None
+        finished_at if html_identity is not None or exact_identity is not None else None
     )
     final_normalized = (
-        attempts[-1].effective_url
-        if attempts[-1].effective_url is not None
-        else None
+        attempts[-1].effective_url if attempts[-1].effective_url is not None else None
     )
     steps = step_records(context.acquisition_id, (*context.prior_steps, *page.steps))
 
@@ -141,9 +156,7 @@ async def acquire_page(
         source_url = final_normalized or normalized
         document: DocumentRecord | None = None
         document_id = (
-            document_id_for(context.acquisition_id)
-            if observed_at is not None
-            else None
+            document_id_for(context.acquisition_id) if observed_at is not None else None
         )
         if html_identity is not None:
             assert observed_at is not None and document_id is not None

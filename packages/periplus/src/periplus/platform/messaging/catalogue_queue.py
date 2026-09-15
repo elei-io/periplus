@@ -1,48 +1,42 @@
-"""Shared JetStream topology for typed catalogue work and dead letters."""
+"""Corpus notifications and bounded material batches; object storage owns inputs."""
 
-from periplus.platform.config import get_float, get_int
+from periplus.platform.config import get_int
 from nats.js.api import DiscardPolicy, RetentionPolicy, StorageType, StreamConfig
 from periplus.platform.messaging.topology import ensure_stream_contract
 
-
-WORK_STREAM = "PERIPLUS_CATALOGUE_WORK"
-INGEST_SUBJECT = "periplus.catalogue.ingest.>"
-VISIT_SUBJECT = "periplus.catalogue.ingest.visit"
-LINEAGE_SUBJECT = "periplus.catalogue.ingest.lineage"
-MATERIALIZATION_PLAN_SUBJECT = "periplus.catalogue.materialization.plan"
-MATERIALIZATION_BATCH_SUBJECT = "periplus.catalogue.materialization.batch"
-MATERIALIZATION_ACTIVATE_SUBJECT = "periplus.catalogue.materialization.activate"
-BARRIER_SUBJECT = "periplus.catalogue.ingest.barrier"
-WORK_SUBJECTS = (VISIT_SUBJECT, LINEAGE_SUBJECT, BARRIER_SUBJECT)
-
-DEAD_LETTER_STREAM = "PERIPLUS_DEAD_LETTER"
-INGEST_DEAD_LETTER_SUBJECT = "periplus.dead_letter.ingest"
-DEAD_LETTER_SUBJECTS = (INGEST_DEAD_LETTER_SUBJECT,)
+WORK_STREAM = "PERIPLUS_CORPUS_EVENTS"
+EVENT_SUBJECT = "periplus.corpus.event"
+MATERIAL_STREAM = "PERIPLUS_MATERIAL_WORK"
+MATERIAL_SUBJECT = "periplus.material.batch"
 
 
 async def ensure_catalogue_work_stream(jetstream) -> None:
     replicas = get_int("PERIPLUS_CATALOGUE_WORK_STREAM_REPLICAS")
-    config = StreamConfig(
-        name=WORK_STREAM,
-        subjects=list(WORK_SUBJECTS),
-        retention=RetentionPolicy.INTEREST,
-        storage=StorageType.FILE,
-        num_replicas=replicas,
-        max_age=0,
-        max_bytes=get_int("PERIPLUS_CATALOGUE_WORK_MAX_BYTES"),
-        discard=DiscardPolicy.NEW,
+    # Notifications are an acceleration, not the archive. Bounds are explicit;
+    # every target also reconciles the durable archive sequence checkpoints.
+    await ensure_stream_contract(
+        jetstream,
+        StreamConfig(
+            name=WORK_STREAM,
+            subjects=[EVENT_SUBJECT],
+            retention=RetentionPolicy.LIMITS,
+            storage=StorageType.FILE,
+            num_replicas=replicas,
+            max_age=86400,
+            max_bytes=get_int("PERIPLUS_CATALOGUE_WORK_MAX_BYTES"),
+            discard=DiscardPolicy.OLD,
+        ),
     )
-    await ensure_stream_contract(jetstream, config)
-
-
-async def ensure_dead_letter_stream(jetstream) -> None:
-    config = StreamConfig(
-        name=DEAD_LETTER_STREAM,
-        subjects=list(DEAD_LETTER_SUBJECTS),
-        retention=RetentionPolicy.LIMITS,
-        storage=StorageType.FILE,
-        num_replicas=get_int("PERIPLUS_CATALOGUE_WORK_STREAM_REPLICAS"),
-        max_age=get_float("PERIPLUS_DEAD_LETTER_TTL_SECONDS"),
-        max_bytes=get_int("PERIPLUS_DEAD_LETTER_MAX_BYTES"),
+    await ensure_stream_contract(
+        jetstream,
+        StreamConfig(
+            name=MATERIAL_STREAM,
+            subjects=[MATERIAL_SUBJECT + ".*"],
+            retention=RetentionPolicy.WORK_QUEUE,
+            storage=StorageType.FILE,
+            num_replicas=replicas,
+            max_age=0,
+            max_bytes=get_int("PERIPLUS_CATALOGUE_WORK_MAX_BYTES"),
+            discard=DiscardPolicy.NEW,
+        ),
     )
-    await ensure_stream_contract(jetstream, config)

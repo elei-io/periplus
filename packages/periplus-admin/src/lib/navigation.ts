@@ -101,7 +101,7 @@ export const defaultNavigationItem = {
   href: "/",
   icon: SquareTerminalIcon,
   title: "SQL Console",
-  description: "Execute administrative SQL directly against DuckLake.",
+  description: "Execute administrative SQL directly against ClickHouse.",
 }
 
 export function findNavigationItem(pathname: string) {

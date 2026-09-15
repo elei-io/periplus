@@ -19,7 +19,7 @@ export function useQueryExecution() {
       const controller = new AbortController()
       controllers.current.add(controller)
       try {
-        const result = await responseJson<QueryResult>(await fetch(mode === "experimental" ? "/api/query/experimental/exec" : "/api/query/exec", {
+        const result = await responseJson<QueryResult>(await fetch("/api/query/exec", {
           method: "POST", headers: { "content-type": "application/json", "x-periplus-operation-id": operation.id },
           body: JSON.stringify({ sql, parameters }), signal: controller.signal,
         }))

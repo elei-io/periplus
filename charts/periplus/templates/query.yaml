@@ -1,8 +1,6 @@
 {{- $root := . -}}
-{{- range $mode := list "stable" "experimental" }}
-{{- $component := ternary "query" "query-experimental" (eq $mode "stable") }}
-{{- $config := ternary $root.Values.query $root.Values.queryExperimental (eq $mode "stable") }}
----
+{{- $component := "query" -}}
+{{- $config := .Values.query -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -46,8 +44,7 @@ spec:
               containerPort: 8000
           env:
             - name: PERIPLUS_QUERY_MODE
-              value: {{ $mode | quote }}
-            {{- include "periplus.duckdbEnv" $config.duckdb | nindent 12 }}
+              value: stable
             - name: PERIPLUS_API_URL
               value: "http://{{ include "periplus.fullname" $root }}-api:{{ $root.Values.api.service.port }}"
             - name: PERIPLUS_SERVICE_VERSION
@@ -57,38 +54,9 @@ spec:
                 secretKeyRef:
                   name: {{ $root.Values.secrets.apiAccess.name }}
                   key: {{ $root.Values.secrets.apiAccess.queryTokenKey }}
-            - name: PERIPLUS_DUCKLAKE_METADATA_PATH
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $root.Values.secrets.queryDucklakeMetadata.name }}
-                  key: {{ $root.Values.secrets.queryDucklakeMetadata.pathKey }}
-            - name: PERIPLUS_DUCKLAKE_ALIAS
-              value: {{ $root.Values.config.ducklake.alias | quote }}
-            - name: PERIPLUS_DUCKLAKE_METADATA_SCHEMA
-              value: {{ $root.Values.config.ducklake.metadataSchema | quote }}
-            - name: PERIPLUS_DUCKLAKE_DATA_PATH
-              value: {{ $root.Values.config.ducklake.dataPath | quote }}
-            - name: PERIPLUS_DUCKLAKE_S3_ENDPOINT
-              value: {{ $root.Values.config.ducklake.s3Endpoint | quote }}
-            - name: PERIPLUS_DUCKLAKE_S3_URL_STYLE
-              value: {{ $root.Values.config.ducklake.s3UrlStyle | quote }}
-            - name: PERIPLUS_DUCKLAKE_S3_USE_SSL
-              value: {{ $root.Values.config.ducklake.s3UseSSL | quote }}
-            - name: PERIPLUS_DUCKLAKE_S3_REGION
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $root.Values.secrets.queryS3.name }}
-                  key: {{ $root.Values.secrets.queryS3.regionKey }}
-            - name: PERIPLUS_DUCKLAKE_S3_KEY_ID
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $root.Values.secrets.queryS3.name }}
-                  key: {{ $root.Values.secrets.queryS3.accessKeyIdKey }}
-            - name: PERIPLUS_DUCKLAKE_S3_SECRET_ACCESS_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $root.Values.secrets.queryS3.name }}
-                  key: {{ $root.Values.secrets.queryS3.secretAccessKeyKey }}
+            - name: PERIPLUS_CLICKHOUSE_URL
+              value: {{ .Values.config.clickhouse.url | quote }}
+            {{- include "periplus.clickhouseQueryEnv" $root | nindent 12 }}
           startupProbe:
             httpGet:
               path: /healthz
@@ -107,5 +75,3 @@ spec:
             periodSeconds: 10
           resources:
             {{- toYaml $config.resources | nindent 12 }}
-
-{{- end }}

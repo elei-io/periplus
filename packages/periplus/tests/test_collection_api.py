@@ -41,7 +41,6 @@ class CollectionApiTests(unittest.TestCase):
         self.history = AsyncMock()
         self.history.collection_readiness.return_value = {}
         self.history.get.return_value = None
-        self.history.is_retired.return_value = False
         app.state.crawl_results = self.history
         from periplus.crawl.runtime.frontier_health import CrawlerPresenceReader
         bucket = AsyncMock()
@@ -106,11 +105,7 @@ class CollectionApiTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200, response.text)
             self.assertEqual([item["id"] for item in response.json()["items"]], expected[offset:offset + 5])
 
-    def test_retired_request_cannot_be_recreated_and_retention_defaults_forever(self):
-        self.history.is_retired.return_value = True
-        self.assertEqual(self.client.post("/collections", json=self.payload).status_code, 410)
-        self.assertIsNone(self.client.app.state.frontier.get_collection(UUID(self.payload["id"])))
-        self.history.is_retired.return_value = False
+    def test_collection_retention_defaults_forever(self):
         result = self.client.post("/collections", json=self.payload).json()
         self.assertIsNone(result["specification"]["retention_seconds"])
         self.assertIsNone(result["expires_at"])
@@ -258,16 +253,6 @@ class CollectionApiTests(unittest.TestCase):
         self.assertEqual(detail.json()['specification']['request_class'], 'admin')
         self.assertEqual(self.client.post('/collections', json=self.payload).status_code, 422)
         self.assertEqual(len(self.client.get('/collections').json()['items']), 1)
-
-    def test_retirement_outage_defers_new_supplied_identity_but_existing_intent_survives(self):
-        from periplus.crawl.control.collections.history import HistoryUnavailable
-        self.history.is_retired.side_effect = HistoryUnavailable('offline')
-        self.assertEqual(self.client.post('/collections', json=self.payload).status_code, 503)
-        self.assertEqual(self.client.get(f'/collections/{self.payload["id"]}').status_code, 404)
-        created = self.client.post('/collections', json={'specification': self.payload['specification']})
-        self.assertEqual(created.status_code, 201, created.text)
-        retry = self.client.post('/collections', json=self.payload | {'id': created.json()['id']})
-        self.assertEqual(retry.status_code, 201, retry.text)
 
     def test_execution_pruning_preserves_frozen_counts_and_collection_visibility(self):
         from periplus.crawl.control.collections.models import CollectionRecord

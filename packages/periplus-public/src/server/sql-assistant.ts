@@ -18,7 +18,7 @@ export async function suggestSql(input: SqlAssistantInput, signal: AbortSignal, 
   }
   const catalogueDone = activity("Loading corpus schema")
   const headers = { authorization: `Bearer ${process.env.PERIPLUS_QUERY_API_TOKEN}`, "content-type": "application/json", "x-periplus-query-source": "assistant" }
-  const queryUrl = input.queryMode === "experimental" ? process.env.PERIPLUS_QUERY_EXPERIMENTAL_URL : process.env.PERIPLUS_QUERY_URL ?? "http://127.0.0.1:8010"
+  const queryUrl = process.env.PERIPLUS_QUERY_URL ?? "http://127.0.0.1:8010"
   if (!queryUrl) throw new Error("Experimental SQL is not configured.")
   const helperResponse = await fetch(new URL("/query/helpers", queryUrl), {
     headers, cache: "no-store", signal: AbortSignal.any([signal, AbortSignal.timeout(5_000)]),
@@ -69,7 +69,7 @@ export async function suggestSql(input: SqlAssistantInput, signal: AbortSignal, 
           },
         }),
         SQL: tool({
-        description: "Run read-only DuckDB SQL to explore the Periplus corpus. Results include source snapshot and explicit sampling/truncation flags.",
+        description: "Run read-only ClickHouse SQL to explore the Periplus corpus. Results include source snapshot and explicit sampling/truncation flags.",
         inputSchema: z.object({ sql: z.string().min(1).max(20_000), parameters: z.array(z.union([z.string(), z.number(), z.boolean(), z.null()])).default([]) }),
         execute: async ({ sql, parameters }) => {
           const done = activity("Running SQL", sql)
@@ -81,7 +81,7 @@ export async function suggestSql(input: SqlAssistantInput, signal: AbortSignal, 
       maxRetries: 0,
       abortSignal: signal,
       providerOptions: { openai: { store: false, parallelToolCalls: false } },
-      system: `Help the user explore Periplus’s corpus with read-only DuckDB SQL. Use the SQL tool to inspect sources, investigate questions and check your assumptions. Ground findings in returned evidence and explain relevant sampling or gaps.
+      system: `Help the user explore Periplus’s corpus with read-only ClickHouse SQL. Use the SQL tool to inspect sources, investigate questions and check your assumptions. Ground findings in returned evidence and explain relevant sampling or gaps.
 Inspect returned excerpts before presenting research findings. Navigation, repeated boilerplate and unrelated cross-promotions are not evidence about the main subject of a page. Refine the query to inspect relevant sections or headings when needed, and report fewer useful matches rather than padding results with irrelevant ones.
 For coverage, count distinct page URLs separately from capture events and rank by the measure the user requested. Use readable Markdown lists or tables and linked source URLs.
 Report only execution outcomes you observed. SUGGEST_SQL returns a preparation check before your answer. Distinguish preparation from execution: a prepared query has not necessarily returned results. Its check status is displayed separately.

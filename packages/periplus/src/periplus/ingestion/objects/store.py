@@ -14,7 +14,10 @@ from typing import BinaryIO, Mapping, Protocol, runtime_checkable
 
 from botocore.exceptions import ClientError
 
-from periplus.ingestion.objects.exceptions import RepositoryKeyError, RepositoryObjectNotFound
+from periplus.ingestion.objects.exceptions import (
+    RepositoryKeyError,
+    RepositoryObjectNotFound,
+)
 
 
 @dataclass(frozen=True)
@@ -106,6 +109,11 @@ class FileObjectStore:
                 os.fsync(output.fileno())
             try:
                 os.link(temporary, destination)
+                directory = os.open(destination.parent, os.O_RDONLY)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
             except FileExistsError:
                 return False
             return True
@@ -233,7 +241,10 @@ class S3ObjectStore:
                 Key=self._object_key(key),
             )
         except ClientError as exc:
-            if _status_code(exc) == 404 or _error_code(exc) in {"NoSuchKey", "NotFound"}:
+            if _status_code(exc) == 404 or _error_code(exc) in {
+                "NoSuchKey",
+                "NotFound",
+            }:
                 raise RepositoryObjectNotFound(key) from exc
             raise
         body = response["Body"]
@@ -246,7 +257,10 @@ class S3ObjectStore:
         try:
             self.client.head_object(Bucket=self.bucket, Key=self._object_key(key))
         except ClientError as exc:
-            if _status_code(exc) == 404 or _error_code(exc) in {"NoSuchKey", "NotFound"}:
+            if _status_code(exc) == 404 or _error_code(exc) in {
+                "NoSuchKey",
+                "NotFound",
+            }:
                 return False
             raise
         return True
@@ -258,7 +272,10 @@ class S3ObjectStore:
                 Key=self._object_key(key),
             )
         except ClientError as exc:
-            if _status_code(exc) == 404 or _error_code(exc) in {"NoSuchKey", "NotFound"}:
+            if _status_code(exc) == 404 or _error_code(exc) in {
+                "NoSuchKey",
+                "NotFound",
+            }:
                 raise RepositoryObjectNotFound(key) from exc
             raise
         return int(response["ContentLength"])
@@ -304,9 +321,7 @@ class S3ObjectStore:
                 if object_key.endswith("/"):
                     continue
                 relative_key = (
-                    object_key[len(self.prefix) + 1 :]
-                    if self.prefix
-                    else object_key
+                    object_key[len(self.prefix) + 1 :] if self.prefix else object_key
                 )
                 modified = item["LastModified"]
                 if modified.tzinfo is None:
@@ -329,9 +344,7 @@ class S3ObjectStore:
             response = self.client.delete_objects(
                 Bucket=self.bucket,
                 Delete={
-                    "Objects": [
-                        {"Key": self._object_key(key)} for key in batch
-                    ],
+                    "Objects": [{"Key": self._object_key(key)} for key in batch],
                     "Quiet": True,
                 },
             )

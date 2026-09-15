@@ -1,8 +1,8 @@
 {{- $root := . -}}
 {{- $workers := list
   (dict "name" "crawler" "replicas" .Values.crawler.replicas "healthPort" 9099 "metricsPort" 9090 "resources" .Values.crawler.resources)
-  (dict "name" "ingestor" "replicas" .Values.ingestor.replicas "healthPort" 9092 "metricsPort" 9091 "resources" .Values.ingestor.resources "concurrencyName" "PERIPLUS_INGESTOR_CONCURRENCY" "concurrency" .Values.ingestor.concurrency)
-  (dict "name" "materializer" "replicas" .Values.materializer.replicas "healthPort" 9096 "metricsPort" 9093 "resources" .Values.materializer.resources "concurrencyName" "PERIPLUS_MATERIALIZER_CONCURRENCY" "concurrency" .Values.materializer.concurrency)
+  (dict "name" "ingestor" "replicas" .Values.ingestor.replicas "healthPort" 9092 "metricsPort" 9091 "resources" .Values.ingestor.resources)
+  (dict "name" "materializer" "replicas" .Values.materializer.replicas "healthPort" 9096 "metricsPort" 9093 "resources" .Values.materializer.resources)
   (dict "name" "janitor" "replicas" 1 "healthPort" 9095 "metricsPort" 9094 "resources" .Values.janitor.resources)
 -}}
 {{- range $index, $worker := $workers }}
@@ -60,12 +60,16 @@ spec:
           {{- include "periplus.envFrom" $root | nindent 10 }}
           env:
             {{- include "periplus.coreEnv" $root | nindent 12 }}
-            {{- include "periplus.duckdbEnv" $settings.duckdb | nindent 12 }}
             {{- if eq $worker.name "materializer" }}
-            - name: PERIPLUS_MATERIALIZER_PARSER_PROCESSES
-              value: {{ $root.Values.materializer.parserProcesses | quote }}
+            {{- include "periplus.clickhouseWriterEnv" $root | nindent 12 }}
+            - name: PERIPLUS_CLICKHOUSE_QUERY_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $root.Values.secrets.queryClickhouse.name | quote }}
+                  key: {{ $root.Values.secrets.queryClickhouse.userKey | quote }}
             {{- end }}
             {{- if eq $worker.name "crawler" }}
+            {{- include "periplus.duckdbEnv" $settings.duckdb | nindent 12 }}
             - name: PERIPLUS_QUERY_URL
               value: http://{{ include "periplus.fullname" $root }}-query:{{ $root.Values.query.service.port }}
             - name: PERIPLUS_QUERY_API_TOKEN
@@ -89,10 +93,6 @@ spec:
             {{- end }}
             - name: PERIPLUS_CDP_URL
               value: {{ $root.Values.config.cdpUrl | quote }}
-            {{- end }}
-            {{- with $worker.concurrencyName }}
-            - name: {{ . }}
-              value: {{ $worker.concurrency | quote }}
             {{- end }}
           startupProbe:
             httpGet:

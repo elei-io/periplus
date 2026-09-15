@@ -58,7 +58,7 @@ export type QueryExecution = QueryExecutionSummary & {
   plan_truncated: boolean | null
   plan_fingerprint: string | null
   diagnostics: { severity: string; code: string; message: string }[] | null
-  duckdb_version: string | null
+  engine_version: string | null
   compiler_version: string | null
   effective_limits: Record<string, number> | null
 }
@@ -68,7 +68,7 @@ export type QueryPlanVariant = QueryStats & {
   first_seen: string
   last_seen: string
   example_execution_id: string
-  duckdb_version: string | null
+  engine_version: string | null
   compiler_version: string | null
   timeouts: number
 }

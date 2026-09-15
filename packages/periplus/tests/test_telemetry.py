@@ -4,7 +4,6 @@ import unittest
 from unittest.mock import patch
 from periplus.platform.telemetry import SafeFormatter
 from periplus.platform.health import HealthMonitor
-from periplus.materialization import metrics
 
 class TelemetryTests(unittest.TestCase):
     def test_native_exception_and_arguments_never_render(self):
@@ -32,16 +31,6 @@ class TelemetryTests(unittest.TestCase):
         with patch('periplus.platform.health.time.monotonic', return_value=monitor._last_heartbeat + 10):
             self.assertFalse(monitor.alive())
 
-    def test_replay_does_not_increment_committed_counts(self):
-        before = metrics._output_rows._value.get()
-        kwargs = dict(source_items=2, source_bytes=400, output_rows=10, output_bytes=200,
-                      project_seconds=0, parquet_seconds=0, commit_seconds=0)
-        metrics.batch(**kwargs, already_applied=True)
-        self.assertEqual(metrics._output_rows._value.get(), before)
-        metrics.batch(**kwargs, already_applied=False, superseded=True)
-        self.assertEqual(metrics._output_rows._value.get(), before)
-        metrics.batch(**kwargs, already_applied=False)
-        self.assertEqual(metrics._output_rows._value.get(), before + 10)
 
     def test_http_metric_labels_and_logs_never_include_query_strings(self):
         import asyncio

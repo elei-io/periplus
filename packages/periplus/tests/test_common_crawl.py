@@ -11,14 +11,11 @@ from warcio.statusandheaders import StatusAndHeaders
 from warcio.warcwriter import WARCWriter
 
 from operational_state_fixture import operational_state
-from periplus.ingestion.archive import archived_jobs, journal, read_archive
+from periplus.ingestion.archive import Archive, CaptureRetired
 from periplus.ingestion.archive_import import archive_record
 from periplus.ingestion.common_crawl import CommonCrawlClient, CommonCrawlRecord, decode_record
 from periplus.ingestion.objects.html import RawHtmlRepository
 from periplus.ingestion.objects.store import FileObjectStore
-from periplus.ingestion.queue import visit_ingestion_job
-from periplus.ingestion.storage import evidence_digest, visit_row
-from periplus.materialization.rebuilds.source import decode_visit
 
 
 def fixture(*, url="https://example.com/", identity="<urn:uuid:be35bfb2-7d24-4161-b1c9-3b9bd48125ad>",
@@ -48,24 +45,24 @@ class CommonCrawlTests(unittest.TestCase):
     def test_archive_is_exact_and_can_reconstruct_evidence_without_databases(self):
         item, data, body = fixture()
         evidence = archive_record(self.store, item, data)
-        self.assertEqual(evidence.document.content_sha256, sha256(body).hexdigest())
-        self.assertEqual(RawHtmlRepository(self.store).read_bytes(evidence.document.object_key), body)
-        self.assertEqual(evidence.visit.observed_at, item.captured_at)
-        self.assertEqual(evidence.attempts, ())
-        self.assertIsNone(evidence.visit.capture_policy)
-        jobs = list(archived_jobs(self.store))
-        self.assertEqual(jobs[0].visit, evidence)
-        self.assertEqual(evidence_digest(jobs[0].visit), evidence_digest(evidence))
+        self.assertEqual(evidence.payload.content_id, sha256(body).hexdigest())
+        self.assertEqual(RawHtmlRepository(self.store).read_bytes(evidence.payload.object_key), body)
+        self.assertEqual(evidence.captured_at, item.captured_at)
+        self.assertNotIn("attempts", evidence.model_dump())
+        self.assertNotIn("capture_policy", evidence.model_dump())
+        jobs = [Archive(self.store).read(e.capture_id) for e in Archive(self.store).events(Archive(self.store).heads())]
+        self.assertEqual(jobs[0], evidence)
+        self.assertEqual(jobs[0].digest, evidence.digest)
         self.assertEqual(archive_record(self.store, item, data), evidence)
-        self.assertEqual(len(list(archived_jobs(self.store))), 1)
+        self.assertEqual(len(list(Archive(self.store).events(Archive(self.store).heads()))), 1)
 
     def test_cross_url_content_dedupe_preserves_distinct_captures(self):
         item, data, _ = fixture()
         first = archive_record(self.store, item, data)
         item, data, _ = fixture(url="https://example.org/", identity="<urn:uuid:be35bfb2-7d24-4161-b1c9-3b9bd48125ae>")
         second = archive_record(self.store, item, data)
-        self.assertNotEqual(first.visit.visit_id, second.visit.visit_id)
-        self.assertEqual(first.document.object_key, second.document.object_key)
+        self.assertNotEqual(first.capture_id, second.capture_id)
+        self.assertEqual(first.payload.object_key, second.payload.object_key)
         self.assertEqual(len(list(self.store.list_objects("html/"))), 1)
 
     def test_http_headers_preserve_duplicates_and_bytes(self):
@@ -80,17 +77,10 @@ class CommonCrawlTests(unittest.TestCase):
         item, data, _ = fixture()
         original = archive_record(self.store, item, data)
         item, data, _ = fixture(body=b"<h1>Changed</h1>")
-        with self.assertRaisesRegex(ValueError, "conflicting immutable"):
+        with self.assertRaisesRegex(ValueError, "[Cc]onflict|mismatch"):
             archive_record(self.store, item, data)
-        self.assertEqual(list(archived_jobs(self.store))[0].visit, original)
+        self.assertEqual(Archive(self.store).read(original.capture_id), original)
 
-    def test_retired_capture_is_not_reimported(self):
-        from periplus.retention.identities import EvidenceRetired
-        item, data, _ = fixture()
-        with patch("periplus.ingestion.archive_import.retired", return_value=True):
-            with self.assertRaises(EvidenceRetired):
-                archive_record(self.store, item, data)
-        self.assertEqual(list(self.store.list_objects("raw/")), [])
 
     def test_unsupported_and_corrupt_records_fail_before_publication(self):
         cases = [fixture(extra_headers=(("Content-Encoding", "gzip"),)),
@@ -121,19 +111,15 @@ class CommonCrawlTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "exact byte range"):
             client.fetch(item)
 
-    def test_clickhouse_row_reconstructs_archive_digest(self):
-        item, data, _ = fixture()
-        evidence = archive_record(self.store, item, data)
-        self.assertEqual(decode_visit(visit_row(evidence)), evidence)
 
-    def test_journal_retry_ignores_delivery_clock(self):
-        item, data, _ = fixture()
-        evidence = archive_record(self.store, item, data)
-        first = journal(self.store, visit_ingestion_job(evidence))
-        self.assertEqual(journal(self.store, visit_ingestion_job(evidence)), first)
-        self.assertEqual(read_archive(self.store, first).job.visit, evidence)
 
 
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_retired_capture_is_not_reimported(self):
+        item,data,_=fixture()
+        capture=archive_record(self.store,item,data)
+        Archive(self.store).retire(capture.capture_id)
+        with self.assertRaises(CaptureRetired):archive_record(self.store,item,data)

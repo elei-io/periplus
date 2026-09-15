@@ -86,54 +86,47 @@ def TimestampFromTicks(ticks: float) -> datetime:
     return datetime.fromtimestamp(ticks)
 
 
-_INTEGER_TYPES = {"TINYINT", "SMALLINT", "INTEGER", "BIGINT", "HUGEINT", "UTINYINT",
-                  "USMALLINT", "UINTEGER", "UBIGINT", "UHUGEINT", "BIGNUM"}
-_FLOAT_TYPES = {"FLOAT", "DOUBLE", "REAL"}
-_TIME_TYPES = {"TIME", "TIME WITH TIME ZONE", "TIMETZ"}
-_TIMESTAMP_TYPES = {"TIMESTAMP", "TIMESTAMP_S", "TIMESTAMP_MS", "TIMESTAMP_NS",
-                    "TIMESTAMP WITH TIME ZONE", "TIMESTAMPTZ"}
+_INTEGER_TYPES = {f'{prefix}Int{bits}' for prefix in ('', 'U') for bits in (8,16,32,64,128,256)}
+_FLOAT_TYPES = {'Float32', 'Float64'}
+
+
+def _base_type(value: str) -> str:
+    while value.startswith(('Nullable(', 'LowCardinality(')):
+        value = value[value.index('(')+1:-1]
+    return value
 
 
 class _TypeCategory:
-    def __init__(self, names: set[str], prefix: str = ""):
-        self.names, self.prefix = names, prefix
+    def __init__(self, names: set[str], prefixes: tuple[str, ...] = ()):
+        self.names, self.prefixes = names, prefixes
 
     def __eq__(self, other: object) -> bool:
-        return isinstance(other, str) and (other in self.names or bool(self.prefix and other.startswith(self.prefix)))
+        if not isinstance(other, str):return False
+        value = _base_type(other)
+        return value in self.names or value.startswith(self.prefixes)
 
 
-STRING = _TypeCategory({"VARCHAR", "UUID", "JSON", "ENUM"})
-BINARY = _TypeCategory({"BLOB"})
-NUMBER = _TypeCategory(_INTEGER_TYPES | _FLOAT_TYPES | {"BOOLEAN"}, "DECIMAL(")
-DATETIME = _TypeCategory({"DATE"} | _TIME_TYPES | _TIMESTAMP_TYPES)
+STRING = _TypeCategory({'String','UUID','JSON'}, ('FixedString(', 'Enum'))
+BINARY = _TypeCategory(set())
+NUMBER = _TypeCategory(_INTEGER_TYPES | _FLOAT_TYPES | {'Bool'}, ('Decimal',))
+DATETIME = _TypeCategory({'Date','Date32'}, ('DateTime','Time'))
 ROWID = _TypeCategory(set())
 
 
 def _value(value: Any, sql_type: str) -> Any:
-    if value is None:
-        return None
-    if sql_type in _INTEGER_TYPES:
-        return int(value)
-    if sql_type in _FLOAT_TYPES:
-        return float(value)
-    if sql_type.startswith("DECIMAL("):
-        return Decimal(str(value))
-    # Preserve infinities and out-of-range dates rather than clipping them.
-    if sql_type == "DATE":
-        try:
-            return date.fromisoformat(value)
-        except ValueError:
-            return value
-    if sql_type in _TIME_TYPES:
-        return time.fromisoformat(value)
-    if sql_type in _TIMESTAMP_TYPES:
-        try:
-            return datetime.fromisoformat(value)
-        except ValueError:
-            return value
-    if sql_type == "BLOB":
-        return base64.b64decode(value, validate=True)
-    # UUIDs remain strings, and nested/other types retain their JSON wire values.
+    if value is None:return None
+    sql_type = _base_type(sql_type)
+    if sql_type in _INTEGER_TYPES:return int(value)
+    if sql_type in _FLOAT_TYPES:return float(value)
+    if sql_type.startswith('Decimal'):return Decimal(str(value))
+    if sql_type == 'Bool':return value in (True, 1, '1', 'true')
+    if sql_type in ('Date','Date32'):
+        try:return date.fromisoformat(value)
+        except ValueError:return value
+    if sql_type.startswith('DateTime'):
+        try:return datetime.fromisoformat(value)
+        except ValueError:return value
+    if sql_type.startswith('Time'):return time.fromisoformat(value)
     return value
 
 
@@ -152,16 +145,16 @@ def _parameter(value: Any) -> Any:
 class Connection:
     """Marimo-discoverable, read-only connection; commit is a no-op."""
 
-    dialect = "duckdb"
+    dialect = "clickhouse"
 
     def __init__(self, base_url: str | None = None, *, timeout: float = 620,
-                 mode: Literal["stable", "experimental"] = "stable",
+                 mode: Literal["stable"] = "stable",
                  schema_version: str | None = None, allow_partial: bool = False):
         try:
             self._client = Client(base_url, timeout=timeout, mode=mode)
         except ConfigurationError as exc:
             raise InterfaceError(str(exc)) from exc
-        self.schema_version = schema_version if schema_version is not None else ("experimental" if mode == "experimental" else "public_v1")
+        self.schema_version = schema_version if schema_version is not None else ("public_v1")
         self.allow_partial = allow_partial
         self._cursors = set()
         self.closed = False
@@ -210,7 +203,7 @@ class Connection:
 
 
 def connect(base_url: str | None = None, *, timeout: float = 620,
-            mode: Literal["stable", "experimental"] = "stable",
+            mode: Literal["stable"] = "stable",
             schema_version: str | None = None, allow_partial: bool = False) -> Connection:
     return Connection(base_url, timeout=timeout, mode=mode, schema_version=schema_version, allow_partial=allow_partial)
 

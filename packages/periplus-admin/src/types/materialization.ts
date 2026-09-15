@@ -3,19 +3,17 @@ export type BuildAction = "pause" | "resume" | "retry" | "cancel" | "activate"
 export interface MaterialBuild {
   id: string
   phase: BuildPhase
-  semantic_version: string
+  recipe: string
+  manifest_key: string | null
   material_database: string
   query_database: string
-  consumer: string
-  barrier: number | null
-  ingestion_floor: number
-  material_floor: number
-  live_pending: number
   paused: boolean
   protected: boolean
   blocker: string | null
   created_at: string
   updated_at: string
+  verified_at: string | null
   drain_after: string | null
-  ranges: { month: number; cursor: string[] | null; done: boolean; processed: number; blocker: string | null }[]
+  ranges: { shard: number; upper: number; cursor: number; live_cursor: number; processed: number }[]
+  batches: { id: string; shard: number; lane: string; start: number; end: number; status: string; worker_id: string | null; attempts: number; error: string | null }[]
 }

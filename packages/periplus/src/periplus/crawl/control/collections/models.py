@@ -4,7 +4,15 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import CheckConstraint, DateTime, Index, Integer, Text
+from sqlalchemy import (
+    BigInteger,
+    ForeignKey,
+    CheckConstraint,
+    DateTime,
+    Index,
+    Integer,
+    Text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from periplus.platform.postgres.base import Base
@@ -14,9 +22,14 @@ from periplus.platform.postgres.types import json_type, utc_now
 class CollectionRecord(Base):
     __tablename__ = "collections"
     __table_args__ = (
-        CheckConstraint("page_limit > 0 AND reserved >= 0 AND consumed >= 0 "
-                        "AND reserved + consumed <= page_limit", name="ck_collection_budget"),
-        CheckConstraint("status IN ('active', 'paused', 'settled')", name="ck_collection_status"),
+        CheckConstraint(
+            "page_limit > 0 AND reserved >= 0 AND consumed >= 0 "
+            "AND reserved + consumed <= page_limit",
+            name="ck_collection_budget",
+        ),
+        CheckConstraint(
+            "status IN ('active', 'paused', 'settled')", name="ck_collection_status"
+        ),
         Index("ix_collection_service", "status", "service_after", "service_expires_at"),
     )
 
@@ -33,19 +46,25 @@ class CollectionRecord(Base):
     failed_pages: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     shared_pages: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     reused_pages: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
-    execution_pruned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    execution_pruned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
     seeds_settled: Mapped[bool] = mapped_column(default=False)
     seed_provenance: Mapped[dict[str, Any] | None] = mapped_column(json_type)
     admission_timing: Mapped[dict[str, Any] | None] = mapped_column(json_type)
     discovery_state: Mapped[dict[str, Any] | None] = mapped_column(json_type)
     selection_checkpoint: Mapped[dict[str, Any] | None] = mapped_column(json_type)
     waiting_reason: Mapped[str | None] = mapped_column(Text)
-    service_after: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    service_after: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now
+    )
     service_token: Mapped[UUID | None] = mapped_column()
     service_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     service_failures: Mapped[int] = mapped_column(default=0)
     outcome: Mapped[str | None] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now
+    )
     last_dispatch_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_progress_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -54,3 +73,26 @@ class CollectionRecord(Base):
     def deadline_at(self) -> datetime | None:
         value = self.spec.get("deadline_at")
         return datetime.fromisoformat(value) if value else None
+
+
+class CollectionResultRecord(Base):
+    """Durable customer result association, independent of frontier cleanup."""
+
+    __tablename__ = "collection_results"
+    __table_args__ = (
+        Index("ix_collection_results_page", "collection_id", "recorded_at", "id"),
+        Index("ix_collection_results_capture", "capture_id"),
+    )
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    collection_id: Mapped[UUID] = mapped_column(
+        ForeignKey("collections.id"), index=True
+    )
+    capture_id: Mapped[UUID] = mapped_column()
+    requested_url: Mapped[str] = mapped_column(Text)
+    mode: Mapped[str] = mapped_column(Text)
+    outcome: Mapped[str] = mapped_column(Text)
+    selection_context: Mapped[dict] = mapped_column(json_type)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    archive_shard: Mapped[int | None] = mapped_column(Integer)
+    archive_sequence: Mapped[int | None] = mapped_column(BigInteger)

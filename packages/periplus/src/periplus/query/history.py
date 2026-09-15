@@ -23,7 +23,7 @@ VERSION = f"sqlglot-{sqlglot.__version__}-v1"
 def shape(sql):
     empty = dict(query_template=None, query_fingerprint=None, relations=[], functions=[], features={})
     try:
-        statements = sqlglot.parse(sql, read='duckdb', error_level=sqlglot.ErrorLevel.RAISE)
+        statements = sqlglot.parse(sql, read='clickhouse', error_level=sqlglot.ErrorLevel.RAISE)
         if not statements or any(s is None or any(s.find_all(exp.Command)) for s in statements):
             return empty
         relations, functions = set(), set()
@@ -31,7 +31,7 @@ def shape(sql):
         for statement in statements:
             ctes = {c.alias_or_name for c in statement.find_all(exp.CTE)}
             relations.update(exp.Table(this=t.this.copy(), db=t.args.get('db'), catalog=t.args.get('catalog')).sql(
-                                 dialect='duckdb', comments=False, normalize=True) for t in statement.find_all(exp.Table)
+                                 dialect='clickhouse', comments=False, normalize=True) for t in statement.find_all(exp.Table)
                              if not (not t.db and t.name in ctes) and isinstance(t.this, exp.Identifier))
             functions.update(f.name.lower() if isinstance(f, exp.Anonymous) else f.sql_name().lower()
                              for f in statement.find_all(exp.Func))
@@ -42,7 +42,7 @@ def shape(sql):
                 node.comments = None
                 if isinstance(node, (exp.Literal, exp.Boolean, exp.Null, exp.Placeholder, exp.Parameter)):
                     node.replace(exp.Placeholder())
-        template = '; '.join(s.sql(dialect='duckdb', comments=False, normalize=True) for s in statements)
+        template = '; '.join(s.sql(dialect='clickhouse', comments=False, normalize=True) for s in statements)
         return dict(query_template=template, query_fingerprint=hashlib.sha256((VERSION+'\n'+template).encode()).hexdigest(),
                     relations=sorted(relations), functions=sorted(functions), features=features)
     except Exception:

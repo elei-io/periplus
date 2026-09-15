@@ -1,50 +1,27 @@
-"""Append-only HTML/link publication with a final visit-scoped readiness row."""
+"""Deterministic material output from archived captures; no operational evidence."""
+
 from hashlib import sha256
 from importlib.resources import files
-from uuid import UUID
 import re
 from types import SimpleNamespace
+from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
-
-from periplus.ingestion.queue import visit_ingestion_job
-from periplus.ingestion.service import RepositoryIngestor
-from periplus.ingestion.storage import evidence_digest
+from periplus.ingestion.archive import Archive, capture_key
+from periplus.ingestion.captures import Capture, canonical
+from periplus.ingestion.objects.html import RawHtmlRepository
+from periplus.ingestion.objects.document import ExactDocumentRepository
 from periplus.materialization.dom.nodes import parse_document
 from periplus.materialization.dom.links import links_from_elements
-from periplus.materialization.html_content import HtmlContent, html_content
-from periplus.platform.catalogue.exceptions import CatalogueConflictError
-from periplus.platform.catalogue.records import VisitEvidence, canonical_json, link_id_for, link_occurrence_id_for
+from periplus.materialization.html_content import html_content
 from periplus.platform.clickhouse import ClickHouseClient
 from periplus.retention.identities import write_claims
 
-_MAX_HTML_BYTES = 32 * 1024 * 1024
-_SCOPES = {"same_url": "self", "same_path": "same_origin", "same_origin": "same_origin",
-           "same_host": "same_host", "same_site": "same_site", "external": "external"}
+MAX_OUTPUT_BYTES = 31 * 1024 * 1024
 
 
 class MaterialInputError(ValueError):
     def __init__(self, identity: UUID, cause: Exception):
-        super().__init__(f"visit {identity}: {type(cause).__name__}")
-
-
-class MaterialLink(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-    occurrence_id: UUID
-    link_id: UUID
-    element_index: int = Field(ge=0)
-    raw_href: str
-    source_url: str
-    target_url: str
-    relation_scope: str
-
-
-class VisitMaterial(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-    visit_id: UUID
-    evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    html_content_sha256: str | None
-    links: tuple[MaterialLink, ...]
+        super().__init__(f"capture {identity}: {type(cause).__name__}: {cause}")
 
 
 def material_database(value: str) -> str:
@@ -53,200 +30,306 @@ def material_database(value: str) -> str:
     return value
 
 
-def install_material_schema(client: ClickHouseClient, database: str = "material") -> None:
+def install_material_schema(
+    client: ClickHouseClient, database: str = "material"
+) -> None:
     source = files("periplus.materialization").joinpath("schema.sql").read_text()
-    source = re.sub(r"\bmaterial\b", material_database(database), source)
-    for statement in source.split(";"):
+    for statement in re.sub(r"\bmaterial\b", material_database(database), source).split(
+        ";"
+    ):
         if statement.strip():
             client.execute(statement)
 
 
-def _row(value: BaseModel) -> dict[str, JsonValue]:
-    payload = value.model_dump(mode="json")
-    encoded = canonical_json(payload).encode()
-    if len(encoded) > 31 * 1024 * 1024:
-        raise ValueError("material output exceeds the single-row publication budget")
-    payload["output_sha256"] = sha256(encoded).hexdigest()
-    return payload
+def output_row(value: dict) -> dict:
+    encoded = canonical(value)
+    if len(encoded) > MAX_OUTPUT_BYTES:
+        raise ValueError("Material output exceeds row byte budget")
+    return {**value, "output_digest": sha256(encoded).hexdigest()}
 
 
-def build_material(evidence: VisitEvidence, ingestor: RepositoryIngestor, existing: HtmlContent | None = None) -> tuple[HtmlContent | None, VisitMaterial]:
-    document = evidence.document
-    is_html = document is not None and (document.representation == "rendered_html"
-        or document.detected_media_type in {"text/html", "application/xhtml+xml"})
-    if is_html and document.content_bytes > _MAX_HTML_BYTES:
-        raise ValueError("HTML exceeds the materializer input budget")
-    # Only missing HTML output needs raw I/O. Reused content is immutable and
-    # visit publication still acquires exact source-retirement/write claims.
-    if is_html and existing is None:
-        ingestor.prepare(visit_ingestion_job(evidence))
-    content = None
-    links = []
-    if is_html:
-        if existing is None:
-            if document.storage_encoding == "zstd":
-                source = ingestor.html_repository.read(document.object_key)
-            else:
-                source = ingestor.document_repository.read_bytes(document.object_key)
-            nodes, elements = parse_document(source)
-            content = html_content(document.content_sha256, nodes, elements)
-        else:
-            if existing.content_sha256 != document.content_sha256:
-                raise ValueError("Content reuse identity mismatch")
-            content = existing
-            elements = [SimpleNamespace(element_index=e.node_index, parent_index=e.parent_index,
-                subtree_end_index=e.subtree_end_index, tag=e.tag, attributes=e.attributes,
-                text_direct=e.text_direct, text_tail="") for e in existing.elements]
-        grouped = links_from_elements(elements, page_url=evidence.visit.effective_url or evidence.visit.requested_url)
-        for link in (*grouped["internal"], *grouped["external"]):
-            index = int(link["element_index"])
-            source_url, target_url = str(link["source_url"]), str(link["target_url"])
-            links.append(MaterialLink(occurrence_id=link_occurrence_id_for(document.document_id, index),
-                link_id=link_id_for(source_url, target_url), element_index=index,
-                raw_href=str(link["raw_href"]), source_url=source_url, target_url=target_url,
-                relation_scope=_SCOPES[str(link["relation_kind"])]))
-    return content, VisitMaterial(visit_id=evidence.visit.visit_id, evidence_sha256=evidence_digest(evidence),
-        html_content_sha256=content.content_sha256 if content else None,
-        links=tuple(sorted(links, key=lambda item: item.element_index)))
+def capture_row(capture: Capture, document: dict | None, links: list) -> dict:
+    payload, source = capture.payload, capture.source
+    return output_row(
+        dict(
+            capture_id=str(capture.capture_id),
+            evidence_digest=capture.digest,
+            requested_url=capture.requested_url,
+            effective_url=capture.effective_url,
+            captured_at=capture.captured_at.isoformat()
+            if capture.captured_at
+            else None,
+            timestamp_precision=capture.timestamp_precision,
+            http_status=capture.http_status,
+            completeness=capture.completeness,
+            content_id=payload.content_id if payload else None,
+            document_id=document["document_id"] if document else None,
+            byte_length=payload.byte_length if payload else None,
+            representation=payload.representation if payload else None,
+            media_type=payload.media_type if payload else None,
+            encoding=payload.charset if payload else None,
+            object_key=payload.object_key if payload else None,
+            storage_encoding=payload.storage_encoding if payload else None,
+            stored_bytes=payload.stored_bytes if payload else None,
+            source_provider=source.provider if source else "periplus",
+            source_dataset=source.dataset if source else None,
+            source_record_id=source.record_id if source else None,
+            archive_record_key=capture_key(capture.capture_id),
+            links=links,
+        )
+    )
 
 
 class MaterialStore:
-    def __init__(self, client: ClickHouseClient, database: str = "material") -> None:
-        self.client = client
-        self.database = material_database(database)
+    def __init__(self, client: ClickHouseClient, database: str = "material"):
+        self.client, self.database = client, material_database(database)
 
     def validate(self) -> None:
-        for table in ("html_documents", "visit_results"):
-            self.client.execute(f"SELECT output_sha256 FROM {self.database}.{table} LIMIT 0")
+        for table in ("captures", "html_documents"):
+            self.client.execute(
+                f"SELECT output_digest FROM {self.database}.{table} LIMIT 0"
+            )
 
-    def _matches(self, table: str, key: str, identity: str, digest: str) -> bool:
-        if (table, key) not in {("html_documents", "content_sha256"), ("visit_results", "visit_id")}:
-            raise ValueError("unknown material identity")
-        predicate = f"{key}=unhex({{identity:String}})" if key == "content_sha256" else f"{key}={{identity:UUID}}"
-        rows = self.client.query(f"SELECT lower(hex(output_sha256)) AS digest FROM {self.database}.{table} "
-            f"WHERE {predicate} LIMIT 2", parameters={"identity": identity})["data"]
-        if not rows:
-            return False
-        if len(rows) != 1 or rows[0]["digest"] != digest:
-            raise CatalogueConflictError("material identity has different or duplicate output")
-        return True
-
-    def publish(self, content: HtmlContent | None, visit: VisitMaterial) -> bool:
-        # Validate both block budgets before the first write. The final visit row
-        # contains all link output and is appended only after content is durable.
-        if visit.html_content_sha256 != (content.content_sha256 if content else None):
-            raise ValueError("visit readiness must reference its complete HTML output")
-        content_row = _row(content) if content else None
-        visit_row = _row(visit)
-        with write_claims({"observation": [str(visit.visit_id)],
-                           "content": [content.content_sha256] if content else []}):
-            if content_row and not self._matches("html_documents", "content_sha256",
-                                                  content.content_sha256, content_row["output_sha256"]):
-                self.client.insert_json(f"{self.database}.html_documents", content_row)
-                if not self._matches("html_documents", "content_sha256", content.content_sha256, content_row["output_sha256"]):
-                    raise RuntimeError("acknowledged HTML output is not visible on its write route")
-            if self._matches("visit_results", "visit_id", str(visit.visit_id), visit_row["output_sha256"]):
-                return False
-            self.client.insert_json(f"{self.database}.visit_results", visit_row)
-            if not self._matches("visit_results", "visit_id", str(visit.visit_id), visit_row["output_sha256"]):
-                raise RuntimeError("acknowledged visit output is not visible on its write route")
-            return True
-
-    def content(self, digest: str) -> HtmlContent | None:
-        rows = self.client.query(f"SELECT lower(hex(content_sha256)) AS content_sha256, document_text, elements "
-            f"FROM {self.database}.html_documents AS d WHERE d.content_sha256=unhex({{digest:String}}) LIMIT 2",
-            parameters={"digest": digest})["data"]
-        if len(rows) > 1:
-            raise CatalogueConflictError("Duplicate content output")
-        return HtmlContent.model_validate(rows[0]) if rows else None
-
-    def complete(self, evidence: VisitEvidence) -> bool:
-        rows = self.client.query(f"SELECT lower(hex(evidence_sha256)) AS digest, lower(hex(html_content_sha256)) AS content FROM {self.database}.visit_results "
-            "WHERE visit_id={id:UUID} LIMIT 2", parameters={"id": str(evidence.visit.visit_id)})["data"]
-        if not rows:
-            return False
-        if len(rows) != 1 or rows[0]["digest"] != evidence_digest(evidence):
-            raise CatalogueConflictError("Conflicting materialized visit evidence")
-        if rows[0]["content"] is not None:
-            count = self.client.query(f"SELECT count() AS n FROM {self.database}.html_documents "
-                "WHERE content_sha256=unhex({digest:String})", parameters={"digest": rows[0]["content"]})["data"][0]["n"]
-            if count > 1:
-                raise CatalogueConflictError("Duplicate materialized content")
-            return count == 1
-        return True
-
-    def materialize(self, evidence: VisitEvidence, ingestor: RepositoryIngestor) -> bool:
-        if self.complete(evidence):
-            return False
-        existing = self.content(evidence.document.content_sha256) if evidence.document else None
-        content, visit = build_material(evidence, ingestor, existing)
-        return self.publish(content, visit)
-
-    def digests(self, table: str, key: str, identities: list[str]) -> dict[str, str]:
+    def digests(self, table: str, identities: list[str]) -> dict[str, str]:
         if not identities:
             return {}
-        if (table, key) not in {("html_documents", "content_sha256"), ("visit_results", "visit_id")}:
-            raise ValueError("Unknown material identity")
-        parameters = {f"id{i}": value for i, value in enumerate(identities)}
-        expressions = [f"unhex({{id{i}:String}})" if key == "content_sha256" else f"{{id{i}:UUID}}" for i in range(len(identities))]
-        identity_sql = f"lower(hex({key}))" if key == "content_sha256" else f"toString({key})"
-        rows = self.client.query(f"SELECT {identity_sql} AS identity, lower(hex(output_sha256)) AS digest "
-            f"FROM {self.database}.{table} WHERE {key} IN ({','.join(expressions)})", parameters=parameters)["data"]
-        result = {row["identity"]: row["digest"] for row in rows}
-        if len(result) != len(rows):
-            raise CatalogueConflictError("Duplicate material output")
+        if table not in ("captures", "html_documents"):
+            raise ValueError("Unknown material relation")
+        key = "capture_id" if table == "captures" else "document_id"
+        predicates = [
+            f"{{id{i}:UUID}}" if table == "captures" else f"unhex({{id{i}:String}})"
+            for i in range(len(identities))
+        ]
+        selection = f"toString({key})" if table == "captures" else f"lower(hex({key}))"
+        rows = self.client.query(
+            f"SELECT {selection} AS id, lower(hex(output_digest)) AS digest FROM "
+            f"{self.database}.{table} WHERE {key} IN ({','.join(predicates)})",
+            parameters={f"id{i}": identity for i, identity in enumerate(identities)},
+        )["data"]
+        result = {row["id"]: row["digest"] for row in rows}
+        if len(rows) != len(result):
+            raise ValueError("Duplicate immutable material identity")
         return result
 
-    def publish_batch(self, contents: dict[str, HtmlContent], visits: list[VisitMaterial]) -> None:
-        content_rows = {key: _row(value) for key, value in contents.items()}
-        visit_rows = {str(value.visit_id): _row(value) for value in visits}
-        if len(visit_rows) != len(visits):
-            raise ValueError("Duplicate visits within a publication block")
-        with write_claims({"observation": list(visit_rows), "content": list(content_rows)}):
-            for table, key, rows in (("html_documents", "content_sha256", content_rows), ("visit_results", "visit_id", visit_rows)):
-                existing = self.digests(table, key, list(rows))
-                if any(rows[identity]["output_sha256"] != digest for identity, digest in existing.items()):
-                    raise CatalogueConflictError("Conflicting material output")
-                missing = [value for identity, value in rows.items() if identity not in existing]
-                # Bound each INSERT by serialized bytes; a single large legal row
-                # remains one block. Verification precedes every durable checkpoint.
-                block, size = [], 0
-                for value in missing:
-                    amount = len(canonical_json(value).encode())
-                    if block and size + amount > 8 * 1024 * 1024:
-                        self.client.insert_rows(f"{self.database}.{table}", block)
-                        block, size = [], 0
-                    block.append(value)
-                    size += amount
-                self.client.insert_rows(f"{self.database}.{table}", block)
-                if self.digests(table, key, list(rows)) != {identity: value["output_sha256"] for identity, value in rows.items()}:
-                    raise RuntimeError("Material block is not fully visible after acknowledged insert")
+    def content(self, identity: str) -> dict | None:
+        rows = self.client.query(
+            f"SELECT * REPLACE(lower(hex(document_id)) AS document_id, "
+            f"lower(hex(content_id)) AS content_id, lower(hex(output_digest)) AS output_digest) "
+            f"FROM {self.database}.html_documents WHERE document_id=unhex({{id:String}}) LIMIT 2",
+            parameters={"id": identity},
+            max_response_bytes=48 * 1024 * 1024,
+        )["data"]
+        if len(rows) > 1:
+            raise ValueError("Duplicate material document")
+        return rows[0] if rows else None
 
-    def materialize_many(self, evidence: list[VisitEvidence], ingestor: RepositoryIngestor) -> None:
-        if len(evidence) > 128:
-            raise ValueError("Material page exceeds 128 visits")
-        completed = self.digests("visit_results", "visit_id", [str(item.visit.visit_id) for item in evidence])
-        contents, visits, size = {}, [], 0
-        for item in evidence:
-            if str(item.visit.visit_id) in completed:
-                if not self.complete(item):
-                    raise RuntimeError("Material output changed during reconciliation")
+    def complete(self, capture: Capture) -> bool:
+        rows = self.client.query(
+            f"SELECT lower(hex(evidence_digest)) AS digest, "
+            f"lower(hex(document_id)) AS document FROM {self.database}.captures WHERE capture_id={{id:UUID}} LIMIT 2",
+            parameters={"id": str(capture.capture_id)},
+        )["data"]
+        if not rows:
+            return False
+        if len(rows) != 1 or rows[0]["digest"] != capture.digest:
+            raise ValueError("Conflicting material capture identity")
+        return rows[0]["document"] is None or bool(
+            self.digests("html_documents", [rows[0]["document"]])
+        )
+
+    def project(
+        self, capture: Capture, archive: Archive, cache: dict
+    ) -> tuple[dict | None, dict]:
+        payload, document, links = capture.payload, None, []
+        if payload and payload.media_type.lower() in (
+            "text/html",
+            "application/xhtml+xml",
+        ):
+            if payload.byte_length > 32 * 1024 * 1024:
+                raise ValueError("HTML exceeds material input budget")
+            document = cache.get(payload.document_id) or self.content(
+                payload.document_id
+            )
+            if document is None:
+                # Source protection covers only the bounded byte read. Parsing does
+                # not hold a distributed claim; final publication rechecks retirement.
+                with write_claims({"content": [payload.content_id]}):
+                    chunks = (
+                        RawHtmlRepository(archive.store).iter_bytes(payload.object_key)
+                        if payload.storage_encoding == "zstd"
+                        else ExactDocumentRepository(archive.store).iter_bytes(
+                            payload.object_key
+                        )
+                    )
+                    source = bytearray()
+                    for chunk in chunks:
+                        if len(source) + len(chunk) > payload.byte_length:
+                            raise ValueError(
+                                "Raw payload exceeds its declared byte length"
+                            )
+                        source.extend(chunk)
+                    if (
+                        len(source) != payload.byte_length
+                        or sha256(source).hexdigest() != payload.content_id
+                    ):
+                        raise ValueError("Raw payload identity mismatch")
+                text = source.decode(payload.charset or "utf-8", errors="strict")
+                nodes, elements = parse_document(text)
+                parsed = html_content(payload.content_id, nodes, elements).model_dump(
+                    mode="json"
+                )
+                parsed.pop("content_sha256")
+                document = output_row(
+                    dict(
+                        document_id=payload.document_id,
+                        content_id=payload.content_id,
+                        representation=payload.representation,
+                        encoding=payload.charset or "utf-8",
+                        **parsed,
+                    )
+                )
+            elements = [
+                SimpleNamespace(
+                    element_index=e["node_index"],
+                    parent_index=e["parent_index"],
+                    subtree_end_index=e["subtree_end_index"],
+                    tag=e["tag"],
+                    attributes=e["attributes"],
+                    text_direct=e["text_direct"],
+                    text_tail="",
+                )
+                for e in document["elements"]
+            ]
+            grouped = links_from_elements(
+                elements, page_url=capture.effective_url or capture.requested_url
+            )
+            links = sorted(
+                [
+                    dict(
+                        node_index=int(link["element_index"]),
+                        raw_href=str(link["raw_href"]),
+                        target_url=str(link["target_url"]),
+                    )
+                    for link in (*grouped["internal"], *grouped["external"])
+                ],
+                key=lambda x: x["node_index"],
+            )
+            cache[payload.document_id] = document
+        elif payload:
+            with write_claims({"content": [payload.content_id]}):
+                archive.verify_payload(capture)
+        return document, capture_row(capture, document, links)
+
+    def _insert_verified(self, table: str, rows: dict[str, dict]) -> None:
+        if not rows:
+            return
+        existing = self.digests(table, list(rows))
+        if any(
+            rows[key]["output_digest"] != digest for key, digest in existing.items()
+        ):
+            raise ValueError("Conflicting material output")
+        block, size = [], 0
+        for key, row in rows.items():
+            if key in existing:
                 continue
-            digest = item.document.content_sha256 if item.document else None
-            existing = contents.get(digest) or (self.content(digest) if digest else None)
-            try:
-                content, visit = build_material(item, ingestor, existing)
-            except Exception as exc:
-                raise MaterialInputError(item.visit.visit_id, exc) from exc
-            amount = len(canonical_json(visit.model_dump(mode="json")).encode())
-            if content and content.content_sha256 not in contents:
-                amount += len(canonical_json(content.model_dump(mode="json")).encode())
-            if visits and size + amount > 8 * 1024 * 1024:
-                self.publish_batch(contents, visits)
-                contents, visits, size = {}, [], 0
-            if content:
-                contents[content.content_sha256] = content
-            visits.append(visit)
+            amount = len(canonical(row))
+            if block and size + amount > 8 * 1024 * 1024:
+                self.client.insert_rows(f"{self.database}.{table}", block)
+                block, size = [], 0
+            block.append(row)
             size += amount
-        if visits:
-            self.publish_batch(contents, visits)
+        self.client.insert_rows(f"{self.database}.{table}", block)
+        if self.digests(table, list(rows)) != {
+            key: row["output_digest"] for key, row in rows.items()
+        }:
+            raise RuntimeError("Material block is incomplete after insert")
+
+    def materialize_many(self, captures: list[Capture], archive: Archive) -> int:
+        if len(captures) > 128:
+            raise ValueError("Material batch exceeds 128 captures")
+        unique = {}
+        for capture in captures:
+            if (
+                capture.capture_id in unique
+                and unique[capture.capture_id].digest != capture.digest
+            ):
+                raise ValueError("Conflicting capture identities in one batch")
+            unique[capture.capture_id] = capture
+        captures = list(unique.values())
+        documents, prepared, size = {}, [], 0
+
+        def flush():
+            nonlocal size
+            if not prepared:
+                return
+            with write_claims(
+                {
+                    "capture": [str(c.capture_id) for c, _ in prepared],
+                    "content": [c.payload.content_id for c, _ in prepared if c.payload],
+                }
+            ):
+                retained = [
+                    (c, row) for c, row in prepared if not archive.retired(c.capture_id)
+                ]
+                needed = {
+                    row["document_id"] for _, row in retained if row["document_id"]
+                }
+                self._insert_verified(
+                    "html_documents",
+                    {key: value for key, value in documents.items() if key in needed},
+                )
+                self._insert_verified(
+                    "captures", {str(c.capture_id): row for c, row in retained}
+                )
+            documents.clear()
+            prepared.clear()
+            size = 0
+
+        for capture in captures:
+            try:
+                if archive.retired(capture.capture_id):
+                    self.retire(capture, archive)
+                    continue
+                if self.complete(capture):
+                    continue
+                document, row = self.project(capture, archive, documents)
+                prepared.append((capture, row))
+                size += len(canonical(row)) + (
+                    len(canonical(document)) if document else 0
+                )
+                if size >= 8 * 1024 * 1024:
+                    flush()
+            except Exception as exc:
+                raise MaterialInputError(capture.capture_id, exc) from exc
+        flush()
+        for capture in captures:
+            if not archive.retired(capture.capture_id) and not self.complete(capture):
+                raise RuntimeError("Capture verification failed")
+        return len(captures)
+
+    def retire(self, capture: Capture, archive: Archive) -> None:
+        if not archive.retired(capture.capture_id):
+            raise ValueError("Capture retirement is not archived")
+        if not self.digests("captures", [str(capture.capture_id)]):
+            return
+        with write_claims(
+            {
+                "capture": [str(capture.capture_id)],
+                "content": [capture.payload.content_id] if capture.payload else [],
+            }
+        ):
+            self.client.execute(
+                f"ALTER TABLE {self.database}.captures DELETE WHERE capture_id={{id:UUID}} SETTINGS mutations_sync=2",
+                parameters={"id": str(capture.capture_id)},
+            )
+            if capture.payload:
+                document = capture.payload.document_id
+                count = self.client.query(
+                    f"SELECT count() AS n FROM {self.database}.captures WHERE document_id=unhex({{id:String}})",
+                    parameters={"id": document},
+                )["data"][0]["n"]
+                if count == 0:
+                    self.client.execute(
+                        f"ALTER TABLE {self.database}.html_documents DELETE WHERE document_id=unhex({{id:String}}) SETTINGS mutations_sync=2",
+                        parameters={"id": document},
+                    )

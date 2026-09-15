@@ -3,20 +3,20 @@
 from enum import StrEnum
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
-from periplus.platform.catalogue.public import PUBLIC_SCHEMA
+
+PUBLIC_SCHEMA = "public_v1"
 
 COMPILER_VERSION = "public-query-v16"
 
 
 class QueryMode(StrEnum):
     STABLE = "stable"
-    EXPERIMENTAL = "experimental"
 
 
 class QueryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     sql: str = Field(min_length=1, max_length=1_000_000)
-    schema_version: Literal["public_v1", "experimental"] | None = None
+    schema_version: Literal["public_v1"] | None = None
     parameters: list[JsonValue] = Field(default_factory=list, max_length=100)
 
 
@@ -30,7 +30,7 @@ class PreparedQuery(BaseModel):
     query_mode: QueryMode = QueryMode.STABLE
     compiler_version: str = COMPILER_VERSION + ":stable"
     optimizations: list[str] = Field(default_factory=list)
-    schema_version: Literal["public_v1", "experimental"] = PUBLIC_SCHEMA
+    schema_version: Literal["public_v1"] = PUBLIC_SCHEMA
     query_id: str
     sql: str
     parameters: list[JsonValue]

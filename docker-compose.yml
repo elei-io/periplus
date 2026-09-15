@@ -35,10 +35,10 @@ x-periplus-query-environment: &periplus-query-credentials
 x-periplus-repository-environment: &periplus-repository-environment
   PERIPLUS_REPOSITORY_STORAGE: s3
   PERIPLUS_REPOSITORY_S3_BUCKET: raw
-  PERIPLUS_REPOSITORY_S3_ENDPOINT: http://lake-s3:7070
+  PERIPLUS_REPOSITORY_S3_ENDPOINT: http://periplus-raw:7070
   PERIPLUS_REPOSITORY_S3_REGION: us-east-1
-  PERIPLUS_REPOSITORY_S3_KEY_ID: ${LAKE_S3_KEY_ID:-periplus-local}
-  PERIPLUS_REPOSITORY_S3_SECRET_ACCESS_KEY: ${LAKE_S3_SECRET_ACCESS_KEY:-lake-secret}
+  PERIPLUS_REPOSITORY_S3_KEY_ID: ${PERIPLUS_RAW_S3_KEY_ID:-periplus-local}
+  PERIPLUS_REPOSITORY_S3_SECRET_ACCESS_KEY: ${PERIPLUS_RAW_S3_SECRET_ACCESS_KEY:-raw-local-secret}
   PERIPLUS_REPOSITORY_S3_URL_STYLE: path
   PERIPLUS_REPOSITORY_S3_USE_SSL: "false"
 
@@ -47,7 +47,7 @@ services:
     container_name: periplus-clickhouse
     image: clickhouse/clickhouse-server:26.8.2.7@sha256:fa394da808cc53f76d0344429421d6c422a6ee85fe7450135c0e3cff4df9bcbb
     environment:
-      CLICKHOUSE_DB: ingest
+      CLICKHOUSE_DB: material
       CLICKHOUSE_USER: ${PERIPLUS_CLICKHOUSE_USER:-periplus}
       CLICKHOUSE_PASSWORD: ${PERIPLUS_CLICKHOUSE_PASSWORD:-clickhouse_local}
       CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
@@ -65,40 +65,40 @@ services:
     healthcheck:
       test:
         - CMD-SHELL
-        - 'clickhouse-client --user "$${CLICKHOUSE_USER}" --password "$${CLICKHOUSE_PASSWORD}" --database "$${CLICKHOUSE_DB}" --query "SELECT 1"'
+        - 'wget -qO- http://127.0.0.1:8123/ping'
       interval: 5s
       timeout: 3s
       retries: 12
       start_period: 20s
     restart: unless-stopped
 
-  lake-s3-init:
-    container_name: lake-s3-init
+  periplus-raw-init:
+    container_name: periplus-raw-init
     image: alpine:3.22
     command: ["sh", "-ec", "mkdir -p /data/raw"]
     volumes:
-      - lake-s3-data:/data
+      - periplus-raw-data:/data
     restart: "no"
 
-  lake-s3:
-    container_name: lake-s3
-    image: ${LAKE_S3_IMAGE:-versity/versitygw:v1.8.0}
+  periplus-raw:
+    container_name: periplus-raw
+    image: ${PERIPLUS_RAW_S3_IMAGE:-versity/versitygw:v1.8.0}
     command: ["--port", ":7070", "--health", "/healthz", "--iam-dir", "/iam", "posix", "/data"]
     environment:
-      ROOT_ACCESS_KEY: ${LAKE_S3_KEY_ID:-periplus-local}
-      ROOT_SECRET_KEY: ${LAKE_S3_SECRET_ACCESS_KEY:-lake-secret}
+      ROOT_ACCESS_KEY: ${PERIPLUS_RAW_S3_KEY_ID:-periplus-local}
+      ROOT_SECRET_KEY: ${PERIPLUS_RAW_S3_SECRET_ACCESS_KEY:-raw-local-secret}
     ports:
-      - "127.0.0.1:${LAKE_S3_PORT:-7070}:7070"
+      - "127.0.0.1:${PERIPLUS_RAW_S3_PORT:-7070}:7070"
     volumes:
-      - lake-s3-data:/data
-      - lake-s3-iam:/iam
+      - periplus-raw-data:/data
+      - periplus-raw-iam:/iam
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:7070/healthz"]
       interval: 2s
       timeout: 3s
       retries: 15
     depends_on:
-      lake-s3-init:
+      periplus-raw-init:
         condition: service_completed_successfully
     restart: unless-stopped
 
@@ -284,10 +284,8 @@ services:
         [
           *periplus-control-environment,
           *periplus-nats-environment,
-          *periplus-clickhouse-environment,
           *periplus-repository-environment,
         ]
-      PERIPLUS_INGESTOR_CONCURRENCY: ${PERIPLUS_INGESTOR_CONCURRENCY:-1}
     depends_on:
       periplus-setup:
         condition: service_completed_successfully
@@ -325,6 +323,19 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  periplus-janitor:
+    <<: *periplus-core
+    command: periplus-worker janitor
+    healthcheck:
+      <<: *periplus-healthcheck
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9095/healthz', timeout=2).read()"]
+    environment:
+      <<: [*periplus-control-environment, *periplus-repository-environment]
+    depends_on:
+      periplus-setup:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
   periplus-setup:
     container_name: periplus-setup
     <<: *periplus-core
@@ -343,13 +354,13 @@ services:
         condition: service_healthy
       periplus-clickhouse:
         condition: service_healthy
-      lake-s3:
+      periplus-raw:
         condition: service_healthy
     restart: "no"
 
 volumes:
   periplus-clickhouse-data:
-  lake-s3-data:
-  lake-s3-iam:
+  periplus-raw-data:
+  periplus-raw-iam:
   periplus-postgres-data:
   periplus-nats-data:

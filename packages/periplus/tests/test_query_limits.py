@@ -24,11 +24,11 @@ class LimitsTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict(os.environ, PERIPLUS_QUERY_API_TOKEN='query-secret', PERIPLUS_API_URL='http://control.test'):
             reader = QueryLimitsClient()
         await reader.close()
-        responses = [httpx.Response(200, json={'publication': {'database': 'public_v1', 'revision': 0}, 'limits': QueryLimits(max_rows=7).model_dump()}),
-                     httpx.Response(200, json={'publication': {'database': 'public_v1', 'revision': 0}, 'limits': QueryLimits(max_rows=3).model_dump()}),
+        responses = [httpx.Response(200, json={'publication': {'database': 'public_v1', 'revision': 0, 'expires_at':'2099-01-01T00:00:00Z'}, 'limits': QueryLimits(max_rows=7).model_dump()}),
+                     httpx.Response(200, json={'publication': {'database': 'public_v1', 'revision': 0, 'expires_at':'2099-01-01T00:00:00Z'}, 'limits': QueryLimits(max_rows=3).model_dump()}),
                      httpx.Response(503, text='private origin'),
-                     httpx.Response(200, json={'publication': {'database': 'public_v1', 'revision': 0}, 'limits': {'max_rows': 3}}),
-                     httpx.Response(200, json={'publication': {'database': 'public_v1', 'revision': 0}, 'limits': QueryLimits().model_dump() | {'max_rows': 10_000_001}})]
+                     httpx.Response(200, json={'publication': {'database': 'public_v1', 'revision': 0, 'expires_at':'2099-01-01T00:00:00Z'}, 'limits': {'max_rows': 3}}),
+                     httpx.Response(200, json={'publication': {'database': 'public_v1', 'revision': 0, 'expires_at':'2099-01-01T00:00:00Z'}, 'limits': QueryLimits().model_dump() | {'max_rows': 10_000_001}})]
         def handler(request):
             self.assertEqual(request.url.path, '/internal/query-context')
             self.assertEqual(request.headers['Authorization'], 'Bearer query-secret')
@@ -58,7 +58,7 @@ class LimitsTests(unittest.IsolatedAsyncioTestCase):
         app.state.query_service = SimpleNamespace(prepare=prepare, compiler_version="public-query-v4:stable")
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url='http://query.test') as client:
             for count in (7, 3):
-                reader.read.return_value = ExecutionContext(limits=QueryLimits(max_rows=count), publication=PublicationBinding(database="public_v1", revision=0))
+                reader.read.return_value = ExecutionContext(limits=QueryLimits(max_rows=count), publication=PublicationBinding(expires_at="2099-01-01T00:00:00Z", database="public_v1", revision=0))
                 self.assertEqual((await client.post('/query/prep', json={'sql': 'SELECT 1'})).status_code, 200)
             self.assertEqual([limits.max_rows for limits in captured], [7, 3])
             # Requests cannot raise any server-side limit.

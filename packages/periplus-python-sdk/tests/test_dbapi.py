@@ -34,7 +34,7 @@ class DBAPITests(unittest.TestCase):
         cur.execute('SELECT ? AS n', [1])
         self.assertEqual(cur.rowcount, -1)
         self.assertEqual([d[0] for d in cur.description], ['n', 'n'])
-        self.assertEqual(cur.description[1][1], 'DECIMAL(20,2)')
+        self.assertEqual(cur.description[1][1], 'Decimal(20,2)')
         self.assertEqual(cur.fetchmany(0), [])
         self.assertEqual(cur.fetchone(), (9007199254740993, Decimal('123.45')))
         self.assertIsNone(cur.fetchone())
@@ -48,7 +48,7 @@ class DBAPITests(unittest.TestCase):
         self.assertEqual(cur.fetchall(), [])
 
     def test_empty_and_fetchmany(self):
-        c = self.connection(lambda r: httpx.Response(200, json=response(columns=['n'], types=['INTEGER'], rows=[[1],[2],[3]])))
+        c = self.connection(lambda r: httpx.Response(200, json=response(columns=['n'], types=['Int32'], rows=[[1],[2],[3]])))
         cur = c.execute('SELECT 1')
         cur.arraysize = 2
         self.assertEqual(cur.fetchmany(), [(1,), (2,)])
@@ -66,12 +66,12 @@ class DBAPITests(unittest.TestCase):
         def handler(r):
             requests.append(r)
             return httpx.Response(200, json=response(columns=['d','t','ts','b','f','n','s'],
-                types=['DATE','TIME','TIMESTAMP WITH TIME ZONE','BLOB','DOUBLE','BIGINT','VARCHAR'],
+                types=['Date','Time','DateTime64(6)','String','Float64','Int64','String'],
                 rows=[['2026-09-11','12:34:56','2026-09-11T12:34:56+00:00','aGk=','inf',None,'9007199254740993']]))
-        c = self.connection(handler, mode='experimental')
-        row = c.execute('SELECT CAST(? AS DATE)', [date(2026,9,11)]).fetchone()
-        self.assertEqual(row, (date(2026,9,11),time(12,34,56),datetime.fromisoformat('2026-09-11T12:34:56+00:00'),b'hi',float('inf'),None,'9007199254740993'))
-        self.assertEqual(requests[0].url.path, '/prefix/api/query/experimental/exec')
+        c = self.connection(handler, mode='stable')
+        row = c.execute('SELECT CAST(? AS Date)', [date(2026,9,11)]).fetchone()
+        self.assertEqual(row, (date(2026,9,11),time(12,34,56),datetime.fromisoformat('2026-09-11T12:34:56+00:00'),'aGk=',float('inf'),None,'9007199254740993'))
+        self.assertEqual(requests[0].url.path, '/prefix/api/query/exec')
         self.assertEqual(requests[0].headers['x-periplus-query-source'], 'sdk')
 
     def test_truncation_and_lifecycle(self):

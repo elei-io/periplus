@@ -79,11 +79,11 @@ def _payload(sql: str, parameters: Sequence[JsonValue] | None, schema_version: s
 class Client:
     """Reusable synchronous public query client. Close it or use a with block."""
 
-    def __init__(self, base_url: str | None = None, *, timeout: float = 620, mode: Literal["stable", "experimental"] = "stable"):
-        if mode not in {"stable", "experimental"}:
-            raise ConfigurationError("mode must be stable or experimental.")
-        self.schema_version = "experimental" if mode == "experimental" else "public_v1"
-        self._query_path = "api/query/experimental/" if mode == "experimental" else "api/query/"
+    def __init__(self, base_url: str | None = None, *, timeout: float = 620, mode: Literal["stable"] = "stable"):
+        if mode not in {"stable"}:
+            raise ConfigurationError("Only the stable public catalogue is available.")
+        self.schema_version = "public_v1"
+        self._query_path = "api/query/"
         self._http = httpx.Client(**_options(base_url, timeout))
 
     def __enter__(self) -> Client:
@@ -134,11 +134,11 @@ class Client:
 class AsyncClient:
     """Reusable asynchronous public query client. Use an async with block."""
 
-    def __init__(self, base_url: str | None = None, *, timeout: float = 620, mode: Literal["stable", "experimental"] = "stable"):
-        if mode not in {"stable", "experimental"}:
-            raise ConfigurationError("mode must be stable or experimental.")
-        self.schema_version = "experimental" if mode == "experimental" else "public_v1"
-        self._query_path = "api/query/experimental/" if mode == "experimental" else "api/query/"
+    def __init__(self, base_url: str | None = None, *, timeout: float = 620, mode: Literal["stable"] = "stable"):
+        if mode not in {"stable"}:
+            raise ConfigurationError("Only the stable public catalogue is available.")
+        self.schema_version = "public_v1"
+        self._query_path = "api/query/"
         self._http = httpx.AsyncClient(**_options(base_url, timeout))
 
     async def __aenter__(self) -> AsyncClient:

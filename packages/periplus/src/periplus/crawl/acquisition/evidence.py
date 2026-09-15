@@ -1,11 +1,17 @@
 """Deterministic attempt and completion-step records for frozen acquisition evidence."""
+
 from uuid import UUID
-from periplus.crawl.acquisition.models import AcquisitionAttemptEvidence, AcquisitionStepEvidence
-from periplus.platform.catalogue.records import AttemptRecord, StepRecord, attempt_id_for
+from periplus.crawl.acquisition.models import (
+    AcquisitionAttemptEvidence,
+    AcquisitionStepEvidence,
+)
+from periplus.crawl.acquisition.records import AttemptRecord, StepRecord, attempt_id_for
 from periplus.urls import normalize_url
 
 
-def attempt_records(identity: UUID, attempt_evidence: tuple[AcquisitionAttemptEvidence, ...]) -> tuple[AttemptRecord, ...]:
+def attempt_records(
+    identity: UUID, attempt_evidence: tuple[AcquisitionAttemptEvidence, ...]
+) -> tuple[AttemptRecord, ...]:
     return tuple(
         AttemptRecord(
             attempt_id=attempt_id_for(identity, index),
@@ -21,7 +27,9 @@ def attempt_records(identity: UUID, attempt_evidence: tuple[AcquisitionAttemptEv
             ),
             status_code=attempt.status_code,
             outcome=(
-                "uncertain" if attempt.outcome == "uncertain" else "succeeded"
+                "uncertain"
+                if attempt.outcome == "uncertain"
+                else "succeeded"
                 if attempt.outcome in {"success", "skipped"}
                 else "failed"
             ),
@@ -44,7 +52,10 @@ def attempt_records(identity: UUID, attempt_evidence: tuple[AcquisitionAttemptEv
         for index, attempt in enumerate(attempt_evidence)
     )
 
-def step_records(identity: UUID, step_evidence: tuple[AcquisitionStepEvidence, ...]) -> tuple[StepRecord, ...]:
+
+def step_records(
+    identity: UUID, step_evidence: tuple[AcquisitionStepEvidence, ...]
+) -> tuple[StepRecord, ...]:
     return tuple(
         StepRecord(
             attempt_id=attempt_id_for(
@@ -58,10 +69,18 @@ def step_records(identity: UUID, step_evidence: tuple[AcquisitionStepEvidence, .
                 "config": step.config_json,
                 "measurements": {
                     "iterations": step.iterations,
-                    "before": {"elements": step.before_element_count, "text_chars": step.before_text_chars,
-                               "links": step.before_link_count, "scroll_height": step.before_scroll_height},
-                    "after": {"elements": step.after_element_count, "text_chars": step.after_text_chars,
-                              "links": step.after_link_count, "scroll_height": step.after_scroll_height},
+                    "before": {
+                        "elements": step.before_element_count,
+                        "text_chars": step.before_text_chars,
+                        "links": step.before_link_count,
+                        "scroll_height": step.before_scroll_height,
+                    },
+                    "after": {
+                        "elements": step.after_element_count,
+                        "text_chars": step.after_text_chars,
+                        "links": step.after_link_count,
+                        "scroll_height": step.after_scroll_height,
+                    },
                 },
             },
             started_at=step.started_at,

@@ -1,8 +1,0 @@
-id = "index-text-equality-quarter"
-title = "Exact element text through page-word candidates"
-use_case = "Discover elements by exact text without scanning unrelated element bodies"
-classification = "optimizer"
-ordered = true
-memory_limit = "512MB"
-max_warm_ms = 20000
-seconds = 120

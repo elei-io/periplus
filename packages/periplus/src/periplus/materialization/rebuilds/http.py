@@ -1,4 +1,5 @@
 """Operator intent only; workers provision and execute rebuilds."""
+
 import asyncio
 from typing import Literal
 from uuid import UUID
@@ -15,60 +16,81 @@ router = APIRouter()
 
 class RebuildRequest(BaseModel):
     page_size: int = Field(default=32, ge=1, le=128)
+    manifest_key: str | None = Field(default=None, max_length=256)
 
 
 class BuildAction(BaseModel):
-    action: Literal['pause', 'resume', 'retry', 'cancel', 'activate']
+    action: Literal["pause", "resume", "retry", "cancel", "activate"]
 
 
 def _describe(control, build):
-    result = {column.name: getattr(build, column.name) for column in build.__table__.columns}
-    result['ranges'] = [{column.name: getattr(row, column.name) for column in row.__table__.columns}
-                        for row in control.ranges(build.id)]
+    result = {
+        column.name: getattr(build, column.name) for column in build.__table__.columns
+    }
+    result["ranges"] = [
+        {column.name: getattr(row, column.name) for column in row.__table__.columns}
+        for row in control.ranges(build.id)
+    ]
+    result["batches"] = [
+        {column.name: getattr(row, column.name) for column in row.__table__.columns}
+        for row in control.batches(build.id)
+    ]
     return result
 
 
-@router.get('/operations/materializations/runs')
+@router.get("/operations/materializations/runs")
 async def list_runs():
     control = BuildControl()
-    return await asyncio.to_thread(lambda: [_describe(control, build) for build in control.builds()])
+    return await asyncio.to_thread(
+        lambda: [_describe(control, build) for build in control.builds()]
+    )
 
 
-@router.post('/operations/materializations/runs', status_code=202)
+@router.post("/operations/materializations/runs", status_code=202)
 async def create_run(payload: RebuildRequest):
     try:
-        identity = await asyncio.to_thread(BuildControl().create, payload.page_size)
-        return {'id': identity}
+        identity = await asyncio.to_thread(
+            BuildControl().create, payload.page_size, payload.manifest_key
+        )
+        return {"id": identity}
     except RebuildConflict as exc:
         raise HTTPException(409, str(exc)) from exc
 
 
-@router.get('/operations/materializations/runs/{identity}')
+@router.get("/operations/materializations/runs/{identity}")
 async def get_run(identity: UUID):
     control = BuildControl()
     try:
-        return await asyncio.to_thread(lambda: _describe(control, control.get(identity)))
+        return await asyncio.to_thread(
+            lambda: _describe(control, control.get(identity))
+        )
     except KeyError as exc:
-        raise HTTPException(404, 'Build not found') from exc
+        raise HTTPException(404, "Build not found") from exc
 
 
-@router.post('/operations/materializations/runs/{identity}/actions')
+@router.post("/operations/materializations/runs/{identity}/actions")
 async def act(identity: UUID, payload: BuildAction):
     try:
         await asyncio.to_thread(BuildControl().action, identity, payload.action)
-        return {'status': 'accepted'}
+        return {"status": "accepted"}
     except KeyError as exc:
-        raise HTTPException(404, 'Build not found') from exc
+        raise HTTPException(404, "Build not found") from exc
     except RebuildConflict as exc:
         raise HTTPException(409, str(exc)) from exc
 
 
-@router.get('/internal/query-context', response_model=ExecutionContext)
+@router.get("/internal/query-context", response_model=ExecutionContext)
 async def query_context(request: Request):
-    if request.state.api_role != 'query':
-        raise HTTPException(403, 'Query service credential required')
+    if request.state.api_role != "query":
+        raise HTTPException(403, "Query service credential required")
+
     def read():
         policy = AccessStore(SessionLocal).read().sql
-        limits = QueryLimits(**{name: getattr(policy, name) for name in QueryLimits.model_fields})
-        return ExecutionContext(limits=limits, publication=PublicationBinding(**BuildControl().binding()))
+        limits = QueryLimits(
+            **{name: getattr(policy, name) for name in QueryLimits.model_fields}
+        )
+        return ExecutionContext(
+            limits=limits, publication=PublicationBinding(**BuildControl().binding())
+        )
+
     return await asyncio.to_thread(read)

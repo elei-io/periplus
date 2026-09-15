@@ -16,13 +16,13 @@ class NotebookTests(unittest.TestCase):
             import json
             sql = json.loads(request.content)['sql']
             self.requests.append(sql)
-            columns, types, rows = ['n'], ['INTEGER'], [[42]]
+            columns, types, rows = ['n'], ['Int32'], [[42]]
             if sql.startswith('SHOW TABLES'):
-                columns, types, rows = ['name'], ['VARCHAR'], [['capture']]
+                columns, types, rows = ['name'], ['String'], [['capture']]
             if sql.startswith('DESCRIBE'):
                 columns = ['column_name','column_type','null','key','default','extra']
-                types = ['VARCHAR']*6
-                rows = [['capture_id','UUID','NO',None,None,None],['captured_at','TIMESTAMP WITH TIME ZONE','YES',None,None,None]]
+                types = ['String']*6
+                rows = [['capture_id','UUID','NO',None,None,None],['captured_at','DateTime64(6)','YES',None,None,None]]
             return stream_response(dict(RESULT,columns=columns,types=types,rows=rows,truncated=truncated))
         patcher = patch('periplus_sdk.client.httpx.Client', side_effect=lambda **kw: factory(**kw,transport=httpx.MockTransport(handler)))
         patcher.start()
@@ -41,7 +41,7 @@ class NotebookTests(unittest.TestCase):
         self.assertTrue(inspector.has_table('capture'))
         columns=inspector.get_columns('capture')
         self.assertEqual(columns[0]['name'],'capture_id')
-        self.assertEqual(str(columns[1]['type']),'TIMESTAMP WITH TIME ZONE')
+        self.assertEqual(str(columns[1]['type']),'DateTime64(6)')
         self.assertEqual(inspector.get_pk_constraint('capture')['constrained_columns'],[])
         for _ in range(2):
             with engine.connect() as c:
@@ -99,9 +99,9 @@ class NotebookTests(unittest.TestCase):
             captured.append(payload)
             if payload['sql'].startswith('SHOW TABLES'):
                 self.assertEqual(payload['parameters'], [])
-                return stream_response(dict(RESULT, columns=['name'], types=['VARCHAR'], rows=[['capture']], truncated=False))
+                return stream_response(dict(RESULT, columns=['name'], types=['String'], rows=[['capture']], truncated=False))
             ids = payload['parameters'][0]
-            return stream_response(dict(RESULT, columns=['content_id'], types=['VARCHAR'],
+            return stream_response(dict(RESULT, columns=['content_id'], types=['String'],
                                         rows=[[value] for value in ids], truncated=False))
         with engine.connect() as connection:
             client = connection.connection.dbapi_connection._client
@@ -111,12 +111,12 @@ class NotebookTests(unittest.TestCase):
         ids = [f'{i:064x}' for i in range(5000) if i % 2 == 0]
         selected = sql_api.bind(engine, content_ids=ids)
         self.assertEqual(len(get_engines_from_variables([('selected', selected)])), 1)
-        frame = mo.sql('SELECT unnest(CAST(:content_ids AS VARCHAR[])) AS content_id', engine=selected, output=False)
+        frame = mo.sql('SELECT unnest(CAST(:content_ids AS String[])) AS content_id', engine=selected, output=False)
         self.assertEqual(frame['content_id'].to_list(), ids)
         self.assertEqual(captured[0]['parameters'], [ids])
         self.assertLess(len(captured[0]['sql']), 100)
         self.assertEqual(inspect(selected).get_view_names(), ['capture'])
         # Empty selections remain typed SQL lists, rather than invalid IN ().
         empty = sql_api.bind(engine, content_ids=[])
-        frame = mo.sql('SELECT unnest(CAST(:content_ids AS VARCHAR[])) AS content_id', engine=empty, output=False)
+        frame = mo.sql('SELECT unnest(CAST(:content_ids AS String[])) AS content_id', engine=empty, output=False)
         self.assertEqual(frame.height, 0)

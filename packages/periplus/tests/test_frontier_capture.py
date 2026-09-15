@@ -13,7 +13,7 @@ from frontier_fixtures import policy_snapshot
 from periplus.crawl.acquisition.models import AcquisitionResult
 from periplus.crawl.runtime.frontier_capture import handle_capture_delivery, acquisition_context
 from periplus.crawl.runtime.frontier_queue import CaptureWork
-from periplus.platform.catalogue.records import AttemptRecord, VisitEvidence, VisitRecord, attempt_id_for
+from periplus.crawl.acquisition.records import AttemptRecord, VisitEvidence, VisitRecord, attempt_id_for
 
 
 @asynccontextmanager

@@ -42,7 +42,7 @@ export interface LiveView {
   history: {
     as_of: string
     window_end: string
-    completeness: "committed_evidence_only_ingestion_may_lag"
+    completeness: "current_operational_window"
     domain_preview_limit: 10
     velocities: Array<{seconds: 60 | 300; domain: string | null; attempt_starts: number; successful_captures: number; failed_captures: number; fulfillments: number; attempt_starts_per_minute: number}>
     recent: RecentCapture[]

@@ -26,7 +26,7 @@ error. Retry resumes its checkpoint. Cancel stops remaining work; an in-flight
 archive write or delivery can finish. Cancellation does not delete evidence.
 
 A completed job means every URL was processed and supported evidence was archived
-and published for ingestion. It does **not** prove materialization/query readiness;
+and announced for materialization. It does **not** prove materialization/query readiness;
 use the existing ingestion/materialization status and public SQL to check that.
 
 ## Ownership and recovery
@@ -35,13 +35,13 @@ use the existing ingestion/materialization status and public SQL to check that.
 progress, and diagnostic results. It is not the capture authority. Existing ingestor
 replicas service these control jobs; a provider-scoped renewable NATS operation
 lease allows one Common Crawl import lane at a time. No new service or delivery
-queue is added. Published evidence uses the existing JetStream ingestion lane.
+queue is added. Committed captures use the shared raw journal and optional NATS notification.
 
 The worker checkpoints selection before fetching, reserves declared WARC range bytes
 before **every download attempt**, stores verified HTML and immutable evidence in S3,
 then checkpoints the archive key before publishing. Database transactions never span
 remote I/O. Revision checks prevent stale workers from overwriting cancellation or
-newer progress. Retries replay stable capture identities through ordinary ingestion.
+newer progress. Retries replay stable capture identities through the same archive publisher.
 The import control loop is visible in ingestor subsystem health.
 
 The byte allowance counts potential WARC range downloads, including failed attempts
@@ -51,22 +51,15 @@ a suitable budget. A failure after S3 publication but before its checkpoint may
 require another range download. Once the archive key is checkpointed, publication
 retry reads S3 without contacting CC.
 
-Raw storage retains independently deletable, content-addressed Zstd HTML and
-immutable envelopes under:
+Raw storage retains content-addressed payloads and standalone capture envelopes
+under `raw/corpus/v1/`. Envelopes preserve WARC source identity, source location,
+headers, capture time and body identity. Bodies are HTTP response bytes rather
+than browser renderings. The original compressed WARC member is not retained
+byte-for-byte. Importing later never changes the original capture time.
 
-```
-raw/v1/evidence/common-crawl/<dataset>/<prefix>/visit-<capture-id>.json.zst
-raw/v1/evidence/periplus/native/<prefix>/<evidence-id>.json.zst
-```
-
-Imported envelopes preserve original WARC identity, location, exact WARC and HTTP
-headers, capture timestamp, and document identity. Bodies are `response_body`, not
-browser renderings. Ingestors also journal new native evidence. Importing later
-never changes the original capture time. New envelopes can reconstruct evidence
-without querying the original Postgres or ClickHouse; rebuilding a whole installation
-still needs operational state and retirement decisions. Older captures were not
-backfilled. Full S3-only disaster recovery and safe corpus deletion remain separate
-work; destructive retention stays disabled in the local experiment.
+Rebuilds use the retained payloads and raw journal without contacting Common
+Crawl or the original business database. Tombstones are archived as well.
+See [schemas](SCHEMA.md) and [recovery](REBUILDS.md).
 
 ## HTTP and CLI
 
@@ -93,8 +86,7 @@ Specification example:
 The existing `periplus-archive import --manifest <file> --limit 1000` command remains
 a bounded, foreground import of preselected CC index records. `lookup --dataset ...
 --url ... --max-age-days ...` is a foreground diagnostic import. These commands do
-not create admin jobs. `replay --prefix raw/v1/evidence/... --limit 1000` republishes
-archived evidence through the normal worker lane. CLI output and failures are
+not create admin jobs. Materializers reconcile archived captures directly; no replay publisher is required. CLI output and failures are
 owned by the invoking operator; admin jobs are preferred for background work.
 
 ## Supported records and current limits
@@ -111,17 +103,10 @@ an exhaustive search of every historical capture. Index requests are paced; addi
 ingestor replicas does not multiply the admin import lane. Bulk columnar discovery,
 range coalescing, broad WARC support, and rendered-quality guarantees are not included.
 
-## Local deployment and verification
+## Verification
 
-Apply Alembic `20260915_0022`, then redeploy API, ingestor, crawler, admin, and public
-together for the removed collection contract. No new environment variables, containers,
-or projection rebuild are required. The previous experiment's disposable collection
-intent contains removed fields; remove those operational test fields before running
-new workers. Do not rewrite immutable historical envelopes as part of deployment.
-
-Run `scripts/common_crawl_smoke.py` from the backend's `uv` environment for real CC
-admin import, duplicate replay, miss, byte-budget, cancellation, access-control,
-public SQL, and exact-byte verification. `scripts/common_crawl_recovery_smoke.py`
-exercises process death after archival publication, raw replay, and rebuild activation.
-Targeted tests cover checkpoint recovery, cancellation fencing, failed publication,
-unsupported/missing records, and retry download budgets. Run `make check` as well.
+Run `make check` and the isolated `scripts/archive_recovery_smoke.py` proof.
+The recovery corpus includes retained native and Common Crawl captures. Targeted
+import tests cover checkpoints, cancellation fences, missing/unsupported records,
+retry without re-downloading committed captures and download budgets. See
+[VALIDATION.md](VALIDATION.md) for measured results and limits.
