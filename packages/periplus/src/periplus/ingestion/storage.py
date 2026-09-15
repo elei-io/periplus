@@ -35,6 +35,7 @@ def visit_row(evidence: VisitEvidence) -> dict[str, JsonValue]:
     """Preserve the frozen package in one row; nested parents are implicit."""
     row = evidence.visit.model_dump(mode="json")
     row["capture_policy"] = canonical_json(row["capture_policy"])
+    row["archive_source"] = canonical_json(row.pop("archive_source", None))
     document = evidence.document.model_dump(mode="json") if evidence.document else {}
     for column in ("representation", "declared_media_type", "detected_media_type", "charset",
                    "content_sha256", "content_bytes", "object_key", "storage_encoding", "stored_bytes"):
@@ -63,6 +64,8 @@ def install_ingestion_schema(client: ClickHouseClient) -> None:
     for statement in source.split(";"):
         if statement.strip():
             client.execute(statement)
+    client.execute("ALTER TABLE ingest.visits ADD COLUMN IF NOT EXISTS "
+                   "archive_source String DEFAULT 'null' CODEC(ZSTD(3))")
 
 
 class EvidenceStore:

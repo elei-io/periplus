@@ -15,6 +15,7 @@ def _time(value):
 def decode_visit(row: dict) -> VisitEvidence:
     visit = {key: row[key] for key in VisitRecord.model_fields}
     visit['capture_policy'] = json.loads(visit['capture_policy'])
+    visit['archive_source'] = json.loads(visit['archive_source'])
     for key in ('admitted_at', 'started_at', 'observed_at', 'finished_at'):
         visit[key] = _time(visit[key])
     document = None

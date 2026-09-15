@@ -84,7 +84,7 @@ class ApiAccessMiddleware:
                 {"detail": "This operation requires administrative access."},
                 status_code=403,
             )(scope, receive, send)
-        if path in {"/collections", "/admin/sql/exec"} and method == "POST":
+        if path in {"/collections", "/admin/sql/exec", "/operations/archive-imports"} and method == "POST":
             body = bytearray()
             while True:
                 message = await receive()

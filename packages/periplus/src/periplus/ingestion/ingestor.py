@@ -13,6 +13,7 @@ from periplus.platform.config.performance import (
 )
 from periplus.platform.health import HealthMonitor
 from periplus.ingestion.consumer import run as run_ingestion
+from periplus.ingestion.imports.worker import run as run_imports
 from periplus.ingestion.queue import (
     DURABLE,
     STREAM,
@@ -78,6 +79,7 @@ async def run() -> None:
                 for lane in range(concurrency)
             }
             | {
+                "archive-imports": run_imports(stop=stop, monitor=monitor, leases=leases, client=client, results=results_store),
                 "ingestion-presence": run_catalogue_process_presence(
                     worker_id=(
                         f"ingestor:{os.uname().nodename}:{os.getpid()}"

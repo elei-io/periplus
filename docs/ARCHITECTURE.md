@@ -1,5 +1,10 @@
 # Architecture
 
+On the local ClickHouse experiment branch, Common Crawl expands the corpus through
+separate operator import jobs. Existing ingestors service bounded Postgres checkpoints
+under a NATS provider lease, then publish archived evidence into ordinary ingestion.
+Collections use Periplus crawling. See [COMMON_CRAWL.md](COMMON_CRAWL.md).
+
 This document describes the replacement continuous crawler in the working tree. Its complete
 requirements are in [FRONTIER.md](FRONTIER.md). Coordinated deployment, development-state reset,
 and live acceptance remain tracked in [FRONTIER_IMPLEMENTATION.md](FRONTIER_IMPLEMENTATION.md).

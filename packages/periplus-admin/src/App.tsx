@@ -30,6 +30,7 @@ const MaterializationPage = lazy(() =>
     default: module.MaterializationPage,
   }))
 )
+const ArchiveImportsPage = lazy(() => import("@/pages/data/archive-imports-page").then(module => ({default: module.ArchiveImportsPage})))
 const IngestionPage = lazy(() =>
   import("@/pages/data/ingestion-page").then((module) => ({
     default: module.IngestionPage,
@@ -165,6 +166,8 @@ export function App() {
     if (activeItem.href === "/data/materialization") {
       return <MaterializationPage />
     }
+
+    if (activeItem.href === "/data/archive-imports") return <ArchiveImportsPage />
 
     if (activeItem.href === "/data/ingestion") return <IngestionPage />
 

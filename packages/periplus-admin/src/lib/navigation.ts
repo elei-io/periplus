@@ -19,6 +19,7 @@ export const navigationGroups: NavigationGroup[] = [
     name: "Data",
     slug: "data",
     items: [
+      { name: "Archive imports", href: "/data/archive-imports", icon: ArrowDownToLineIcon, title: "Archive imports", description: "Controlled corpus expansion from Common Crawl." },
       {
         name: "Storage",
         href: "/data/storage",

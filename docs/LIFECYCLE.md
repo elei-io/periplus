@@ -1,5 +1,11 @@
 # Lifecycle
 
+The local ClickHouse Common Crawl path journals verified captures to raw storage
+before NATS publication. The ingestor journals native visits and immutable
+lineage before base-evidence insertion. Archive replays use the existing worker
+lane; separate operator import jobs never enter collection traversal.
+See [COMMON_CRAWL.md](COMMON_CRAWL.md) for recovery scope and remaining retention gates.
+
 The canonical element replacement is specified in [ELEMENT_LAYOUT.md](ELEMENT_LAYOUT.md).
 
 Periplus keeps acquisition small and derived evidence append-only while retained.

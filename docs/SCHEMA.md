@@ -1,5 +1,12 @@
 # Schema
 
+The local ClickHouse experiment adds an optional `archive_source` JSON string to
+its visit row. Imported observations retain original WARC identity, timestamps,
+headers and location, and carry no native attempts or browser policy. Bounded admin
+import intent/checkpoints live in control Postgres `archive_imports`; see
+[COMMON_CRAWL.md](COMMON_CRAWL.md). The DuckLake schema below describes the older
+production contract, not this experiment's physical ClickHouse layout.
+
 The canonical element replacement is specified in [ELEMENT_LAYOUT.md](ELEMENT_LAYOUT.md).
 
 Periplus has one evidence path:

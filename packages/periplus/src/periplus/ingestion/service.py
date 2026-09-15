@@ -53,6 +53,7 @@ class RepositoryIngestor:
         self.evidence_store.client.execute("SELECT 1")
 
     def prepare(self, job: IngestionJob) -> PreparedIngestion:
+        from periplus.ingestion.archive import journal
         if job.kind == "visit":
             assert job.visit is not None
             if retired("observation", str(job.visit.visit.visit_id)):
@@ -60,6 +61,7 @@ class RepositoryIngestor:
             if job.visit.document is not None:
                 claim(self.html_repository.store, job.visit.document.content_sha256, job.visit.visit.visit_id)
                 self._verify_document(job.visit.document)
+        journal(self.html_repository.store, job)
         return PreparedIngestion(job=job)
 
     def commit_prepared_batch(

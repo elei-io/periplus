@@ -79,6 +79,14 @@ mount that path consistently into every Periplus process that writes or reads la
 
 ### Local ClickHouse experiment
 
+Common Crawl imports run in existing ingestor replicas, independently of collections.
+Apply control migration `20260915_0022` and redeploy core/admin/public together. Setup
+also installs `ingest.visits.archive_source`. No new container, queue or environment
+variable is required. Keep existing volumes; remove obsolete source-selection fields
+from disposable completed operational test intent before using the new contract.
+Immutable historical evidence is unchanged. Instructions and acceptance commands
+are in [COMMON_CRAWL.md](COMMON_CRAWL.md).
+
 On `codex/clickhouse-experiment`, Compose runs ClickHouse as the analytical store.
 The production chart and the DuckLake rollout sections below have not been converted;
 they do not describe this branch's local experiment.

@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS ingest.visits
     outcome LowCardinality(String),
     status_code Nullable(UInt16),
     capture_policy String CODEC(ZSTD(3)),
+    archive_source String DEFAULT 'null' CODEC(ZSTD(3)),
 
     -- Zero or one retained document, carried in the same row as its visit.
     document_id Nullable(UUID),

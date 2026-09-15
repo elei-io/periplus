@@ -10,6 +10,7 @@ from uuid import UUID, uuid5
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 from periplus.crawl.control.domain_policies.schemas import DomainPolicySnapshot
 from periplus.crawl.control.content_policies.schemas import ContentPolicySnapshot
+from periplus.ingestion.archive_source import ArchiveSource
 
 
 _ATTEMPT_NAMESPACE = UUID("feef76f0-a91d-58f8-9533-e30c90a784b2")
@@ -74,11 +75,18 @@ class VisitRecord(CatalogueRecord):
     status_code: int | None = Field(default=None, ge=100, le=599)
     document_id: UUID | None = None
     capture_policy: ContentPolicySnapshot | None = None
+    archive_source: ArchiveSource | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @model_validator(mode="after")
     def validate_record(self) -> VisitRecord:
-        if self.capture_policy is None:
+        if self.capture_policy is None and self.archive_source is None:
             raise ValueError("native observations require their frozen capture_policy")
+        if self.archive_source is not None:
+            if self.capture_policy is not None or self.visit_id != self.archive_source.capture_id:
+                raise ValueError("archive observations require source identity and no native policy")
+            if (self.outcome != "succeeded" or self.document_id is None or self.observed_at is None
+                    or not self.admitted_at == self.started_at == self.observed_at == self.finished_at):
+                raise ValueError("archive observations require a document at one original capture timestamp")
         if (
             self.started_at is not None
             and self.started_at < self.admitted_at
@@ -221,6 +229,12 @@ class VisitEvidence(CatalogueRecord):
             raise ValueError("attempt indexes must be contiguous from zero")
         attempt_ids = {attempt.attempt_id for attempt in self.attempts}
         if self.document is not None:
+            if self.visit.archive_source is not None:
+                if self.attempts or self.steps or self.document.attempt_id is not None:
+                    raise ValueError("archive observations cannot invent native attempts")
+                if self.document.representation != "response_body":
+                    raise ValueError("archive observations retain HTTP response bodies")
+                return self
             if self.document.attempt_id not in attempt_ids:
                 raise ValueError("document attempt is absent from visit evidence")
             successful = next(

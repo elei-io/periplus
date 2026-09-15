@@ -29,6 +29,7 @@ dependencies = [
     "croniter>=6,<7",
     "selectolax==0.4.11",
     "PyICU==2.16.2",
+    "warcio==1.8.1",
 ]
 
 [dependency-groups]
@@ -40,6 +41,7 @@ dev = [
 [project.scripts]
 periplus-setup = "periplus.entrypoints.setup:main"
 periplus-worker = "periplus.entrypoints.worker:main"
+periplus-archive = "periplus.entrypoints.archive:main"
 
 [build-system]
 requires = ["setuptools>=84.0.0"]

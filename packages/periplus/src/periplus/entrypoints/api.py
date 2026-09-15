@@ -95,3 +95,6 @@ app.include_router(query_history_router)
 
 from periplus.materialization.rebuilds.http import router as rebuild_router
 app.include_router(rebuild_router)
+
+from periplus.operations.api.archive_imports import router as archive_import_router
+app.include_router(archive_import_router)

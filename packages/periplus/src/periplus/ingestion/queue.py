@@ -498,6 +498,15 @@ class IngestionQueueClient:
         self.jetstream = None
         self.results = None
 
+    @classmethod
+    def from_connection(cls, client, results) -> IngestionQueueClient:
+        """Borrow startup-owned handles; their process owns shutdown."""
+        queue = cls()
+        queue.client = client
+        queue.jetstream = client.jetstream()
+        queue.results = results
+        return queue
+
     async def connect(self) -> None:
         self.client = await connect_nats()
         self.jetstream = self.client.jetstream()

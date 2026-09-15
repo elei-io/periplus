@@ -38,7 +38,7 @@ function modeLabel(mode: string) {
     : mode === "shared"
       ? "Shared work"
       : mode === "reused"
-        ? "Recent result reuse"
+        ? "Capture reuse"
         : mode
 }
 function observationLink(id: string) {
@@ -46,7 +46,7 @@ function observationLink(id: string) {
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)
   )
     return null
-  return `/?${new URLSearchParams({ sql: `SELECT * FROM web.observation WHERE observation_id = '${id}' LIMIT 1;` })}`
+  return `/?${new URLSearchParams({ sql: `SELECT * FROM public_v1.capture WHERE capture_id = '${id}' LIMIT 1;` })}`
 }
 function Observation({ id, label }: { id: string; label: string }) {
   const href = observationLink(id)
