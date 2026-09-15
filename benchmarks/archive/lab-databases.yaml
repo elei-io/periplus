@@ -1,0 +1,64 @@
+# Disposable benchmark databases. No production credentials or persistent volumes.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: periplus-archive-benchmark-db
+  namespace: applications
+  labels: {diagnostic: periplus-archive-benchmark-db}
+spec:
+  restartPolicy: Never
+  activeDeadlineSeconds: 21600
+  automountServiceAccountToken: false
+  containers:
+    - name: clickhouse
+      image: clickhouse/clickhouse-server:26.8.2.7@sha256:fa394da808cc53f76d0344429421d6c422a6ee85fe7450135c0e3cff4df9bcbb
+      env:
+        - {name: CLICKHOUSE_USER, value: benchmark}
+        - {name: CLICKHOUSE_PASSWORD, value: disposable-benchmark}
+        - {name: CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT, value: '1'}
+      resources:
+        requests: {cpu: '1', memory: 2Gi, ephemeral-storage: 5Gi}
+        limits: {cpu: '3', memory: 4Gi, ephemeral-storage: 15Gi}
+      volumeMounts:
+        - {name: clickhouse, mountPath: /var/lib/clickhouse}
+    - name: postgres
+      image: postgres:17-alpine
+      env:
+        - {name: POSTGRES_PASSWORD, value: disposable-benchmark}
+        - {name: POSTGRES_USER, value: benchmark}
+      resources:
+        requests: {cpu: 100m, memory: 128Mi}
+        limits: {cpu: '1', memory: 512Mi}
+      volumeMounts:
+        - {name: postgres, mountPath: /var/lib/postgresql/data}
+  volumes:
+    - {name: clickhouse, emptyDir: {sizeLimit: 12Gi}}
+    - {name: postgres, emptyDir: {sizeLimit: 1Gi}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: periplus-archive-benchmark-db
+  namespace: applications
+spec:
+  selector: {diagnostic: periplus-archive-benchmark-db}
+  ports:
+    - {name: clickhouse, port: 8123}
+    - {name: postgres, port: 5432}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: periplus-archive-benchmark-db
+  namespace: applications
+spec:
+  podSelector:
+    matchLabels: {diagnostic: periplus-archive-benchmark-db}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {diagnostic: periplus-archive-benchmark}
+      ports:
+        - {port: 8123}
+        - {port: 5432}
