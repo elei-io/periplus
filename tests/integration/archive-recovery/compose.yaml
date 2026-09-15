@@ -1,6 +1,6 @@
 name: periplus-recovery
 x-runtime: &runtime
-  image: periplus-core:local
+  image: ${RECOVERY_IMAGE:-periplus-core:local}
   working_dir: /app/packages/periplus
   environment: &environment
     PERIPLUS_CONTROL_DATABASE_URL: postgresql://recovery:recovery@postgres:5432/recovery

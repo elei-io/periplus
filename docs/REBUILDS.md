@@ -18,6 +18,15 @@ worker ID, attempts and errors. Successful records collapse into contiguous
 range cursors. Retry requeues failed records; cancellation changes the revision
 so late completion cannot advance progress or publish the cancelled target.
 
+Workers batch capture/document identity checks and prefetch verified HTML bytes
+under one exact source claim per byte-bounded group. Normal groups target 8 MiB;
+a single larger document still uses the explicit input/output admission limits.
+Parsing starts after source ownership is released. Publication retains fresh
+capture/content claims, tombstone checks and post-insert digest verification.
+Validated element records and prepared JSON bytes avoid repeated per-element
+model construction and serialization. Replays verify existing output in batches.
+The planner reads pending shard/lane identities once under its build-row lock.
+
 A candidate becomes ready only when every initial range and the observed live
 cut are covered without failed batches. Activation requires verification within
 15 seconds and changes one Postgres publication pointer transactionally. A query
