@@ -158,3 +158,13 @@ uv run python ../../benchmarks/archive/materialize.py \
 pinned amd64 ClickHouse image requires CPU features absent from the current VM
 CPU model; it must not be mistaken for a successful lab deployment. Local
 materializer proof and homelab storage timings must be reported separately.
+
+## Large-document admission
+
+`material_limits.py --captures captures.json` accepts a JSON array of current
+`Capture` contracts. It reads their retained bodies using repository environment
+settings, creates one randomly named disposable ClickHouse database, checks each
+projection/insert/reuse/retry in a fresh child, then tests the entire set through
+`materialize_many` in one process. It drops the database on completion. Run it
+inside a pod with the real worker memory limit; Linux `ru_maxrss` is reported in
+KiB. Neither raw archive objects nor live material targets are modified.

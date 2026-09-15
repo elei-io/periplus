@@ -16,7 +16,8 @@ from periplus.materialization.html_content import html_content
 from periplus.platform.clickhouse import ClickHouseClient
 from periplus.retention.identities import write_claims
 
-MAX_OUTPUT_BYTES = 31 * 1024 * 1024
+MAX_INPUT_BYTES = 96 * 1024 * 1024
+MAX_OUTPUT_BYTES = 127 * 1024 * 1024
 
 
 class MaterialInputError(ValueError):
@@ -44,7 +45,8 @@ def install_material_schema(
 def output_row(value: dict) -> dict:
     encoded = canonical(value)
     if len(encoded) > MAX_OUTPUT_BYTES:
-        raise ValueError("Material output exceeds row byte budget")
+        identity = value.get("document_id", value.get("capture_id", "unknown"))
+        raise ValueError(f"Material row {identity} is {len(encoded)} bytes; limit is {MAX_OUTPUT_BYTES} bytes")
     return {**value, "output_digest": sha256(encoded).hexdigest()}
 
 
@@ -117,7 +119,7 @@ class MaterialStore:
             f"lower(hex(content_id)) AS content_id, lower(hex(output_digest)) AS output_digest) "
             f"FROM {self.database}.html_documents WHERE document_id=unhex({{id:String}}) LIMIT 2",
             parameters={"id": identity},
-            max_response_bytes=48 * 1024 * 1024,
+            max_response_bytes=256 * 1024 * 1024,
         )["data"]
         if len(rows) > 1:
             raise ValueError("Duplicate material document")
@@ -145,8 +147,8 @@ class MaterialStore:
             "text/html",
             "application/xhtml+xml",
         ):
-            if payload.byte_length > 32 * 1024 * 1024:
-                raise ValueError("HTML exceeds material input budget")
+            if payload.byte_length > MAX_INPUT_BYTES:
+                raise ValueError(f"HTML {payload.content_id} is {payload.byte_length} bytes; limit is {MAX_INPUT_BYTES} bytes")
             document = cache.get(payload.document_id) or self.content(
                 payload.document_id
             )
@@ -174,11 +176,14 @@ class MaterialStore:
                     ):
                         raise ValueError("Raw payload identity mismatch")
                 text = source.decode(payload.charset or "utf-8", errors="strict")
+                del source
                 nodes, elements = parse_document(text)
+                del text
                 parsed = html_content(payload.content_id, nodes, elements).model_dump(
                     mode="json"
                 )
                 parsed.pop("content_sha256")
+                del nodes, elements
                 document = output_row(
                     dict(
                         document_id=payload.document_id,
@@ -228,17 +233,10 @@ class MaterialStore:
             rows[key]["output_digest"] != digest for key, digest in existing.items()
         ):
             raise ValueError("Conflicting material output")
-        block, size = [], 0
-        for key, row in rows.items():
-            if key in existing:
-                continue
-            amount = len(canonical(row))
-            if block and size + amount > 8 * 1024 * 1024:
-                self.client.insert_rows(f"{self.database}.{table}", block)
-                block, size = [], 0
-            block.append(row)
-            size += amount
-        self.client.insert_rows(f"{self.database}.{table}", block)
+        self.client.insert_rows(
+            f"{self.database}.{table}",
+            [row for key, row in rows.items() if key not in existing],
+        )
         if self.digests(table, list(rows)) != {
             key: row["output_digest"] for key, row in rows.items()
         }:

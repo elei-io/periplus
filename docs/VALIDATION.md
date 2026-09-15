@@ -108,10 +108,13 @@ rejects a conflicting restore over existing control state.
 - The raw journal currently costs several objects per capture. Packed segments
   may be necessary at large scale. Sixteen shards bound planning state, but do
   not establish sufficient archive write throughput for every workload.
-- A material batch is bounded to 128 captures and 32 MiB of HTML input; one HTML
-  payload cannot exceed 32 MiB, and one encoded material row cannot exceed 31 MiB.
-  Larger or unusually expansive documents produce inspectable failures and block
-  publication. Supporting those requires an explicit storage/processing change;
+- A material batch contains at most 128 captures, processed sequentially in one
+  execution lane per worker. Each HTML payload is bounded to 96 MiB decoded and
+  each canonical material row to 127 MiB. The ClickHouse client encodes compact
+  UTF-8 JSON once per insert row, batches those exact bytes toward 8 MiB, and
+  admits an individual larger row up to a 128 MiB request. Reused-document reads
+  allow 256 MiB for ClickHouse's JSON representation. These are separate limits,
+  not a 96 MiB total batch-input bound. Larger inputs remain inspectable failures;
   archival retention does not imply that every possible document is queryable.
 - Public HTML membership checks and broad element queries still need scaled
   measurements. Reader execution has explicit memory, scan and time limits; a
@@ -152,3 +155,25 @@ materialization errors now classify this as retryable, preserving the uncertain-
 lease before replay. Malformed/oversized material output remains a permanent,
 inspectable failure. This does not shorten the existing approximately ten-minute
 drain interval or bypass ownership checks.
+
+## Retained-document size proof — 2026-09-15
+
+`benchmarks/archive/material_limits.py` exercises projection, real ClickHouse
+insertion, full document reuse and verified retry in a disposable database. It
+reads immutable raw objects and never changes archive or live material tables.
+The selected set contains twelve captures from failed batches and the six largest
+unique retained bodies (seventeen unique bodies after overlap).
+
+All seventeen passed in a Kubernetes pod capped at 2 GiB. The largest input was
+83,815,376 bytes; the largest encoded document was 84,396,462 bytes. Peak child
+RSS across projection/insertion/reuse was 849.4 MiB. Maximum observed projection,
+insertion and reuse/retry times were 4.66 s, 0.78 s and 4.89 s respectively. These
+are separate maxima and a size-admission proof, not a corpus throughput forecast.
+The raw layout, complete DOM representation and deterministic output digests
+are unchanged. Source file hashing still produces a new worker recipe, which
+must rebuild a candidate alongside the old serving recipe before publication.
+
+A second isolated 2 GiB pod ran all seventeen captures through the actual
+`materialize_many` path in one process, then retried the whole batch. It passed
+in 52.35 seconds with 1,026.7 MiB peak RSS, including retained Python allocator
+memory across documents. Both disposable ClickHouse databases were dropped.

@@ -13,6 +13,9 @@ from pydantic import BaseModel, ConfigDict, JsonValue, SecretStr, field_validato
 
 from periplus.platform.config import get_str
 
+INSERT_TARGET_BYTES = 8 * 1024 * 1024
+MAX_INSERT_BYTES = 128 * 1024 * 1024
+
 
 class ClickHouseConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -115,9 +118,14 @@ class ClickHouseClient:
         max_response_bytes: int = 8 * 1024 * 1024,
         timeout_seconds: float = 45,
         cancelled: threading.Event | None = None,
+        max_request_bytes: int = 32 * 1024 * 1024,
     ) -> bytes:
-        if len(data) > 32 * 1024 * 1024 or max_response_bytes <= 0:
-            raise ValueError("ClickHouse request exceeds its byte bound")
+        if not 0 < max_request_bytes <= MAX_INSERT_BYTES or max_response_bytes <= 0:
+            raise ValueError("Invalid ClickHouse request/response byte bound")
+        if len(data or sql.encode()) > max_request_bytes:
+            raise ValueError(
+                f"ClickHouse request is {len(data or sql.encode())} bytes; limit is {max_request_bytes} bytes"
+            )
         if not 0 < timeout_seconds <= 45:
             raise ValueError("ClickHouse timeout must be within 45 seconds")
         identity = query_id or str(uuid4())
@@ -251,13 +259,20 @@ class ClickHouseClient:
             f"INSERT INTO {table} ({', '.join(row)}) SELECT {selection} "
             f"FROM input('{structure}') FORMAT JSONEachRow"
         )
-        self.execute(
-            sql,
-            data="".join(
-                json.dumps(item, ensure_ascii=False, allow_nan=False) + "\n"
-                for item in rows
-            ).encode(),
-        )
+        block: list[bytes] = []
+        size = 0
+        for item in rows:
+            encoded = (json.dumps(item, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n").encode()
+            if len(encoded) > MAX_INSERT_BYTES:
+                identity = item.get("document_id", item.get("capture_id", "unknown"))
+                raise ValueError(f"ClickHouse row {table}/{identity} is {len(encoded)} bytes; limit is {MAX_INSERT_BYTES} bytes")
+            if block and size + len(encoded) > INSERT_TARGET_BYTES:
+                self.execute(sql, data=b"".join(block), max_request_bytes=MAX_INSERT_BYTES)
+                block, size = [], 0
+            block.append(encoded)
+            size += len(encoded)
+        if block:
+            self.execute(sql, data=b"".join(block), max_request_bytes=MAX_INSERT_BYTES)
 
     def close(self) -> None:
         self._http.close()

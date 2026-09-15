@@ -179,8 +179,9 @@ are removed. The old databases, lake objects and raw evidence remain retained:
 large materialized output rows have failed the current admission limit, so the
 complete retained-corpus rebuild has not passed acceptance.
 
-Materialization still needs separate capacity work. The inventory contains **three unique bodies above the current 32 MiB HTML
-input limit**; the largest is 83,815,376 decoded bytes. These bodies are verified
-and retained. The worker's input limit and output-row admission must be resolved
-before a complete retained-corpus rebuild can pass. This adoption does not drop
-large captures to make recovery appear complete.
+The inventory contains three unique bodies above the former 32 MiB HTML input
+limit; the largest is 83,815,376 decoded bytes. These bodies are verified and
+retained. The revised worker admits 96 MiB input and 127 MiB material rows, with
+exact wire-byte batching. See [validation](VALIDATION.md) for measured evidence;
+full recovery still requires all ranges to verify. Adoption does not drop large
+captures to make recovery appear complete.

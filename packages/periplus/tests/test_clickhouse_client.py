@@ -1,5 +1,7 @@
 """Transport safety at the uncertain-write boundary."""
 import unittest
+import json
+from unittest.mock import patch
 
 import httpx
 from pydantic import SecretStr
@@ -72,6 +74,34 @@ class ClickHouseClientTests(unittest.TestCase):
         self.assertEqual(params["param_value"], "' OR 1=1")
         self.assertEqual(params["async_insert"], "0")
         self.assertEqual(params["wait_end_of_query"], "1")
+
+    def test_insert_batches_use_exact_compact_utf8_bytes(self):
+        requests = []
+        def receive(request):
+            requests.append(request)
+            return httpx.Response(200, content=b"")
+        client = self.client(receive)
+        client._input_schemas["material.test"] = {"value": "String"}
+        rows = [{"value": "å" * 12}, {"value": "x" * 90}, {"value": "tail"}]
+        with patch("periplus.platform.clickhouse.client.INSERT_TARGET_BYTES", 50):
+            client.insert_rows("material.test", rows)
+        expected = [(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n").encode() for row in rows]
+        self.assertEqual([request.content for request in requests], expected)
+        self.assertEqual([json.loads(request.content) for request in requests], rows)
+
+    def test_insert_rejects_oversized_single_row_before_upload(self):
+        requests = []
+        client = self.client(lambda request: requests.append(request))
+        client._input_schemas["material.test"] = {"value": "String"}
+        with patch("periplus.platform.clickhouse.client.MAX_INSERT_BYTES", 32):
+            with self.assertRaisesRegex(ValueError, "row material.test/unknown is 113 bytes; limit is 32"):
+                client.insert_rows("material.test", [{"value": "x" * 100}])
+        self.assertEqual(requests, [])
+
+    def test_request_limit_reports_actual_bytes(self):
+        client = self.client(lambda request: self.fail("must not upload"))
+        with self.assertRaisesRegex(ValueError, "5 bytes; limit is 4"):
+            client.execute("INSERT", data=b"12345", max_request_bytes=4)
 
 
 if __name__ == "__main__":

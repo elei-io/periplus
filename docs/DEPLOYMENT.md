@@ -61,3 +61,9 @@ manifest to the setup hook. Existing deployments still require the explicit
 maintenance upgrade coordination described above. Homelab owns placement,
 database resources, retained volumes, backup jobs and monitoring through Flux;
 the chart remains a consumer of those external services.
+
+The admin nginx upstream uses the API's full Kubernetes service DNS name. nginx's
+asynchronous resolver does not apply the pod search suffix to a short hostname;
+using `periplus-api` there caused gateway 502s despite healthy API pods. Compose
+continues to use its Docker service name. Unexpected gateway HTML is summarized
+as an HTTP status in the admin rather than rendered as raw error-page text.

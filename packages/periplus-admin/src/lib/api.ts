@@ -48,6 +48,9 @@ export async function apiErrorFromResponse(response: Response) {
 
     return new ApiError(message, response.status, detail)
   } catch {
-    return new ApiError(text, response.status, text)
+    const message = [502, 503, 504].includes(response.status)
+      ? `The API is temporarily unavailable (HTTP ${response.status}). Please retry shortly.`
+      : `Request failed with status ${response.status}. The server returned an unexpected response.`
+    return new ApiError(message, response.status)
   }
 }

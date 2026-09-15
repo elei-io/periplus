@@ -42,7 +42,7 @@ spec:
           imagePullPolicy: {{ .Values.images.admin.pullPolicy }}
           env:
             - name: PERIPLUS_API_HOST
-              value: {{ printf "%s-api" (include "periplus.fullname" .) | quote }}
+              value: {{ printf "%s-api.%s.svc.cluster.local" (include "periplus.fullname" .) .Release.Namespace | quote }}
             - name: PERIPLUS_API_PORT
               value: "8000"
             - name: PERIPLUS_ADMIN_API_TOKEN

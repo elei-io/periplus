@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "test": "node --experimental-strip-types --test src/pages/**/*.test.ts",
+    "test": "node --experimental-strip-types --test src/pages/**/*.test.ts src/lib/*.test.ts",
     "format": "prettier --write \"**/*.{ts,tsx}\"",
     "typecheck": "tsc -b --pretty false",
     "preview": "vite preview"
