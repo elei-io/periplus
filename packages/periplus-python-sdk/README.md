@@ -12,7 +12,7 @@ from periplus_sdk import Client
 
 with Client("http://localhost:8080") as client:
     result = client.execute(
-        "SELECT capture_id, page_url FROM public_v1.capture LIMIT ?", [10]
+        "SELECT capture_id, url FROM public_v1.capture LIMIT ?", [10]
     )
     print(result.columns, result.rows)
 ```
@@ -23,7 +23,7 @@ methods. `prepare` validates/explains SQL; `execute` returns typed columns, rows
 truncation and query metadata; `helpers` describes the installed public views.
 
 The public schema is `public_v1`. HTML joins use `document_id` plus node index;
-`content_id` identifies raw bytes and can have different interpretations.
+`document_id` identifies retained bytes and their HTML interpretation. Raw-byte hashes stay internal.
 There is one query endpoint, with no experimental fallback. Client errors preserve
 server categories and do not automatically retry executed queries.
 
@@ -35,7 +35,7 @@ from sqlalchemy import text
 
 engine = sql_api.create_engine(base_url="http://localhost:8080")
 with engine.connect() as connection:
-    print(connection.execute(text("SELECT page_url FROM public_v1.capture LIMIT 5")).all())
+    print(connection.execute(text("SELECT url FROM public_v1.capture LIMIT 5")).all())
 engine.dispose()
 ```
 

@@ -36,7 +36,7 @@ def _(mo):
 def _(mo, pp):
     captures = mo.sql(
         """
-        SELECT capture_id, page_url, content_id
+        SELECT capture_id, url, document_id
         FROM public_v1.capture
         LIMIT 10
         """,
@@ -48,8 +48,8 @@ def _(mo, pp):
 @app.cell
 def _(captures, pp, sql_api):
     # Replace this Python predicate with your own qualification logic.
-    _ids = [row["content_id"] for row in captures.to_dicts() if row["page_url"].startswith("https://")]
-    selected = sql_api.bind(pp, content_ids=_ids)
+    _ids = [row["document_id"] for row in captures.to_dicts() if row["url"].startswith("https://")]
+    selected = sql_api.bind(pp, document_ids=_ids)
     return (selected,)
 
 
@@ -57,10 +57,10 @@ def _(captures, pp, sql_api):
 def _(mo, selected):
     elements = mo.sql(
         """
-        SELECT content_id, node_index, parent_index, tag,
+        SELECT document_id, node_index, parent_index, tag,
                trim(text_direct) AS text, attributes['class'] AS elem_class
         FROM public_v1.html_element
-        WHERE content_id IN (SELECT unnest(CAST(:content_ids AS VARCHAR[])))
+        WHERE document_id IN (SELECT unnest(CAST(:document_ids AS VARCHAR[])))
           AND text_direct IS NOT NULL AND trim(text_direct) <> ''
         LIMIT 100
         """,
