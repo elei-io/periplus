@@ -211,7 +211,7 @@ class FrontierStoreTests(unittest.TestCase):
         with self.sessions.begin() as session:
             for message in session.scalars(select(FrontierOutboxRecord).where(
                     FrontierOutboxRecord.acquisition_id == orphan.acquisition_id)):
-                message.committed_snapshot = 1
+                message.committed_at = datetime.now(UTC)
         self.assertEqual(self.store.cleanup_acquisitions(cutoff=self.now + timedelta(hours=2)).removed, 1)
 
     def collection(self, **kwargs):
@@ -532,7 +532,7 @@ class FrontierStoreTests(unittest.TestCase):
         a = self.admit(self.collection())
         self.store.dispatch(a.acquisition_id, now=self.now)
         first = self.store.claim_outbox(now=self.now, lease_seconds=2)
-        self.assertEqual(len(first), 3)
+        self.assertEqual(len(first), 2)
         self.assertEqual(self.store.claim_outbox(now=self.now), [])
         later = self.now + timedelta(seconds=3)
         second = self.store.claim_outbox(now=later)
@@ -1071,7 +1071,7 @@ class FrontierStoreTests(unittest.TestCase):
 
     def test_ingestion_receipts_prove_evidence_and_lineage_separately_from_query_readiness(self):
         from periplus.ingestion.queue import IngestionState
-        from periplus.platform.catalogue.records import IngestionWriteResult
+        from evidence_receipt_fixture import receipt_for
         from periplus.crawl.runtime.frontier_views import collection_views
         identity = self.collection(max_depth=0)
         a = self.admit(identity)
@@ -1082,7 +1082,7 @@ class FrontierStoreTests(unittest.TestCase):
         self.store.settle_collection(identity, now=self.now)
         for delivery in self.store.claim_outbox(now=self.now):
             self.store.mark_outbox_published(delivery, now=self.now)
-        self.assertIsNone(self.store.get_acquisition(a.acquisition_id).evidence_snapshot)
+        self.assertIsNone(self.store.get_acquisition(a.acquisition_id).evidence_committed_at)
         before, = collection_views(self.sessions, identity=identity)
         self.assertEqual(before.ingested_pages, 0)
         self.assertFalse(before.lineage_ready)
@@ -1092,10 +1092,10 @@ class FrontierStoreTests(unittest.TestCase):
         for delivery in receipts:
             job = delivery.ingestion_job()
             state = IngestionState(job=job, status="succeeded", updated_at=self.now,
-                result=IngestionWriteResult(kind=job.kind, identity=job.identity, created=True, repository_snapshot=42))
+                result=receipt_for(job, ingested_at=self.now))
             self.assertTrue(self.store.record_ingestion_receipt(delivery, state, now=self.now))
             self.assertFalse(self.store.record_ingestion_receipt(delivery, state, now=self.now))
-        self.assertEqual(self.store.get_acquisition(a.acquisition_id).evidence_snapshot, 42)
+        self.assertEqual(self.store.get_acquisition(a.acquisition_id).evidence_committed_at.replace(tzinfo=UTC), self.now)
         self.assertEqual(self.store.claim_ingestion_receipts(now=self.now + timedelta(days=1)), [])
         after, = collection_views(self.sessions, identity=identity)
         self.assertEqual(after.ingested_pages, 1)
@@ -1105,9 +1105,11 @@ class FrontierStoreTests(unittest.TestCase):
 
     def test_ingestion_receipts_reject_wrong_evidence_and_expired_claims(self):
         from periplus.ingestion.queue import IngestionState
-        from periplus.platform.catalogue.records import IngestionWriteResult
-        self.collection()
-        publication, = self.store.claim_outbox(now=self.now)
+        from evidence_receipt_fixture import receipt_for
+        own = self.admit(self.collection())
+        self.store.dispatch(own.acquisition_id, now=self.now)
+        publications = self.store.claim_outbox(now=self.now)
+        publication, = [item for item in publications if item.kind == "lineage"]
         self.store.mark_outbox_published(publication, now=self.now)
         old, = self.store.claim_ingestion_receipts(now=self.now)
         self.assertEqual(self.store.claim_ingestion_receipts(now=self.now), [])
@@ -1115,9 +1117,9 @@ class FrontierStoreTests(unittest.TestCase):
         current, = self.store.claim_ingestion_receipts(now=later)
         job = old.ingestion_job()
         state = IngestionState(job=job, status="succeeded", updated_at=later,
-            result=IngestionWriteResult(kind=job.kind, identity=job.identity, created=False, repository_snapshot=7))
+            result=receipt_for(job, created=False, ingested_at=later))
         self.assertFalse(self.store.record_ingestion_receipt(old, state, now=later))
-        wrong_job = job.model_copy(update={"lineage": job.lineage.model_copy(update={"specification": {}})})
+        wrong_job = job.model_copy(update={"lineage": job.lineage.model_copy(update={"rule_id": "different"})})
         with self.assertRaisesRegex(ValueError, "different immutable evidence"):
             self.store.record_ingestion_receipt(current, state.model_copy(update={"job": wrong_job}), now=later)
         pending = IngestionState(job=job, status="pending", updated_at=later)
@@ -1278,10 +1280,10 @@ class FrontierStoreTests(unittest.TestCase):
 
     def allow_retention_receipts(self, identity):
         with self.sessions.begin() as session:
-            session.get(AcquisitionRecord, identity).evidence_snapshot = 7
+            session.get(AcquisitionRecord, identity).evidence_committed_at = datetime.now(UTC)
             for row in session.scalars(select(FrontierOutboxRecord).where(
                     FrontierOutboxRecord.acquisition_id == identity, FrontierOutboxRecord.kind.in_(("observation", "lineage")))):
-                row.committed_snapshot = 7
+                row.committed_at = datetime.now(UTC)
 
     def retire(self, identity, key):
         return self.store.retire_navigation(identity, key, modified_at=self.now,
@@ -1298,7 +1300,7 @@ class FrontierStoreTests(unittest.TestCase):
         self.assertIsNone(acquisition.navigation)
         self.assertEqual(acquisition.retired_navigation, package.model_dump(mode="json"))
         self.assertTrue(self.retire(own.acquisition_id, package.object_name))
-        self.assertEqual(acquisition.evidence_snapshot, 7)
+        self.assertIsNotNone(acquisition.evidence_committed_at)
 
 
     def test_retired_navigation_preserves_exact_completion_replay_and_forces_branch_capture(self):
@@ -1380,7 +1382,7 @@ class FrontierStoreTests(unittest.TestCase):
     def commit_collection_receipts(self, identity):
         with self.sessions.begin() as session:
             for row in session.scalars(select(FrontierOutboxRecord).where(FrontierOutboxRecord.collection_id == identity)):
-                row.committed_snapshot = 7
+                row.committed_at = datetime.now(UTC)
 
     def test_completed_acquisition_reclaimed_while_parent_remains_active(self):
         from periplus.crawl.runtime.frontier_views import collection_views
@@ -1415,9 +1417,9 @@ class FrontierStoreTests(unittest.TestCase):
 
         self.store.stop_collection(identity, now=self.now + timedelta(hours=2))
         with self.sessions() as session:
-            outcome = session.get(FrontierOutboxRecord, f"lineage:collection_outcome:{identity}").payload
-            self.assertEqual(outcome['supplied_pages'], 1)
-            self.assertEqual(outcome['failed_pages'], 0)
+            outcome = session.get(CollectionRecord, identity)
+            self.assertEqual(outcome.supplied_pages, 1)
+            self.assertEqual(outcome.failed_pages, 0)
 
     def test_shared_completion_compaction_is_bounded_and_resumable(self):
         from periplus.crawl.runtime.frontier_store import request_url_key
@@ -1448,13 +1450,13 @@ class FrontierStoreTests(unittest.TestCase):
                 capture_key=str(aid), requirements={}, status='cancelled', completed_at=self.now))
             for index in range(600):
                 session.add(FrontierOutboxRecord(message_id=f'lineage:test:{index}', acquisition_id=aid,
-                    kind='lineage', payload={}, committed_snapshot=7))
+                    kind='lineage', payload={}, committed_at=datetime.now(UTC)))
         first = self.store.cleanup_acquisitions(cutoff=self.now + timedelta(seconds=1))
         self.assertEqual((first.removed, first.more), (0, True))
         second = self.store.cleanup_acquisitions(cutoff=self.now + timedelta(seconds=1))
         self.assertEqual((second.removed, second.more), (1, False))
 
-    def test_collection_cleanup_requires_definition_outcome_and_supplied_evidence_receipts(self):
+    def test_collection_cleanup_preserves_customer_record_after_required_evidence_receipts(self):
         identity = self.collection()
         own = self.admit(identity)
         work = self.store.dispatch(own.acquisition_id, now=self.now)
@@ -1468,12 +1470,12 @@ class FrontierStoreTests(unittest.TestCase):
         self.assertEqual(self.store.cleanup_collections(cutoff=cutoff).removed, 0)
         self.allow_retention_receipts(own.acquisition_id)
         self.assertEqual(self.store.cleanup_collections(cutoff=cutoff).removed, 1)
-        self.assertIsNone(self.store.get_collection(identity))
+        self.assertIsNotNone(self.store.get_collection(identity).execution_pruned_at)
         self.assertEqual(self.store.control_view().retained_interests, 0)
         self.assertEqual(self.store.cleanup_acquisitions(cutoff=cutoff).removed, 1)
         self.assertEqual(self.store.control_view().retained_acquisitions, 0)
 
-    def test_collection_cleanup_prunes_bounded_rows_and_hides_partial_current_counts(self):
+    def test_collection_cleanup_prunes_bounded_rows_and_preserves_visible_counts(self):
         from periplus.crawl.runtime.frontier_store import request_url_key
         from periplus.crawl.runtime.frontier_views import collection_views
         identity = self.collection(page_limit=1000)
@@ -1493,21 +1495,24 @@ class FrontierStoreTests(unittest.TestCase):
         self.assertEqual(self.store.cleanup_collections(cutoff=cutoff).removed, 0)
         self.assertEqual(self.store.control_view().retained_interests, 88)
         self.assertTrue(self.store.get_collection(identity).retiring)
-        self.assertEqual(collection_views(self.sessions, identity=identity), [])
+        self.assertEqual(len(collection_views(self.sessions, identity=identity)), 1)
         final = self.store.cleanup_collections(cutoff=cutoff)
         self.assertEqual(final.removed, 1)
         self.assertFalse(final.more)
-        self.assertIsNone(self.store.get_collection(identity))
+        self.assertIsNotNone(self.store.get_collection(identity).execution_pruned_at)
         self.assertEqual(self.store.control_view().retained_interests, 0)
 
-    def test_collection_cleanup_never_assumes_missing_history_outbox_is_committed(self):
+    def test_empty_collection_cleanup_needs_no_analytical_history_copy(self):
         identity = self.collection()
         self.store.stop_collection(identity, now=self.now)
-        self.commit_collection_receipts(identity)
-        with self.sessions.begin() as session:
-            session.delete(session.get(FrontierOutboxRecord, f"lineage:collection:{identity}"))
+        original = self.store.get_collection(identity)
+        self.assertEqual(self.store.claim_outbox(now=self.now), [])
+        self.assertEqual(self.store.cleanup_collections(cutoff=self.now + timedelta(seconds=1)).removed, 1)
+        retained = self.store.get_collection(identity)
+        self.assertEqual(retained.spec, original.spec)
+        self.assertEqual(retained.outcome, "cancelled")
+        self.assertIsNotNone(retained.execution_pruned_at)
         self.assertEqual(self.store.cleanup_collections(cutoff=self.now + timedelta(seconds=1)).removed, 0)
-        self.assertFalse(self.store.get_collection(identity).retiring)
 
     def test_duration_expiry_keeps_started_capture_and_blocks_remaining_work(self):
         identity = self.collection(page_limit=3, max_duration_seconds=60)

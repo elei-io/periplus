@@ -19,3 +19,5 @@
 **/.next
 _web_old_dont_touch
 **/.env*
+
+.artifacts

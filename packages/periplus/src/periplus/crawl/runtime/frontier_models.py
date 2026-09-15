@@ -84,7 +84,7 @@ class AcquisitionRecord(Base):
     outcome: Mapped[dict[str, Any] | None] = mapped_column(json_type)
     navigation: Mapped[dict[str, Any] | None] = mapped_column(json_type)
     retired_navigation: Mapped[dict[str, Any] | None] = mapped_column(json_type)
-    evidence_snapshot: Mapped[int | None] = mapped_column(BigInteger)
+    evidence_committed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -122,7 +122,7 @@ class FrontierOutboxRecord(Base):
     __table_args__ = (
         CheckConstraint("publish_attempts >= 0", name="ck_frontier_publish_attempts"),
         CheckConstraint("receipt_checks >= 0", name="ck_frontier_receipt_checks"),
-        Index("ix_frontier_ingestion_receipts", "kind", "committed_snapshot", "next_receipt_at", "published_at"),
+        Index("ix_frontier_ingestion_receipts", "kind", "committed_at", "next_receipt_at", "published_at"),
 
         Index("ix_frontier_outbox_ready", "published_at", "not_before", "claim_expires_at"),
     )
@@ -134,7 +134,6 @@ class FrontierOutboxRecord(Base):
     payload: Mapped[dict[str, Any]] = mapped_column(json_type)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    committed_snapshot: Mapped[int | None] = mapped_column(BigInteger)
     committed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     next_receipt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     receipt_checks: Mapped[int] = mapped_column(default=0)

@@ -6,7 +6,7 @@ test("SQL exploration forwards parameters and marks sampled evidence", async () 
   const original = globalThis.fetch
   globalThis.fetch = async (_url, init) => {
     assert.deepEqual(JSON.parse(String(init?.body)), { sql: "SELECT ?", parameters: [1] })
-    return Response.json({ sql: "SELECT ?", columns: ["n"], types: ["INTEGER"], rows: Array.from({ length: 101 }, (_, i) => [i]), query_id: "q", source_snapshot: 7, truncated: false })
+    return Response.json({ sql: "SELECT ?", columns: ["n"], types: ["INTEGER"], rows: Array.from({ length: 101 }, (_, i) => [i]), query_id: "q", source_snapshot: null, truncated: false })
   }
   try {
     const result = await createSqlExplorer("http://query", {}, new AbortController().signal)("SELECT ?", [1])
@@ -14,7 +14,7 @@ test("SQL exploration forwards parameters and marks sampled evidence", async () 
     assert.ok(result.rows)
     assert.equal(result.rows.length, 100)
     assert.equal(result.sampled, true)
-    assert.equal(result.source_snapshot, 7)
+    assert.equal(result.source_snapshot, null)
   } finally { globalThis.fetch = original }
 })
 test("service failure prevents repeated SQL calls in the same exploration", async () => {

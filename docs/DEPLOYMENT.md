@@ -77,6 +77,46 @@ mount that path consistently into every Periplus process that writes or reads la
 
 ## Environment
 
+### Local ClickHouse experiment
+
+On `codex/clickhouse-experiment`, Compose runs ClickHouse as the analytical store.
+The production chart and the DuckLake rollout sections below have not been converted;
+they do not describe this branch's local experiment.
+
+`periplus-clickhouse` runs ClickHouse 26.8.2.7 pinned by image digest, with a named
+`periplus-clickhouse-data` volume and localhost ports 8123/9000. Its four-CPU,
+8 GiB development limits are not homelab capacity estimates. Postgres retains
+collection/control state, NATS delivers ingestion and materialization work, and
+Versity stores immutable raw objects in `raw`. Local Compose no longer starts
+DuckLake metadata Postgres, the lake query-access initializer, or the old janitor.
+Destructive retention remains disabled pending its ClickHouse implementation.
+
+Set the three API tokens and ClickHouse writer/query credentials in `.env`.
+For the authorized homelab acquisition service, set
+`PERIPLUS_COMPOSE_CDP_URL=ws://192.168.40.21/v1/connect`.
+Then build and start the backend slice:
+
+```sh
+docker compose build periplus-setup
+docker compose up -d --wait periplus-api periplus-query periplus-crawler periplus-ingestor periplus-materializer
+uv run --project packages/periplus python scripts/clickhouse_smoke.py --query-url http://127.0.0.1:8010
+```
+
+Setup migrates control Postgres and installs ingestion, material and public schemas.
+It provisions a restricted query account. The query service receives that account
+and its control-API token; it receives no ClickHouse writer, Postgres or S3 credentials.
+Crawlers receive raw-storage and frontier credentials without ClickHouse credentials.
+The image no longer installs DuckLake storage extensions or the custom CDC extension.
+
+The smoke command submits a fresh one-page collection, waits for readiness, and
+checks the heading and resolved link through the public HTTP query endpoint.
+Compose validation, the core image build, and both host-run and container-run
+smoke checks have passed. Recovery and repository-wide checks remain incomplete. See
+[experiment progress](experiments/clickhouse/PROGRESS.md) for measured results and
+[exit criteria](experiments/clickhouse/EXIT_CRITERIA.md) for the remaining gates.
+
+### Application environment
+
 The checked-in `.env.example` is the canonical runnable development contract. It separates:
 
 - Compose build inputs and published ports;
@@ -601,3 +641,12 @@ and uncertain-attempt recovery. Terminal records are reclaimed only after the
 existing receipt, navigation, and one-hour grace gates. Keep operator pause and
 concurrency unchanged. Verify DNS reasons, collection settlement, and decreasing
 `periplus_frontier_orphaned_pending_acquisitions` after rollout.
+
+The ClickHouse experiment's query process uses separate
+`PERIPLUS_CLICKHOUSE_QUERY_USER` and `PERIPLUS_CLICKHOUSE_QUERY_PASSWORD`
+credentials. Setup grants this account SELECT on the installed `public_v1` views;
+it receives no direct ingestion/material table privileges. Ingestion and
+materialization continue to use the writer credentials. The query account has
+server-enforced read-only and resource settings. The experiment's HTTP/control
+startup conversion is still in progress; see
+[`experiments/clickhouse/PROGRESS.md`](experiments/clickhouse/PROGRESS.md).

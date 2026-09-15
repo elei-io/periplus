@@ -10,8 +10,8 @@ from nats.js.errors import KeyNotFoundError, KeyWrongLastSequenceError, NotFound
 from periplus.ingestion.queue import (
     IngestionQueueClient, lineage_ingestion_job, store_ingestion_response,
 )
-from periplus.platform.catalogue.lineage import CollectionDefinition
-from periplus.platform.catalogue.records import IngestionWriteResult
+from periplus.platform.catalogue.lineage import AcquisitionReason
+from evidence_receipt_fixture import receipt_for
 
 
 class Results:
@@ -50,16 +50,15 @@ class IngestionReceiptTests(unittest.IsolatedAsyncioTestCase):
         )
         self.client.results = Results()
         identity = uuid4()
-        self.job = lineage_ingestion_job(CollectionDefinition(
+        self.job = lineage_ingestion_job(AcquisitionReason(
             record_id=identity, collection_id=identity,
-            recorded_at=datetime.now(UTC), specification={"page_limit": 1},
+            recorded_at=datetime.now(UTC), observation_id=uuid4(), reason="collection", policy_version="1", rule_id="seed",
         ))
 
-    async def test_expired_receipt_replays_same_job_and_reconciles_later_snapshot(self):
+    async def test_expired_receipt_replays_same_job_and_reconciles_original_commit(self):
         pending = await self.client.reconcile(self.job)
         self.assertEqual(pending.status, "pending")
-        result = IngestionWriteResult(kind="lineage", identity=self.job.identity,
-                                      created=True, repository_snapshot=3)
+        result = receipt_for(self.job)
         await store_ingestion_response(self.client.results, job=self.job, result=result)
         committed = await self.client.reconcile(self.job)
         self.assertEqual(committed.result, result)
@@ -72,9 +71,9 @@ class IngestionReceiptTests(unittest.IsolatedAsyncioTestCase):
         calls = self.client.jetstream.publish.await_args_list
         self.assertEqual(len(calls), 2)
         self.assertEqual(calls[0], calls[1])
-        replay = result.model_copy(update={"created": False, "repository_snapshot": 9})
+        replay = result.model_copy(update={"created": False})
         await store_ingestion_response(self.client.results, job=self.job, result=replay)
-        self.assertEqual((await self.client.reconcile(self.job)).result.repository_snapshot, 9)
+        self.assertEqual((await self.client.reconcile(self.job)).result.ingested_at, result.ingested_at)
         self.client.jetstream.add_consumer.assert_not_awaited()
 
     async def test_failed_or_conflicting_evidence_is_not_automatically_requeued(self):
@@ -83,7 +82,7 @@ class IngestionReceiptTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.reconcile(self.job)).status, "failed")
         self.assertEqual(self.client.jetstream.publish.await_count, 1)
         changed = self.job.model_copy(update={"lineage": self.job.lineage.model_copy(
-            update={"specification": {"page_limit": 2}},
+            update={"rule_id": "different"},
         )})
         with self.assertRaisesRegex(RuntimeError, "different evidence"):
             await self.client.reconcile(changed)

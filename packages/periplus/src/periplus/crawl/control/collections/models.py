@@ -1,4 +1,4 @@
-"""Current collection intent and accounting; historical outcomes belong in DuckLake."""
+"""Durable customer collection intent, accounting and final outcomes."""
 
 from datetime import datetime
 from typing import Any
@@ -29,6 +29,11 @@ class CollectionRecord(Base):
     page_limit: Mapped[int] = mapped_column(Integer)
     reserved: Mapped[int] = mapped_column(Integer, default=0)
     consumed: Mapped[int] = mapped_column(Integer, default=0)
+    supplied_pages: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    failed_pages: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    shared_pages: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    reused_pages: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    execution_pruned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     seeds_settled: Mapped[bool] = mapped_column(default=False)
     seed_provenance: Mapped[dict[str, Any] | None] = mapped_column(json_type)
     admission_timing: Mapped[dict[str, Any] | None] = mapped_column(json_type)

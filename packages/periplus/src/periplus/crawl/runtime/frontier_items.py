@@ -17,7 +17,7 @@ from periplus.crawl.runtime.frontier_models import AcquisitionRecord, FrontierCo
 
 _ACQUISITION_COLUMNS = (AcquisitionRecord.id, AcquisitionRecord.url, AcquisitionRecord.domain,
     AcquisitionRecord.status, AcquisitionRecord.created_at, AcquisitionRecord.completed_at,
-    AcquisitionRecord.attempt_count, AcquisitionRecord.evidence_snapshot, AcquisitionRecord.eligible_at,
+    AcquisitionRecord.attempt_count, AcquisitionRecord.evidence_committed_at, AcquisitionRecord.eligible_at,
     AcquisitionRecord.attempt_started_at, AcquisitionRecord.domain_eligible_at,
     AcquisitionRecord.domain_policy_id, AcquisitionRecord.domain_policy_version, AcquisitionRecord.defer_reason, AcquisitionRecord.terminal_reason)
 _OBSERVATION_ID = AcquisitionRecord.outcome["visit"]["visit_id"].as_string()
@@ -144,7 +144,7 @@ def _view(record: AcquisitionRecord, callers: list[Caller], control: FrontierCon
     return AcquisitionView(id=record.id, url=record.url, domain=record.domain, status=record.status,
         created_at=record.created_at, completed_at=record.completed_at, attempt_count=record.attempt_count,
         observation_id=observation_id, terminal_reason=record.terminal_reason,
-        evidence_committed=record.evidence_snapshot is not None,
+        evidence_committed=record.evidence_committed_at is not None,
         eligibility_not_before=eligible, waiting_reason=waiting,
         next_start_estimate=estimate,
         estimate_unavailable_reason="already_started" if record.attempt_started_at else

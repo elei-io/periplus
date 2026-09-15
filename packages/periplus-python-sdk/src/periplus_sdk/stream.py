@@ -16,7 +16,7 @@ MEDIA_TYPE = "application/x-ndjson"
 class StreamResult(PreparedQuery):
     columns: list[str]
     types: list[str]
-    source_snapshot: int = Field(ge=0)
+    source_snapshot: int | None = Field(default=None, ge=0)
     limits: dict[str, int]
     complete: bool = False
     truncated: bool = False

@@ -570,7 +570,7 @@ class FrontierPostgresTests(unittest.TestCase):
             acquisition.status = "succeeded"
             acquisition.navigation = package.model_dump(mode="json")
             acquisition.completed_at = self.now
-            acquisition.evidence_snapshot = 7
+            acquisition.evidence_committed_at = datetime.now(UTC)
             acquisition.pending_key = None
             acquisition.outcome = VisitEvidence(visit=VisitRecord(capture_policy=capture_policy(), visit_id=acquisition.id,
                 requested_url=acquisition.url, admitted_at=self.now, started_at=self.now,
@@ -630,7 +630,7 @@ class FrontierPostgresTests(unittest.TestCase):
         self.store.stop_collection(identity, now=self.now)
         with self.sessions.begin() as session:
             for row in session.scalars(select(FrontierOutboxRecord).where(FrontierOutboxRecord.collection_id == identity)):
-                row.committed_snapshot = 7
+                row.committed_at = datetime.now(UTC)
         gate = Barrier(2)
         def cleanup(_):
             gate.wait(timeout=10)

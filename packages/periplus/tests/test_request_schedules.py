@@ -41,7 +41,7 @@ class ScheduleTests(unittest.TestCase):
             self.assertEqual(row.spec['origin']['schedule_id'], str(schedule.id))
             self.assertEqual(row.spec['origin']['definition_version'], 1)
             row.status = 'settled'
-            self.assertEqual(len(list(session.scalars(select(FrontierOutboxRecord)))), 1)
+            self.assertEqual(len(list(session.scalars(select(FrontierOutboxRecord)))), 0)
         second, = create_due_requests(self.store, self.now + timedelta(minutes=2))
         self.assertNotEqual(first, second)
         self.assertEqual(self.store.schedules()[0].execution_count, 2)
@@ -82,9 +82,19 @@ class ScheduleTests(unittest.TestCase):
 
     def test_failed_commit_rolls_back_run_and_schedule(self):
         self.schedule()
-        with patch.object(self.store.frontier, '_lineage', side_effect=RuntimeError('write failed')):
-            with self.assertRaises(RuntimeError):
-                create_due_requests(self.store, self.now)
+        from sqlalchemy import event
+
+        def fail_commit(session):
+            raise RuntimeError('write failed')
+
+        event.listen(self.sessions, 'before_commit', fail_commit)
+        try:
+            with patch.object(self.store, '_launch', wraps=self.store._launch) as launch:
+                with self.assertRaises(RuntimeError):
+                    create_due_requests(self.store, self.now)
+                launch.assert_called_once()
+        finally:
+            event.remove(self.sessions, 'before_commit', fail_commit)
         self.assertEqual(self.store.schedules()[0].execution_count, 0)
         with self.sessions() as session:
             self.assertEqual(list(session.scalars(select(CollectionRecord))), [])

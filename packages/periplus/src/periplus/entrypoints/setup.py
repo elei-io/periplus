@@ -11,8 +11,10 @@ from periplus.crawl.control.collections.frontier_controls import ensure_frontier
 from periplus.crawl.control.content_policies.service import ensure_default_content_policy
 from periplus.crawl.control.domain_policies.service import ensure_default_domain_policy
 from periplus.platform.postgres.session import session_scope
-from periplus.platform.catalogue import catalogue_from_env
-from periplus.materialization.live import bootstrap_live_cdc
+from periplus.platform.clickhouse import connect_clickhouse
+from periplus.platform.clickhouse.public import install_public_schema, install_query_user
+from periplus.ingestion.storage import install_ingestion_schema
+from periplus.materialization.storage import install_material_schema
 
 _PERIPLUS_ROOT = Path(__file__).resolve().parents[1]
 
@@ -27,8 +29,14 @@ def migrate_control_database() -> None:
 
 
 def bootstrap_catalogue() -> None:
-    with catalogue_from_env() as catalogue:
-        catalogue.bootstrap()
+    client = connect_clickhouse()
+    try:
+        install_ingestion_schema(client)
+        install_material_schema(client)
+        install_public_schema(client)
+        install_query_user(client)
+    finally:
+        client.close()
 
 
 def seed_system_control_plane() -> None:
@@ -43,7 +51,6 @@ def main(argv: Sequence[str] | None = None) -> None:
     migrate_control_database()
     seed_system_control_plane()
     bootstrap_catalogue()
-    bootstrap_live_cdc()
     print("Periplus setup complete.")
 
 

@@ -4,7 +4,7 @@ import json
 import os
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -21,7 +21,7 @@ class StreamingTests(unittest.TestCase):
         app.add_middleware(QueryAccessMiddleware)
         app.state.query_slot = asyncio.Semaphore(1)
         app.state.query_limits = SimpleNamespace(read=AsyncMock(return_value=limits))
-        app.state.query_service = SimpleNamespace(execute=execute, compiler_version='public-query-v11:stable', connection=None)
+        app.state.query_service = SimpleNamespace(execute=execute, compiler_version='clickhouse-public-v1', interrupt=Mock())
         return app
 
     def test_frames_completion_and_slot_release(self):
@@ -30,7 +30,7 @@ class StreamingTests(unittest.TestCase):
             emit({'type': 'rows', 'rows': [[1], [2]]})
             return QueryResult(query_id='00000000-0000-4000-8000-000000000001', sql=payload.sql,
                                parameters=[], diagnostics=[], plan='', columns=['n'], types=['INTEGER'],
-                               rows=[], row_count=2, result_bytes=10, truncated=False, elapsed_ms=1, source_snapshot=4)
+                               rows=[], row_count=2, result_bytes=10, truncated=False, elapsed_ms=1, source_snapshot=None)
         app = self.app(execute)
         with patch.dict(os.environ, PERIPLUS_QUERY_API_TOKEN='test'), TestClient(app) as client:
             for _ in range(2):
@@ -88,7 +88,7 @@ class StreamOwnershipTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 stopped.set()
         state = SimpleNamespace(query_slot=slot, query_service=SimpleNamespace(
-            execute=execute, compiler_version='public-query-v11:stable', connection=None))
+            execute=execute, compiler_version='clickhouse-public-v1', interrupt=Mock()))
         request = SimpleNamespace(app=SimpleNamespace(state=state), state=SimpleNamespace(), headers={})
         response = QueryStreamResponse(request, QueryRequest(sql='SELECT 1'), QueryLimits())
         sending = asyncio.Event()
@@ -107,5 +107,6 @@ class StreamOwnershipTests(unittest.IsolatedAsyncioTestCase):
         task.cancel()
         with self.assertRaises(asyncio.CancelledError):
             await asyncio.wait_for(task, 2)
+        state.query_service.interrupt.assert_called_once_with()
         self.assertTrue(stopped.is_set())
         self.assertFalse(slot.locked())

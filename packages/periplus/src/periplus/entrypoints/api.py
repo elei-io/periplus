@@ -11,27 +11,21 @@ from periplus.crawl.api import (
     frontier,
     domain_policies,
 )
-from periplus.ingestion import documents_http as documents
-from periplus.materialization import http as materializations
-from periplus.operations.api import data_status, storage, ingestion_status
+from periplus.operations.api import ingestion_status
 from periplus.operations.api.access import router as access_router
-from periplus.operations.storage.service import StorageService
 from periplus.operations.api import ingestion as repository_operations
 from periplus.operations.api import metrics as operational_metrics
 from periplus.platform.messaging.catalogue_workers import ensure_catalogue_worker_storage
 from periplus.query import http as sql_console
-from periplus.query import admin as admin_sql
-from periplus.platform.catalogue.config import catalogue_config_from_env
 from periplus.platform.api_access import ApiAccessMiddleware
-from periplus.platform.catalogue.control import CatalogueControl
-from periplus.crawl.control.collections.history import CollectionHistory
+from periplus.crawl.control.collections.results import CrawlResults
+from periplus.platform.clickhouse import connect_clickhouse
 from periplus.crawl.runtime.frontier_store import FrontierStore
 from periplus.crawl.runtime.frontier_queue import ensure_crawler_presence
 from periplus.crawl.runtime.frontier_health import CrawlerPresenceReader
 from periplus.platform.postgres.session import SessionLocal
 from periplus.platform.messaging.client import connect_nats
 from periplus.ingestion.objects.config import object_store_from_env
-from periplus.materialization.store import AsyncMaterializationRunStore
 from periplus.platform.messaging.catalogue_queue import ensure_catalogue_work_stream
 
 
@@ -39,8 +33,7 @@ from periplus.platform.messaging.catalogue_queue import ensure_catalogue_work_st
 async def lifespan(app: FastAPI):
     configure_logging("api")
     nats_client = await connect_nats()
-    catalogue_control = None
-    storage_service = None
+    crawl_results = None
     try:
         jetstream = nats_client.jetstream()
         frontier = FrontierStore(SessionLocal)
@@ -57,22 +50,13 @@ async def lifespan(app: FastAPI):
         await ensure_crawler_presence(jetstream)
         app.state.crawler_presence = CrawlerPresenceReader(jetstream)
         app.state.catalogue_workers = await ensure_catalogue_worker_storage(jetstream)
-        app.state.materialization_runs = AsyncMaterializationRunStore()
         app.state.document_store = object_store_from_env()
-        catalogue_control = CatalogueControl()
-        await catalogue_control.start()
-        app.state.catalogue_control = catalogue_control
-        app.state.collection_history = CollectionHistory(catalogue_control)
-        app.state.admin_sql = admin_sql.AdminSqlService(catalogue_config_from_env())
-        app.state.admin_sql_slot = asyncio.Semaphore(1)
-        storage_service = StorageService(catalogue_config_from_env(), SessionLocal, app.state.document_store, jetstream)
-        app.state.storage = storage_service
+        crawl_results = CrawlResults(await asyncio.to_thread(connect_clickhouse), SessionLocal)
+        app.state.crawl_results = crawl_results
         yield
     finally:
-        if storage_service is not None:
-            await storage_service.close()
-        if catalogue_control is not None:
-            await catalogue_control.close()
+        if crawl_results is not None:
+            await crawl_results.close()
         await nats_client.drain()
 
 
@@ -86,14 +70,9 @@ async def healthz():
 
 
 app.include_router(operational_metrics.router)
-app.include_router(data_status.router)
 app.include_router(ingestion_status.router)
-app.include_router(storage.router)
 app.include_router(repository_operations.router)
-app.include_router(materializations.router)
-app.include_router(documents.router)
 app.include_router(sql_console.router)
-app.include_router(admin_sql.router)
 app.include_router(content_policies.router)
 app.include_router(domain_policies.router)
 

@@ -5,7 +5,8 @@ from element_fixture import catalogue
 from periplus.materialization.document_projection import VisitBatchContext
 from periplus.materialization.dom.nodes import parse_document
 from periplus.materialization.registry import BY_NAME
-from periplus.query.helpers import query_helpers, safe_helper_error
+from periplus.query.helpers import safe_helper_error
+from periplus.platform.catalogue.public import known_public_objects
 
 
 class SearchTests(unittest.TestCase):
@@ -56,8 +57,8 @@ class SearchTests(unittest.TestCase):
         self.assertEqual([(r[0], r[2]) for r in self.search(['catfish', 'strasse'])], [('c', 2.0)])
 
     def test_discovery_and_return_types(self):
-        helper = next(h for h in query_helpers().helpers if h.name == 'public_v1.search')
-        self.assertEqual([c.name for c in helper.columns], ['content_id', 'node_indexes', 'score'])
+        helper = next(h for h in known_public_objects() if h.schema == 'public_v1' and h.name == 'search')
+        self.assertEqual([name for name, _ in helper.column_comments], ['content_id', 'node_indexes', 'score'])
         self.db.execute("SELECT * FROM public_v1.search(['robot'])")
         self.assertEqual([str(c[1]) for c in self.db.description], ['VARCHAR', 'INTEGER[]', 'DOUBLE'])
         plan = self.db.execute("EXPLAIN SELECT * FROM public_v1.search(['robot'])").fetchone()[1]

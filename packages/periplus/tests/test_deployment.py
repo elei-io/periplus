@@ -5,18 +5,16 @@ from periplus.entrypoints import setup
 
 
 class DeploymentTests(TestCase):
-    @patch("periplus.entrypoints.setup.bootstrap_live_cdc")
     @patch("periplus.entrypoints.setup.bootstrap_catalogue")
     @patch("periplus.entrypoints.setup.seed_system_control_plane")
     @patch("periplus.entrypoints.setup.migrate_control_database")
     def test_setup_order(
-        self, migrate, seed_control, bootstrap, bootstrap_cdc
+        self, migrate, seed_control, bootstrap
     ) -> None:
         manager = MagicMock()
         manager.attach_mock(migrate, "migrate")
         manager.attach_mock(bootstrap, "bootstrap")
         manager.attach_mock(seed_control, "seed_control")
-        manager.attach_mock(bootstrap_cdc, "bootstrap_cdc")
 
         setup.main([])
 
@@ -26,7 +24,6 @@ class DeploymentTests(TestCase):
                 call.migrate(),
                 call.seed_control(),
                 call.bootstrap(),
-                call.bootstrap_cdc(),
             ],
         )
 

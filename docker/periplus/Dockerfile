@@ -29,13 +29,6 @@ COPY packages/periplus/pyproject.toml packages/periplus/uv.lock ./
 
 RUN UV_PROJECT_ENVIRONMENT=/opt/periplus-venv uv sync --frozen --no-install-project --no-dev
 
-# Periplus computes locally and shares DuckLake metadata through PostgreSQL.
-ARG PERIPLUS_DUCKDB_EXTENSIONS=ducklake,postgres,httpfs,aws
-RUN PERIPLUS_DUCKDB_EXTENSIONS="${PERIPLUS_DUCKDB_EXTENSIONS}" /opt/periplus-venv/bin/python -c "import os, duckdb; connection = duckdb.connect(); [connection.install_extension(name) for name in os.environ['PERIPLUS_DUCKDB_EXTENSIONS'].split(',') if name]; connection.close()"
-
-COPY packages/periplus/src/periplus/platform/catalogue/cdc_extension.py /tmp/install_cdc.py
-RUN /opt/periplus-venv/bin/python /tmp/install_cdc.py && rm /tmp/install_cdc.py
-
 ENV PATH="/opt/periplus-venv/bin:${PATH}"
 
 FROM dependencies AS base

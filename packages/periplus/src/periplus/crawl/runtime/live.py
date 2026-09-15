@@ -128,7 +128,7 @@ def current_activity(sessions, *, collection_id: UUID | None = None) -> CurrentA
         active_rows = session.execute(select(AcquisitionRecord.id, AcquisitionRecord.url,
             AcquisitionRecord.attempt_started_at).where(dispatched).order_by(AcquisitionRecord.created_at, AcquisitionRecord.id).limit(13)).all()
         recent = session.execute(select(AcquisitionRecord.id, AcquisitionRecord.url,
-            AcquisitionRecord.completed_at, AcquisitionRecord.evidence_snapshot).where(
+            AcquisitionRecord.completed_at, AcquisitionRecord.evidence_committed_at).where(
                 AcquisitionRecord.status == "succeeded",
                 AcquisitionRecord.completed_at.is_not(None)).order_by(
                     AcquisitionRecord.completed_at.desc(), AcquisitionRecord.id.desc()).limit(5)).all()

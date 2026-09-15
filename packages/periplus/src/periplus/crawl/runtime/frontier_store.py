@@ -36,7 +36,7 @@ from periplus.crawl.runtime.frontier_evidence import acquisition_context, termin
 from periplus.crawl.acquisition.evidence import attempt_records
 from periplus.platform.catalogue.records import AttemptUsage, VisitEvidence
 from periplus.platform.catalogue.lineage import (
-    CollectionDefinition, CollectionOutcome, FulfillmentRecord, AcquisitionReason, LineageEvidence,
+    FulfillmentRecord, AcquisitionReason, LineageEvidence,
 )
 from periplus.ingestion.queue import (
     IngestionJob, IngestionState, lineage_ingestion_job, visit_ingestion_job,
@@ -236,9 +236,6 @@ class FrontierStore:
                                                     "priority": priority, "first_admitted_at": None})
         session.add(record)
         session.flush()
-        self._lineage(session, CollectionDefinition(
-            record_id=identity, collection_id=identity, recorded_at=record.created_at, specification=frozen.model_dump(mode="json"),
-        ), collection_id=identity)
         return record
 
     def get_collection(self, identity: UUID) -> CollectionRecord | None:
@@ -401,7 +398,7 @@ class FrontierStore:
             rows = list(session.scalars(select(FrontierOutboxRecord).where(
                 FrontierOutboxRecord.kind.in_(("observation", "lineage")),
                 FrontierOutboxRecord.published_at.is_not(None),
-                FrontierOutboxRecord.committed_snapshot.is_(None),
+                FrontierOutboxRecord.committed_at.is_(None),
                 or_(FrontierOutboxRecord.next_receipt_at.is_(None),
                     FrontierOutboxRecord.next_receipt_at <= selected_at),
                 or_(FrontierOutboxRecord.claim_expires_at.is_(None),
@@ -432,12 +429,11 @@ class FrontierStore:
             now = self._transaction_now(session, now)
             if (row is None or row.claim_token != delivery.claim_token
                     or row.claim_expires_at is None or _aware(row.claim_expires_at) <= now
-                    or row.published_at is None or row.committed_snapshot is not None):
+                    or row.published_at is None or row.committed_at is not None):
                 return False
             if (row.kind != delivery.kind or row.payload != delivery.payload
                     or row.acquisition_id != delivery.acquisition_id):
                 raise ValueError("ingestion receipt does not match the claimed outbox record")
-            row.committed_snapshot = state.result.repository_snapshot
             row.committed_at = now
             row.claim_token = row.claim_expires_at = None
             row.last_error = None
@@ -445,7 +441,7 @@ class FrontierStore:
                 acquisition = session.get(AcquisitionRecord, row.acquisition_id)
                 if acquisition is None:
                     raise ValueError("observation receipt has no acquisition")
-                acquisition.evidence_snapshot = state.result.repository_snapshot
+                acquisition.evidence_committed_at = state.result.ingested_at
             return True
 
     def defer_ingestion_receipt(self, delivery: FrontierDelivery, reason: str, *,
@@ -455,7 +451,7 @@ class FrontierStore:
             now = self._transaction_now(session, now)
             if (row is None or row.claim_token != delivery.claim_token
                     or row.claim_expires_at is None or _aware(row.claim_expires_at) <= now
-                    or row.published_at is None or row.committed_snapshot is not None):
+                    or row.published_at is None or row.committed_at is not None):
                 return False
             row.next_receipt_at = now + timedelta(seconds=min(300, 5 * 2 ** min(row.receipt_checks, 6)))
             row.last_error = reason[:1000]
@@ -479,7 +475,7 @@ class FrontierStore:
 
 
     def cleanup_collections(self, *, cutoff: datetime) -> CleanupBatch:
-        """Hand settled requests to immutable history, then reclaim at most 512 dependent rows."""
+        """Keep customer records and reclaim at most 512 completed execution rows."""
         if cutoff.utcoffset() is None:
             raise ValueError("collection cleanup cutoff requires a timezone")
         with self._sessions() as session, session.begin():
@@ -487,6 +483,7 @@ class FrontierStore:
             now = self._transaction_now(session)
             statement = select(CollectionRecord).where(
                 CollectionRecord.status == "settled", CollectionRecord.completed_at <= cutoff,
+                CollectionRecord.execution_pruned_at.is_(None),
             )
             if control.collection_retention_cursor is not None:
                 statement = statement.where(CollectionRecord.id > control.collection_retention_cursor)
@@ -499,16 +496,10 @@ class FrontierStore:
                 if not collection.retiring:
                     if collection.service_expires_at is not None and _aware(collection.service_expires_at) > now:
                         continue
-                    required = (f"lineage:collection:{collection.id}", f"lineage:collection_outcome:{collection.id}")
-                    committed = session.scalar(select(func.count()).select_from(FrontierOutboxRecord).where(
-                        FrontierOutboxRecord.message_id.in_(required), FrontierOutboxRecord.committed_snapshot.is_not(None),
-                    ))
-                    if committed != 2:
-                        continue
                     outstanding = session.scalar(select(FrontierOutboxRecord.message_id).where(
                         FrontierOutboxRecord.collection_id == collection.id,
                         FrontierOutboxRecord.kind.in_(("observation", "lineage")),
-                        FrontierOutboxRecord.committed_snapshot.is_(None),
+                        FrontierOutboxRecord.committed_at.is_(None),
                     ).limit(1))
                     if outstanding is not None:
                         continue
@@ -517,12 +508,11 @@ class FrontierStore:
                         InterestRecord.collection_id == collection.id,
                         or_(InterestRecord.status.not_in(("settled", "cancelled")),
                             AcquisitionRecord.outcome["visit"]["visit_id"].as_string().is_not(None)
-                            & AcquisitionRecord.evidence_snapshot.is_(None)),
+                            & AcquisitionRecord.evidence_committed_at.is_(None)),
                     ).limit(1))
                     if blocked is not None:
                         continue
-                    # Detail reads now use immutable history, so partial pruning
-                    # cannot make counts shrink. Identity/spec remain until finish.
+                    # Frozen counters and specifications survive partial pruning.
                     collection.retiring = True
                 identities = list(session.scalars(select(InterestRecord.id).where(
                     InterestRecord.collection_id == collection.id).order_by(InterestRecord.id).limit(remaining)))
@@ -537,7 +527,8 @@ class FrontierStore:
                         session.execute(delete(FrontierOutboxRecord).where(FrontierOutboxRecord.message_id.in_(messages)))
                         remaining -= len(messages)
                     if session.scalar(select(FrontierOutboxRecord.message_id).where(FrontierOutboxRecord.collection_id == collection.id).limit(1)) is None:
-                        session.delete(collection)
+                        collection.execution_pruned_at = now
+                        collection.selection_checkpoint = None
                         removed += 1
                         finished = True
                 if remaining == 0:
@@ -576,12 +567,12 @@ class FrontierStore:
                     if acquisition.attempt_count or acquisition.status != "cancelled":
                         continue
                 else:
-                    if acquisition.evidence_snapshot is None:
+                    if acquisition.evidence_committed_at is None:
                         continue
                 uncommitted = session.scalar(select(FrontierOutboxRecord.message_id).where(
                     FrontierOutboxRecord.acquisition_id == acquisition.id,
                     FrontierOutboxRecord.kind.in_(("observation", "lineage")),
-                    FrontierOutboxRecord.committed_snapshot.is_(None),
+                    FrontierOutboxRecord.committed_at.is_(None),
                 ).limit(1))
                 if uncommitted is not None:
                     continue
@@ -592,7 +583,7 @@ class FrontierStore:
                 ).order_by(InterestRecord.id).limit(remaining)))
                 for interest in interests:
                     interest.completed_status = acquisition.status
-                    interest.completed_evidence = acquisition.evidence_snapshot is not None
+                    interest.completed_evidence = acquisition.evidence_committed_at is not None
                     interest.acquisition_id = None
                     interest.context = None
                     interest.selection_checkpoint = None
@@ -641,12 +632,12 @@ class FrontierStore:
             if (acquisition.status not in ("succeeded", "failed", "cancelled")
                     or acquisition.completed_at is None or _aware(acquisition.completed_at) > cutoff):
                 return False
-            if acquisition.outcome is not None and acquisition.evidence_snapshot is None:
+            if acquisition.outcome is not None and acquisition.evidence_committed_at is None:
                 return False
             uncommitted = session.scalar(select(FrontierOutboxRecord.message_id).where(
                 FrontierOutboxRecord.acquisition_id == acquisition.id,
                 FrontierOutboxRecord.kind.in_(("observation", "lineage")),
-                FrontierOutboxRecord.committed_snapshot.is_(None),
+                FrontierOutboxRecord.committed_at.is_(None),
             ).limit(1))
             if uncommitted is not None:
                 return False
@@ -1566,17 +1557,21 @@ class FrontierStore:
     @staticmethod
     def _collection_outcome(session: Session, collection: CollectionRecord, now: datetime) -> None:
         session.flush()
-        statuses = list(session.scalars(select(func.coalesce(AcquisitionRecord.status, InterestRecord.completed_status)).select_from(InterestRecord).outerjoin(
-            AcquisitionRecord, InterestRecord.acquisition_id == AcquisitionRecord.id
-        ).where(InterestRecord.collection_id == collection.id,
-                InterestRecord.budget_state == "consumed")))
-        provenance = FrontierStore._seed_provenance(collection)
-        FrontierStore._lineage(session, CollectionOutcome(
-            record_id=collection.id, collection_id=collection.id,
-            recorded_at=now,
-            outcome=collection.outcome, seed_provenance=provenance, consumed_pages=collection.consumed,
-            supplied_pages=statuses.count("succeeded"), failed_pages=statuses.count("failed"),
-        ), collection_id=collection.id)
+        # Freeze customer accounting in the same transaction as settlement.
+        # Aggregate in Postgres; never load every interest into worker memory.
+        status = func.coalesce(AcquisitionRecord.status, InterestRecord.completed_status)
+        rows = session.execute(select(status, InterestRecord.mode, func.count()).select_from(
+            InterestRecord).outerjoin(AcquisitionRecord, InterestRecord.acquisition_id == AcquisitionRecord.id
+            ).where(InterestRecord.collection_id == collection.id,
+                    InterestRecord.budget_state == "consumed").group_by(status, InterestRecord.mode))
+        collection.supplied_pages = collection.failed_pages = 0
+        collection.shared_pages = collection.reused_pages = 0
+        for outcome, mode, count in rows:
+            collection.supplied_pages += count if outcome == "succeeded" else 0
+            collection.failed_pages += count if outcome == "failed" else 0
+            collection.shared_pages += count if mode == "shared" else 0
+            collection.reused_pages += count if mode == "reused" else 0
+        collection.seed_provenance = FrontierStore._seed_provenance(collection)
 
     @staticmethod
     def _lineage(session: Session, evidence: LineageEvidence, *,

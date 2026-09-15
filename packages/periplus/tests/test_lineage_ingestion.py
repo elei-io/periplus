@@ -39,23 +39,24 @@ class LineageIngestionTests(unittest.TestCase):
             recorded_at=self.now, specification={"page_limit": 2, "follow_sql": "SELECT url"},
         )
 
-    def test_definition_and_terminal_outcome_have_independent_stable_jobs(self):
+    def test_editable_collection_state_is_rejected_by_ingestion_jobs(self):
+        from pydantic import ValidationError
         terminal = CollectionOutcome(
             record_id=self.identity, collection_id=self.identity,
             recorded_at=self.now, outcome="eligible_links_exhausted",
             consumed_pages=1, supplied_pages=1, failed_pages=0,
-            seed_provenance={"source_snapshot": "17", "source_query_id": "query-1",
-                             "selected_at": self.now, "candidates_sha256": "a" * 64,
-                             "discovery": {"model": "model-1", "queries": ["Robots"]}},
         )
-        jobs = [lineage_ingestion_job(value) for value in (self.definition, terminal)]
-        self.assertNotEqual(jobs[0].request_id, jobs[1].request_id)
-        self.assertEqual(IngestionJob.model_validate_json(jobs[0].model_dump_json()), jobs[0])
-        results = self.service.record_lineage([self.definition, terminal])
-        self.assertTrue(all(result.created for result in results))
-        self.assertTrue(all(not result.created for result in self.service.record_lineage([self.definition, terminal])))
-        self.assertEqual(self.service.get_lineage("collection", self.identity), self.definition)
-        self.assertEqual(self.service.get_lineage("collection_outcome", self.identity), terminal)
+        for evidence in (self.definition, terminal):
+            with self.subTest(kind=evidence.kind), self.assertRaises(ValidationError):
+                lineage_ingestion_job(evidence)
+        fulfillment = FulfillmentRecord(
+            record_id=uuid4(), collection_id=self.identity, observation_id=uuid4(),
+            requested_url="https://example.com/", rule_id="seed", depth=0,
+            mode="acquired", recorded_at=self.now,
+        )
+        job = lineage_ingestion_job(fulfillment)
+        self.assertEqual(IngestionJob.model_validate_json(job.model_dump_json()), job)
+        self.assertEqual(lineage_ingestion_job(fulfillment).request_id, job.request_id)
 
     def test_late_fulfillments_share_observation_without_reinserting_it(self):
         observation = uuid4()

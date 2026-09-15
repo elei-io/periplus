@@ -42,7 +42,7 @@ class CollectionApiTests(unittest.TestCase):
         self.history.collection_readiness.return_value = {}
         self.history.get.return_value = None
         self.history.is_retired.return_value = False
-        app.state.collection_history = self.history
+        app.state.crawl_results = self.history
         from periplus.crawl.runtime.frontier_health import CrawlerPresenceReader
         bucket = AsyncMock()
         from types import SimpleNamespace
@@ -212,26 +212,21 @@ class CollectionApiTests(unittest.TestCase):
             created_at=datetime.now(UTC), completed_at=datetime.now(UTC), outcome="page_limit",
             consumed_pages=1, supplied_pages=1, failed_pages=0, seed_provenance=None, as_of=datetime.now(UTC))
 
-    def test_current_and_historical_details_report_proven_collection_readiness(self):
+    def test_completed_details_report_readiness_without_public_generation(self):
         from datetime import UTC, datetime
-        from uuid import UUID
         from periplus.materialization.readiness import CollectionReadiness
         from periplus.crawl.control.collections.history import HistoryUnavailable
-        identity, generation, now = UUID(self.payload['id']), uuid4(), datetime.now(UTC)
-        self.history.collection_readiness.return_value = {identity: CollectionReadiness(
-            collection_id=identity, query_ready=True, reason='active_generation_committed',
-            generation_id=generation, as_of=now)}
-        self.history.get.return_value = self.historical()
-        value = self.client.get(f'/collections/{identity}').json()
-        self.assertTrue(value['query_ready'])
-        self.assertEqual(value['query_generation_id'], str(generation))
-        self.assertIsNotNone(value['query_readiness_as_of'])
-        self.history.get.return_value = None
-        self.client.post('/collections', json=self.payload)
+        identity, now = UUID(self.payload['id']), datetime.now(UTC)
+        self.assertEqual(self.client.post('/collections', json=self.payload).status_code, 201)
         self.client.post(f'/collections/{identity}/actions', json={'action': 'cancel'}, headers=self.admin)
-        value = self.client.get(f'/collections/{identity}').json()
-        self.assertTrue(value['query_ready'])
-        self.assertEqual(value['source'], 'current')
+        self.history.collection_readiness.return_value = {identity: CollectionReadiness(
+            collection_id=identity, query_ready=True, reason='materialization_committed',
+            generation_id=None, as_of=now)}
+        response = self.client.get(f'/collections/{identity}')
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(response.json()['query_ready'])
+        self.assertIsNone(response.json()['query_generation_id'])
+        self.assertIsNotNone(response.json()['query_readiness_as_of'])
         self.assertTrue(self.client.get('/collections').json()['items'][0]['query_ready'])
         self.history.collection_readiness.side_effect = HistoryUnavailable('secret storage detail')
         response = self.client.get(f'/collections/{identity}')
@@ -240,72 +235,76 @@ class CollectionApiTests(unittest.TestCase):
         self.assertEqual(response.json()['query_readiness_reason'], 'catalogue_readiness_unavailable')
         self.assertNotIn('secret storage detail', response.text)
 
-    def test_historical_detail_and_identical_submission_do_not_recreate_control_state(self):
-        self.history.get.return_value = self.historical()
-        detail = self.client.get(f'/collections/{self.payload["id"]}')
-        self.assertEqual(detail.status_code, 200, detail.text)
-        self.assertEqual(detail.json()["source"], "history")
-        self.assertIsNone(detail.json()["query_ready"])
-        replay = self.client.post("/collections", json=self.payload)
+    def test_completed_collection_replay_preserves_control_state_and_frozen_intent(self):
+        self.assertEqual(self.client.post('/collections', json=self.payload).status_code, 201)
+        self.client.post(f'/collections/{self.payload["id"]}/actions',
+                         json={'action': 'cancel'}, headers=self.admin)
+        before = self.client.get(f'/collections/{self.payload["id"]}').json()
+        replay = self.client.post('/collections', json=self.payload)
         self.assertEqual(replay.status_code, 201, replay.text)
-        self.assertEqual(replay.json()["source"], "history")
-        self.assertEqual(self.client.get("/collections").json()["items"], [])
-        conflict = self.client.post("/collections", json=self.payload | {"specification": self.payload["specification"] | {"page_limit": 2}})
-        self.assertEqual(conflict.status_code, 409)
+        for field in ('id', 'specification', 'status', 'completed_at', 'consumed_pages'):
+            self.assertEqual(replay.json()[field], before[field])
+        self.assertEqual(len(self.client.get('/collections').json()['items']), 1)
+        conflict = self.client.post('/collections', json=self.payload | {
+            'specification': self.payload['specification'] | {'page_limit': 2}})
+        self.assertEqual(conflict.status_code, 422)
+        self.history.get.assert_not_awaited()
 
-    def test_admin_history_is_shared_but_public_cannot_replace_its_intent(self):
-        self.history.get.return_value = self.historical(private=True)
+    def test_admin_collection_is_shared_but_public_cannot_replace_its_intent(self):
+        payload = self.payload | {'specification': self.payload['specification'] | {'request_class': 'admin'}}
+        self.assertEqual(self.client.post('/collections', json=payload, headers=self.admin).status_code, 201)
         detail = self.client.get(f'/collections/{self.payload["id"]}')
         self.assertEqual(detail.status_code, 200)
-        self.assertEqual(detail.json()["specification"]["request_class"], "admin")
-        self.assertEqual(self.client.post("/collections", json=self.payload).status_code, 409)
-        self.assertEqual(self.client.get("/collections").json()["items"], [])
+        self.assertEqual(detail.json()['specification']['request_class'], 'admin')
+        self.assertEqual(self.client.post('/collections', json=self.payload).status_code, 422)
+        self.assertEqual(len(self.client.get('/collections').json()['items']), 1)
 
-    def test_history_outage_defers_supplied_identity_but_new_server_identity_can_start(self):
+    def test_retirement_outage_defers_new_supplied_identity_but_existing_intent_survives(self):
         from periplus.crawl.control.collections.history import HistoryUnavailable
-        self.history.get.side_effect = HistoryUnavailable("offline")
-        self.assertEqual(self.client.post("/collections", json=self.payload).status_code, 503)
-        self.assertEqual(self.client.get(f'/collections/{self.payload["id"]}').status_code, 503)
-        created = self.client.post("/collections", json={"specification": self.payload["specification"]})
+        self.history.is_retired.side_effect = HistoryUnavailable('offline')
+        self.assertEqual(self.client.post('/collections', json=self.payload).status_code, 503)
+        self.assertEqual(self.client.get(f'/collections/{self.payload["id"]}').status_code, 404)
+        created = self.client.post('/collections', json={'specification': self.payload['specification']})
         self.assertEqual(created.status_code, 201, created.text)
-        self.assertEqual(created.json()["source"], "current")
-        retry = self.client.post("/collections", json=self.payload | {"id": created.json()["id"]})
+        retry = self.client.post('/collections', json=self.payload | {'id': created.json()['id']})
         self.assertEqual(retry.status_code, 201, retry.text)
 
-    def test_retiring_current_record_uses_history_without_recreating_or_exposing_partial_counts(self):
+    def test_execution_pruning_preserves_frozen_counts_and_collection_visibility(self):
         from periplus.crawl.control.collections.models import CollectionRecord
-        from uuid import UUID
-        self.assertEqual(self.client.post("/collections", json=self.payload).status_code, 201)
+        self.assertEqual(self.client.post('/collections', json=self.payload).status_code, 201)
         with self.sessions.begin() as session:
-            record = session.get(CollectionRecord, UUID(self.payload["id"]))
-            record.status = "settled"
-            record.retiring = True
-        self.history.get.return_value = self.historical()
-        self.assertEqual(self.client.get("/collections").json()["items"], [])
-        self.assertEqual(self.client.get(f'/collections/{self.payload["id"]}').json()["source"], "history")
-        replay = self.client.post("/collections", json=self.payload)
+            record = session.get(CollectionRecord, UUID(self.payload['id']))
+            record.status, record.retiring = 'settled', True
+            record.consumed, record.supplied_pages, record.failed_pages = 3, 2, 1
+        detail = self.client.get(f'/collections/{self.payload["id"]}')
+        self.assertEqual(detail.status_code, 200, detail.text)
+        self.assertEqual([detail.json()[key] for key in ('consumed_pages', 'supplied_pages', 'failed_pages')], [3, 2, 1])
+        self.assertEqual(len(self.client.get('/collections').json()['items']), 1)
+        replay = self.client.post('/collections', json=self.payload)
         self.assertEqual(replay.status_code, 201, replay.text)
-        self.assertEqual(replay.json()["source"], "history")
+        self.assertEqual(replay.json()['status'], 'settled')
+        self.history.get.assert_not_awaited()
 
-    def test_replay_racing_current_record_removal_returns_history_without_recreating(self):
+    def test_disappearing_control_record_fails_without_recreating_customer_intent(self):
         from sqlalchemy import delete
         from periplus.crawl.control.collections.models import CollectionRecord
         from periplus.crawl.runtime.frontier_models import FrontierOutboxRecord
-        self.assertEqual(self.client.post("/collections", json=self.payload).status_code, 201)
-        self.history.get.return_value = self.historical()
+        self.assertEqual(self.client.post('/collections', json=self.payload).status_code, 201)
         frontier = self.client.app.state.frontier
         original = frontier.get_collection
+
         def remove_after_read(identity):
             record = original(identity)
             with self.sessions.begin() as session:
                 session.execute(delete(FrontierOutboxRecord).where(FrontierOutboxRecord.collection_id == identity))
                 session.execute(delete(CollectionRecord).where(CollectionRecord.id == identity))
             return record
-        with patch.object(frontier, "get_collection", side_effect=remove_after_read):
-            replay = self.client.post("/collections", json=self.payload)
-        self.assertEqual(replay.status_code, 201, replay.text)
-        self.assertEqual(replay.json()["source"], "history")
-        self.assertEqual(self.client.get("/collections").json()["items"], [])
+
+        with patch.object(frontier, 'get_collection', side_effect=remove_after_read):
+            replay = self.client.post('/collections', json=self.payload)
+        self.assertEqual(replay.status_code, 503, replay.text)
+        self.assertEqual(self.client.get('/collections').json()['items'], [])
+        self.history.get.assert_not_awaited()
 
     def test_history_route_precedes_identity_route_and_enforces_visibility(self):
         from datetime import UTC, datetime

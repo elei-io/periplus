@@ -93,7 +93,7 @@ class FrontierItemTests(unittest.TestCase):
             record = session.get(AcquisitionRecord, acquisition)
             record.status = "succeeded"
             record.outcome = {"visit": {"visit_id": str(acquisition)}, "secret": "must never be returned"}
-            record.evidence_snapshot = 3
+            record.evidence_committed_at = datetime.now(UTC)
         view = acquisition_view(self.sessions, acquisition)
         self.assertEqual(view.observation_id, acquisition)
         self.assertTrue(view.evidence_committed)

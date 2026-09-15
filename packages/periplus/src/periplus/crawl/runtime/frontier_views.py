@@ -69,7 +69,7 @@ def collection_views(sessions, *, identity: UUID | None = None, status: str | No
         raise ValueError("invalid collection status")
     with sessions() as session:
         control = session.scalar(select(FrontierControlRecord).where(FrontierControlRecord.id == 1).with_for_update(read=True))
-        statement = select(CollectionRecord).where(CollectionRecord.retiring.is_(False))
+        statement = select(CollectionRecord)
         if identity is not None:
             statement = statement.where(CollectionRecord.id == identity)
         if status is not None:
@@ -125,32 +125,33 @@ def collection_views(sessions, *, identity: UUID | None = None, status: str | No
             InterestRecord.collection_id, func.count(),
         ).outerjoin(AcquisitionRecord, AcquisitionRecord.id == InterestRecord.acquisition_id).where(
             InterestRecord.collection_id.in_(views),
-            (AcquisitionRecord.evidence_snapshot.is_not(None) | InterestRecord.completed_evidence.is_(True)),
+            (AcquisitionRecord.evidence_committed_at.is_not(None) | InterestRecord.completed_evidence.is_(True)),
             InterestRecord.status.in_(("selecting", "settled")),
         ).group_by(InterestRecord.collection_id)):
             views[collection_id].ingested_pages = count
-        # Collection definitions, causal reasons, fulfillments and terminal outcome
-        # are separate append-only commits. A base observation receipt proves none
-        # of those on its own.
+        # Causal reasons and fulfillments must each be committed separately.
         uncommitted = set(session.scalars(select(FrontierOutboxRecord.collection_id).where(
             FrontierOutboxRecord.collection_id.in_(views),
             FrontierOutboxRecord.kind == "lineage",
-            FrontierOutboxRecord.committed_snapshot.is_(None),
+            FrontierOutboxRecord.committed_at.is_(None),
         ).distinct()))
-        confirmed_outcomes = set(session.scalars(select(FrontierOutboxRecord.collection_id).where(
-            FrontierOutboxRecord.collection_id.in_(views),
-            FrontierOutboxRecord.kind == "lineage",
-            FrontierOutboxRecord.payload["kind"].as_string() == "collection_outcome",
-            FrontierOutboxRecord.committed_snapshot.is_not(None),
-        )))
+        for record in records:
+            if record.status == "settled":
+                view = views[record.id]
+                view.supplied_pages = record.supplied_pages
+                view.failed_pages = record.failed_pages
+                view.shared_pages = record.shared_pages
+                view.reused_pages = record.reused_pages
+                if record.retiring:
+                    # Pruning starts only after every required evidence receipt.
+                    view.ingested_pages = record.supplied_pages + record.failed_pages
         for identity, view in views.items():
             if (view.status == "active" and view.waiting_reason is None
                     and not view.acquiring_pages and not view.selecting_pages
                     and view.queue.deferred_pages and not view.queue.runnable_pages
                     and not view.queue.unknown_pages and len(view.queue.constraints) == 1):
                 view.waiting_reason = view.queue.constraints[0].reason
-            view.lineage_ready = (view.status == "settled" and identity in confirmed_outcomes
-                                  and identity not in uncommitted)
+            view.lineage_ready = (view.status == "settled" and identity not in uncommitted)
             if view.lineage_ready and view.ingested_pages == view.supplied_pages + view.failed_pages:
                 view.query_readiness_reason = "materialization_commit_not_verified"
         return list(views.values())

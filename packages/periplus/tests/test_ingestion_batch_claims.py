@@ -11,15 +11,15 @@ from test_operation_leases import FakeBucket
 from test_ingestion_receipts import Results
 from periplus.ingestion.consumer import PreparedBatch, _claim_batch, _process_messages
 from periplus.ingestion.queue import lineage_ingestion_job, get_ingestion_state
-from periplus.platform.catalogue.lineage import CollectionDefinition, CollectionOutcome
-from periplus.platform.catalogue.records import IngestionWriteResult
+from periplus.platform.catalogue.lineage import AcquisitionReason, FulfillmentRecord
+from evidence_receipt_fixture import receipt_for
 from periplus.platform.messaging.leases import operation_leases, operation_lease_key, OperationLease
 
 
 def job(collection=None):
     identity = collection or uuid4()
-    return lineage_ingestion_job(CollectionDefinition(
-        record_id=identity, collection_id=identity, recorded_at=datetime.now(UTC), specification={},
+    return lineage_ingestion_job(AcquisitionReason(
+        record_id=identity, collection_id=identity, recorded_at=datetime.now(UTC), observation_id=uuid4(), reason="collection", policy_version="1", rule_id="seed",
     ))
 
 
@@ -70,7 +70,7 @@ class BatchClaimTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_commit_success_then_ack_failure_replay_skips_write(self):
         work = job(); delivery = message(work); results = Results()
-        receipt = IngestionWriteResult(kind="lineage", identity=work.identity, created=True, repository_snapshot=7)
+        receipt = receipt_for(work)
         ingestor = SimpleNamespace(prepare=MagicMock(return_value=object()),
                                   commit_prepared_batch=MagicMock(return_value=[receipt]))
         delivery.ack.side_effect = TimeoutError()
@@ -119,13 +119,14 @@ class BatchClaimTests(unittest.IsolatedAsyncioTestCase):
     async def test_postgres_conflict_defers_shared_jobs_and_commits_unrelated(self):
         from periplus.retention.identities import WriteClaimUnavailable
         busy, free = job(), job()
-        shared = lineage_ingestion_job(CollectionOutcome(record_id=busy.identity, collection_id=busy.identity,
-            recorded_at=datetime.now(UTC), outcome="cancelled", consumed_pages=0, supplied_pages=0, failed_pages=0))
+        shared = lineage_ingestion_job(FulfillmentRecord(record_id=uuid4(), collection_id=busy.lineage.collection_id,
+            observation_id=busy.lineage.observation_id, requested_url="https://example.com/", depth=0,
+            rule_id="seed", mode="acquired", recorded_at=datetime.now(UTC)))
         deliveries = [message(work) for work in [busy, shared, free]]
         results = Results()
         conflict = WriteClaimUnavailable("busy", blocked_until={
             ("collection", str(busy.lineage.collection_id)): datetime.now(UTC)+timedelta(minutes=8)})
-        receipt = IngestionWriteResult(kind="lineage", identity=free.identity, created=True, repository_snapshot=9)
+        receipt = receipt_for(free)
         ingestor = SimpleNamespace(prepare=MagicMock(side_effect=lambda work: work),
             commit_prepared_batch=MagicMock(side_effect=[conflict, [receipt]]))
         await self.process(deliveries, results, ingestor)
@@ -167,8 +168,7 @@ class BatchClaimTests(unittest.IsolatedAsyncioTestCase):
             durable.add(free.request_id)
             if busy in evidence:
                 raise conflict
-            return [IngestionWriteResult(kind="lineage", identity=free.identity,
-                created=False, repository_snapshot=10)]
+            return [receipt_for(free, created=False)]
         ingestor = SimpleNamespace(prepare=MagicMock(side_effect=lambda work: work),
             commit_prepared_batch=MagicMock(side_effect=commit))
         deliveries[1].ack.side_effect = TimeoutError()

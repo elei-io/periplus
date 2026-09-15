@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from periplus.crawl.runtime.frontier_outbox import publish_delivery, publish_outbox_once
 from periplus.crawl.runtime.frontier_store import FrontierDelivery
-from periplus.platform.catalogue.lineage import CollectionDefinition
+from periplus.platform.catalogue.lineage import AcquisitionReason
 
 
 class FrontierOutboxTests(unittest.IsolatedAsyncioTestCase):
@@ -40,9 +40,9 @@ class FrontierOutboxTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_lineage_uses_existing_ingestion_lane(self):
         identity = uuid4()
-        evidence = CollectionDefinition(
-            record_id=identity, collection_id=identity,
-            recorded_at=datetime.now(UTC), specification={"page_limit": 1},
+        evidence = AcquisitionReason(
+            record_id=identity, collection_id=identity, observation_id=uuid4(),
+            recorded_at=datetime.now(UTC), reason="collection", policy_version="1", rule_id="seed",
         )
         delivery = self.delivery("lineage", evidence.model_dump(mode="json"))
         ingestion, jetstream = AsyncMock(), AsyncMock()
@@ -56,8 +56,8 @@ class FrontierOutboxTests(unittest.IsolatedAsyncioTestCase):
         from periplus.crawl.runtime.frontier_outbox import reconcile_receipts_once
         from periplus.ingestion.queue import IngestionState
         identity = uuid4()
-        evidence = CollectionDefinition(record_id=identity, collection_id=identity,
-                                        recorded_at=datetime.now(UTC), specification={})
+        evidence = AcquisitionReason(record_id=identity, collection_id=identity, observation_id=uuid4(),
+            recorded_at=datetime.now(UTC), reason="collection", policy_version="1", rule_id="seed")
         delivery = self.delivery("lineage", evidence.model_dump(mode="json"))
         for status in ("pending", "failed"):
             store = MagicMock()

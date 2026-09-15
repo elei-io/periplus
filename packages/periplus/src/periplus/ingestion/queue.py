@@ -25,13 +25,15 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 import zstandard
 
 from periplus.platform.catalogue import (
-    IngestionWriteResult,
     VisitEvidence,
 )
+from periplus.ingestion.storage import EvidenceReceipt, evidence_digest
 from periplus.platform.messaging.catalogue_queue import (
     DEAD_LETTER_STREAM,
     INGEST_DEAD_LETTER_SUBJECT as DEAD_LETTER_SUBJECT,
     INGEST_SUBJECT as SUBJECT,
+    VISIT_SUBJECT,
+    LINEAGE_SUBJECT,
     WORK_STREAM as STREAM,
     ensure_catalogue_work_stream,
     ensure_dead_letter_stream as ensure_catalogue_dead_letter_stream,
@@ -40,10 +42,11 @@ from periplus.platform.messaging.topology import validate_kv_contract
 from periplus.platform.messaging.client import connect_nats
 
 DURABLE = "periplus-ingestion"
+MATERIALIZER_DURABLE = "periplus-materialization-live"
 RESULTS_BUCKET = "periplus_ingestion_results"
 
 
-from periplus.platform.catalogue.lineage import LineageEvidence
+from periplus.platform.catalogue.lineage import FulfillmentRecord, AcquisitionReason
 
 
 class IngestionJob(BaseModel):
@@ -53,7 +56,7 @@ class IngestionJob(BaseModel):
     request_id: str
     enqueued_at: datetime
     visit: VisitEvidence | None = None
-    lineage: LineageEvidence | None = None
+    lineage: FulfillmentRecord | AcquisitionReason | None = None
 
     @model_validator(mode="after")
     def validate_job(self) -> IngestionJob:
@@ -97,7 +100,7 @@ class IngestionState(BaseModel):
     updated_at: datetime
     published_at: datetime | None = None
     published_sequence: int | None = Field(default=None, gt=0)
-    result: IngestionWriteResult | None = None
+    result: EvidenceReceipt | None = None
     error: str | None = None
     processing_failure_count: int = 0
 
@@ -116,8 +119,9 @@ class IngestionState(BaseModel):
         ):
             raise ValueError("failed ingestion requires only an error")
         if self.result is not None and (
-            self.result.kind != self.job.kind
+            self.result.kind != ("visit" if self.job.visit else self.job.lineage.kind)
             or self.result.identity != self.job.identity
+            or self.result.evidence_sha256 != evidence_digest(self.job.visit or self.job.lineage)
         ):
             raise ValueError("ingestion result does not match its job")
         return self
@@ -136,7 +140,7 @@ def visit_ingestion_job(evidence: VisitEvidence) -> IngestionJob:
     )
 
 
-def lineage_ingestion_job(evidence: LineageEvidence) -> IngestionJob:
+def lineage_ingestion_job(evidence: FulfillmentRecord | AcquisitionReason) -> IngestionJob:
     return IngestionJob(kind="lineage", lineage=evidence,
                         request_id=f"lineage-{evidence.kind}-{evidence.record_id.hex}",
                         enqueued_at=datetime.now(UTC))
@@ -162,6 +166,14 @@ def _validate_envelope(payload: bytes, *, label: str) -> None:
 
 async def ensure_repository_stream(jetstream) -> None:
     await ensure_catalogue_work_stream(jetstream)
+    # Interest retention requires both roles to exist before the first publish.
+    # Producers reconcile once at startup, never on request/polling paths.
+    await ensure_repository_consumer(jetstream)
+    await _ensure_consumer(jetstream, ConsumerConfig(
+        durable_name=MATERIALIZER_DURABLE, ack_policy=AckPolicy.EXPLICIT,
+        ack_wait=ack_wait_seconds(), filter_subject=VISIT_SUBJECT,
+        max_ack_pending=INGESTION_CONSUMER_MAX_ACK_PENDING, max_deliver=-1,
+    ))
 
 
 async def ensure_dead_letter_stream(jetstream) -> None:
@@ -213,23 +225,27 @@ def repository_consumer_config() -> ConsumerConfig:
 
 
 async def ensure_repository_consumer(jetstream) -> None:
-    expected = repository_consumer_config()
+    await _ensure_consumer(jetstream, repository_consumer_config())
+
+
+async def _ensure_consumer(jetstream, expected: ConsumerConfig) -> None:
+    durable = expected.durable_name
     try:
-        info = await jetstream.consumer_info(STREAM, DURABLE)
+        info = await jetstream.consumer_info(STREAM, durable)
     except NotFoundError:
         try:
             info = await jetstream.add_consumer(STREAM, config=expected)
         except BadRequestError:
-            info = await jetstream.consumer_info(STREAM, DURABLE)
+            info = await jetstream.consumer_info(STREAM, durable)
     config = info.config
     immutable_mismatches: list[str] = []
     if config.ack_policy != AckPolicy.EXPLICIT:
         immutable_mismatches.append("explicit acknowledgements")
-    if config.filter_subject != SUBJECT:
-        immutable_mismatches.append(f"filter_subject={SUBJECT}")
+    if config.filter_subject != expected.filter_subject:
+        immutable_mismatches.append(f"filter_subject={expected.filter_subject}")
     if immutable_mismatches:
         raise RuntimeError(
-            f"JetStream consumer {DURABLE} must use "
+            f"JetStream consumer {durable} must use "
             + ", ".join(immutable_mismatches)
         )
     if (
@@ -240,7 +256,7 @@ async def ensure_repository_consumer(jetstream) -> None:
         try:
             info = await jetstream.add_consumer(STREAM, config=expected)
         except BadRequestError:
-            info = await jetstream.consumer_info(STREAM, DURABLE)
+            info = await jetstream.consumer_info(STREAM, durable)
         config = info.config
     mismatches: list[str] = []
     if config.ack_wait != expected.ack_wait:
@@ -251,7 +267,7 @@ async def ensure_repository_consumer(jetstream) -> None:
         mismatches.append("unlimited server delivery")
     if mismatches:
         raise RuntimeError(
-            f"JetStream consumer {DURABLE} must use " + ", ".join(mismatches)
+            f"JetStream consumer {durable} must use " + ", ".join(mismatches)
         )
 
 
@@ -303,7 +319,7 @@ async def store_ingestion_response(
     results,
     *,
     job: IngestionJob,
-    result: IngestionWriteResult | None = None,
+    result: EvidenceReceipt | None = None,
     error: str | None = None,
 ) -> IngestionState:
     if (result is None) == (error is None):
@@ -449,7 +465,7 @@ async def requeue_dead_letter(jetstream, results, sequence: int) -> DeadLetterEn
     payload = pending.job.model_dump_json().encode()
     _validate_envelope(payload, label="ingestion requeue envelope")
     acknowledgement = await jetstream.publish(
-        SUBJECT,
+        VISIT_SUBJECT if pending.job.visit else LINEAGE_SUBJECT,
         payload,
         stream=STREAM,
         headers={
@@ -467,7 +483,7 @@ async def requeue_dead_letter(jetstream, results, sequence: int) -> DeadLetterEn
 
 def result_from_ingestion_state(
     state: IngestionState,
-) -> IngestionWriteResult:
+) -> EvidenceReceipt:
     if state.status == "failed":
         raise RuntimeError(state.error or "ingestion failed")
     if state.status != "succeeded" or state.result is None:
@@ -516,7 +532,7 @@ class IngestionQueueClient:
             state = await self._ensure_delivery(state)
         return state
 
-    async def submit(self, job: IngestionJob) -> IngestionWriteResult:
+    async def submit(self, job: IngestionJob) -> EvidenceReceipt:
         state = await self._pending_state(job)
         if state.status != "pending":
             return result_from_ingestion_state(state)
@@ -529,7 +545,7 @@ class IngestionQueueClient:
     async def _publish_and_wait(
         self,
         state: IngestionState,
-    ) -> IngestionWriteResult:
+    ) -> EvidenceReceipt:
         self._require_connected()
         poll_seconds = get_float("PERIPLUS_INGEST_RESULT_POLL_SECONDS")
         while True:
@@ -562,7 +578,7 @@ class IngestionQueueClient:
         payload = job.model_dump_json().encode()
         _validate_envelope(payload, label="ingestion job")
         acknowledgement = await self.jetstream.publish(
-            SUBJECT,
+            VISIT_SUBJECT if job.visit else LINEAGE_SUBJECT,
             payload,
             stream=STREAM,
             headers={"Nats-Msg-Id": job.request_id},

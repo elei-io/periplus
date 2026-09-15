@@ -50,6 +50,9 @@ where = ["src"]
 exclude = ["tests*", "build*"]
 
 [tool.setuptools.package-data]
+"periplus.ingestion" = ["schema.sql"]
+"periplus.materialization" = ["schema.sql"]
+"periplus.platform.clickhouse" = ["public.sql"]
 "periplus.platform.postgres" = [
     "alembic.ini",
     "alembic/script.py.mako",

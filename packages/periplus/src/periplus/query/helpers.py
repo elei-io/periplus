@@ -1,5 +1,6 @@
 """Read-only helper documentation derived from the public catalogue manifest."""
 from pydantic import BaseModel
+from periplus.platform.clickhouse.public import PUBLIC_RELATIONS
 
 from periplus.platform.catalogue.public import PUBLIC_CATALOGUE_VERSION, PUBLIC_SCHEMA, known_public_objects, public_objects
 
@@ -33,9 +34,9 @@ def query_helpers(schema: str = PUBLIC_SCHEMA) -> QueryHelpers:
         parameters=[HelperField(name=name, description=kind) for name, kind in item.parameters],
         columns=[HelperField(name=name, description=description) for name, description in item.column_comments],
         notes=list(item.notes), examples=list(item.examples),
-    ) for item in public_objects(schema) if item.exposed]
+    ) for item in public_objects(schema) if item.exposed and item.kind == "view" and item.name in PUBLIC_RELATIONS]
     return QueryHelpers(
-        catalogue_version=PUBLIC_CATALOGUE_VERSION, schema_version=schema,
+        catalogue_version="clickhouse-public-v1", schema_version=schema,
         helpers=[item for item in objects if item.kind in {"macro", "table_macro"}],
         relations=[item for item in objects if item.kind == "view"],
     )

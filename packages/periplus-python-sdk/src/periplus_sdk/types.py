@@ -28,7 +28,7 @@ class QueryResult(PreparedQuery):
     rows: list[list[JsonValue]]
     truncated: bool
     elapsed_ms: float
-    source_snapshot: int = Field(ge=0)
+    source_snapshot: int | None = Field(default=None, ge=0)
     row_count: int = Field(ge=0)
     result_bytes: int = Field(ge=0)
     truncation_reason: Literal["max_rows", "max_result_bytes"] | None = None

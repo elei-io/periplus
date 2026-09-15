@@ -36,9 +36,7 @@ class QueryStreamResponse(StreamingResponse):
             with anyio.CancelScope(shield=True):
                 if self.worker is not None:
                     if self.executing.is_set():
-                        connection = self.request.app.state.query_service.connection
-                        if connection is not None:
-                            connection.interrupt()
+                        self.request.app.state.query_service.interrupt()
                     await self.worker
                 self.request.app.state.query_slot.release()
 

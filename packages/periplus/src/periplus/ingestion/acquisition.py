@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 from datetime import datetime
 from typing import BinaryIO
 import time
@@ -14,8 +13,6 @@ from periplus.ingestion import metrics as repository_metrics
 from periplus.platform.catalogue import VisitEvidence
 from periplus.ingestion.queue import (
     IngestionQueueClient,
-    get_ingestion_state,
-    visit_ingestion_request_id,
 )
 from periplus.ingestion.objects.config import object_store_from_env
 from periplus.ingestion.objects.readiness import StorageReadiness
@@ -25,12 +22,6 @@ from periplus.ingestion.objects.document import (
     StoredDocument,
 )
 from periplus.ingestion.objects.html import HtmlIdentity, RawHtmlRepository, StoredHtml
-
-
-@dataclass(frozen=True, slots=True)
-class AcquisitionResume:
-    evidence: VisitEvidence
-    repository_snapshot: int | None = None
 
 
 class AcquisitionPipeline:
@@ -142,32 +133,6 @@ class AcquisitionPipeline:
     async def enqueue_visit(self, evidence: VisitEvidence) -> None:
         self._require_running()
         await self.queue.enqueue_visit(evidence)
-
-    async def resolve_visit(
-        self,
-        visit_id: UUID,
-    ) -> AcquisitionResume | None:
-        self._require_running()
-        state = await get_ingestion_state(
-            self.queue.results,
-            visit_ingestion_request_id(visit_id),
-        )
-        if state is None:
-            return None
-        if state.job.kind != "visit" or state.job.identity != visit_id:
-            raise RuntimeError(
-                f"ingestion state has the wrong visit identity for {visit_id}"
-            )
-        assert state.job.visit is not None
-        snapshot = (
-            state.result.repository_snapshot
-            if state.result is not None
-            else None
-        )
-        return AcquisitionResume(
-            evidence=state.job.visit,
-            repository_snapshot=snapshot,
-        )
 
     async def close(self) -> None:
         if not self._running:

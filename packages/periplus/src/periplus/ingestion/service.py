@@ -1,20 +1,16 @@
-"""Evidence-only ingestion across immutable objects and DuckLake."""
+"""Evidence-only ingestion across immutable objects and ClickHouse."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from types import TracebackType
 
-from periplus.platform.catalogue import (
-    Catalogue,
-    CatalogueService,
-    DocumentRecord,
-    IngestionWriteResult,
-    VisitEvidence,
-    catalogue_from_env,
-)
+from periplus.platform.catalogue.records import DocumentRecord
+from periplus.platform.catalogue.lineage import FulfillmentRecord, AcquisitionReason
+from periplus.platform.clickhouse import connect_clickhouse
+from periplus.ingestion.storage import EvidenceStore, EvidenceReceipt, evidence_digest
 from periplus.ingestion.queue import IngestionJob
-from periplus.ingestion.objects.publication import claim, release
+from periplus.ingestion.objects.publication import claim
 from periplus.retention.identities import retired, EvidenceRetired
 from periplus.ingestion.objects.document import (
     ExactDocumentIdentity,
@@ -42,20 +38,19 @@ class RepositoryIngestor:
         *,
         html_repository: RawHtmlRepository,
         document_repository: ExactDocumentRepository,
-        catalogue: Catalogue,
+        evidence_store: EvidenceStore,
         limits: RepositoryLimits | None = None,
     ) -> None:
         self.html_repository = html_repository
         self.document_repository = document_repository
-        self.catalogue = catalogue
-        self.catalogue_service = CatalogueService(catalogue)
+        self.evidence_store = evidence_store
         self.limits = limits or RepositoryLimits()
 
     def validate(self) -> None:
-        self.catalogue.validate_schema()
+        self.evidence_store.validate()
 
     def probe(self) -> None:
-        self.catalogue.latest_snapshot()
+        self.evidence_store.client.execute("SELECT 1")
 
     def prepare(self, job: IngestionJob) -> PreparedIngestion:
         if job.kind == "visit":
@@ -70,68 +65,30 @@ class RepositoryIngestor:
     def commit_prepared_batch(
         self,
         prepared: list[PreparedIngestion],
-    ) -> list[IngestionWriteResult]:
-        results: dict[str, IngestionWriteResult] = {}
-        visits = [
-            value.job.visit
-            for value in prepared
-            if value.job.kind == "visit" and value.job.visit is not None
-        ]
-        if visits:
-            for job, result in zip(
-                (
-                    value.job
-                    for value in prepared
-                    if value.job.kind == "visit"
-                ),
-                self.catalogue_service.record_visits(visits),
-                strict=True,
-            ):
-                results[job.request_id] = result
-        lineage_jobs = [value.job for value in prepared if value.job.kind == "lineage"]
-        if lineage_jobs:
-            for job, result in zip(lineage_jobs, self.catalogue_service.record_lineage(
-                [job.lineage for job in lineage_jobs]
-            ), strict=True):
-                results[job.request_id] = result
+    ) -> list[EvidenceReceipt]:
+        # Each frozen evidence identity is its own atomic insert. If a later
+        # member fails, replay reconciles already committed members by digest.
+        results = []
         for value in prepared:
-            if value.job.visit and value.job.visit.document:
-                release(self.html_repository.store, value.job.visit.document.content_sha256, value.job.visit.visit.visit_id)
-        return [results[value.job.request_id] for value in prepared]
+            job = value.job
+            if job.visit is not None:
+                result = self.evidence_store.record_visit(job.visit)
+            elif isinstance(job.lineage, (FulfillmentRecord, AcquisitionReason)):
+                result = self.evidence_store.record_lineage(job.lineage)
+            else:
+                raise ValueError("collection control records do not belong in ingestion")
+            results.append(result)
+        return results
 
-    def reconcile_commit(
-        self,
-        job: IngestionJob,
-    ) -> IngestionWriteResult | None:
-        if job.kind == "lineage":
-            assert job.lineage is not None
-            durable = self.catalogue_service.get_lineage(job.lineage.kind, job.identity)
-            expected = job.lineage
+    def reconcile_commit(self, job: IngestionJob) -> EvidenceReceipt | None:
+        evidence = job.visit if job.visit is not None else job.lineage
+        if job.visit is not None:
+            kind = "visit"
+        elif isinstance(job.lineage, (FulfillmentRecord, AcquisitionReason)):
+            kind = job.lineage.kind
         else:
-            assert job.visit is not None
-            durable = self.catalogue_service.get_visit_evidence(
-                [job.visit.visit.visit_id]
-            ).get(job.visit.visit.visit_id)
-            expected = job.visit
-        if durable is None:
-            return None
-        if durable != expected:
-            from periplus.platform.catalogue import CatalogueConflictError
-
-            raise CatalogueConflictError(
-                f"ingestion {job.request_id} has different durable evidence"
-            )
-        snapshot = self.catalogue.latest_snapshot()
-        if snapshot is None:
-            raise RuntimeError("DuckLake has no repository snapshot")
-        if job.visit and job.visit.document:
-            release(self.html_repository.store, job.visit.document.content_sha256, job.visit.visit.visit_id)
-        return IngestionWriteResult(
-            kind=job.kind,
-            identity=job.identity,
-            created=False,
-            repository_snapshot=snapshot,
-        )
+            raise ValueError("collection control records do not belong in ingestion")
+        return self.evidence_store.receipt(kind, job.identity, evidence_digest(evidence))
 
     def _verify_document(self, document: DocumentRecord) -> None:
         if document.content_bytes > self.limits.max_document_bytes:
@@ -165,7 +122,7 @@ class RepositoryIngestor:
             raise ValueError("document stored size does not match immutable object")
 
     def close(self) -> None:
-        self.catalogue.close()
+        self.evidence_store.client.close()
 
     def __enter__(self) -> RepositoryIngestor:
         self.validate()
@@ -185,5 +142,5 @@ def repository_ingestor_from_env() -> RepositoryIngestor:
     return RepositoryIngestor(
         html_repository=RawHtmlRepository(store),
         document_repository=ExactDocumentRepository(store),
-        catalogue=catalogue_from_env(),
+        evidence_store=EvidenceStore(connect_clickhouse()),
     )

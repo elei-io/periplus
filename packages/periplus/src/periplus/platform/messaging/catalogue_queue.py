@@ -6,16 +6,13 @@ from periplus.platform.messaging.topology import ensure_stream_contract
 
 
 WORK_STREAM = "PERIPLUS_CATALOGUE_WORK"
-INGEST_SUBJECT = "periplus.catalogue.ingest"
+INGEST_SUBJECT = "periplus.catalogue.ingest.>"
+VISIT_SUBJECT = "periplus.catalogue.ingest.visit"
+LINEAGE_SUBJECT = "periplus.catalogue.ingest.lineage"
 MATERIALIZATION_PLAN_SUBJECT = "periplus.catalogue.materialization.plan"
 MATERIALIZATION_BATCH_SUBJECT = "periplus.catalogue.materialization.batch"
 MATERIALIZATION_ACTIVATE_SUBJECT = "periplus.catalogue.materialization.activate"
-WORK_SUBJECTS = (
-    INGEST_SUBJECT,
-    MATERIALIZATION_PLAN_SUBJECT,
-    MATERIALIZATION_BATCH_SUBJECT,
-    MATERIALIZATION_ACTIVATE_SUBJECT,
-)
+WORK_SUBJECTS = (VISIT_SUBJECT, LINEAGE_SUBJECT)
 
 DEAD_LETTER_STREAM = "PERIPLUS_DEAD_LETTER"
 INGEST_DEAD_LETTER_SUBJECT = "periplus.dead_letter.ingest"
@@ -27,7 +24,7 @@ async def ensure_catalogue_work_stream(jetstream) -> None:
     config = StreamConfig(
         name=WORK_STREAM,
         subjects=list(WORK_SUBJECTS),
-        retention=RetentionPolicy.WORK_QUEUE,
+        retention=RetentionPolicy.INTEREST,
         storage=StorageType.FILE,
         num_replicas=replicas,
         max_age=0,

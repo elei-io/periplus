@@ -100,12 +100,20 @@ class FrontierRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         async def enqueue(job):
             jobs.append(job)
-            if job.kind == "lineage" and job.lineage.kind == "collection_outcome":
-                stop.set()
 
         async def reconcile(job):
             from periplus.ingestion.queue import IngestionState
             return IngestionState(job=job, status="pending", updated_at=datetime.now(UTC))
+
+        async def observe_completion():
+            while not stop.is_set():
+                record = await asyncio.to_thread(self.store.get_collection, identity)
+                if record.status == "settled" and any(
+                    item.kind == "lineage" and item.lineage.kind == "fulfillment" for item in jobs
+                ):
+                    stop.set()
+                    return
+                await asyncio.sleep(0.01)
 
         async def acquire(**kwargs):
             context = kwargs["context"]
@@ -138,7 +146,8 @@ class FrontierRuntimeTests(unittest.IsolatedAsyncioTestCase):
              patch("periplus.crawl.runtime.frontier_capture.operation_leases", lease), \
              patch("periplus.crawl.runtime.frontier_capture.domain_permit", lease), \
              patch("periplus.crawl.runtime.frontier_capture.acquire_page", acquire):
-            async with asyncio.timeout(25):
+            async with asyncio.timeout(25), asyncio.TaskGroup() as tasks:
+                tasks.create_task(observe_completion())
                 await run_frontier(
                     self.store, subscription=SimpleNamespace(fetch=fetch), jetstream=SimpleNamespace(publish=publish),
                     ingestion=ingestion, pipeline=pipeline, playwright=object(),
@@ -146,9 +155,10 @@ class FrontierRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     stop=stop, capture_lanes=2, discovery=discovery,
                 )
         discovery.step.assert_awaited_once()
-        terminal = next(job.lineage for job in jobs if job.kind == "lineage" and job.lineage.kind == "collection_outcome")
-        self.assertEqual(terminal.seed_provenance.discovery.model, "test-model")
-        self.assertEqual(terminal.seed_provenance.discovery.queries, ("Example sources",))
+        terminal = self.store.get_collection(identity)
+        self.assertEqual(terminal.seed_provenance["discovery"]["model"], "test-model")
+        self.assertEqual(terminal.seed_provenance["discovery"]["queries"], ["Example sources"])
+        self.assertTrue(all(job.kind == "visit" or job.lineage.kind in {"fulfillment", "acquisition_reason"} for job in jobs))
         self.assertEqual(len(captures), 1)
         self.assertEqual(sum(job.kind == "visit" for job in jobs), 1)
         self.assertEqual(sum(job.kind == "lineage" and job.lineage.kind == "fulfillment" for job in jobs), 1)
