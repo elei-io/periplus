@@ -109,19 +109,15 @@ class AccessTests(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('QUERY_HISTORY_TEST_DATABASE_URL'), 'requires isolated Postgres test database')
 class StoreTests(unittest.TestCase):
     def setUp(self):
-        self.schema = 'history_test_' + uuid4().hex
-        self.admin_engine = create_engine(os.environ['QUERY_HISTORY_TEST_DATABASE_URL'])
-        with self.admin_engine.begin() as connection:
-            connection.execute(text(f'CREATE SCHEMA {self.schema}'))
-        self.engine = create_engine(os.environ['QUERY_HISTORY_TEST_DATABASE_URL'], connect_args={'options': f'-c search_path={self.schema}'})
+        from postgres_fixture import isolated_database
+        self.database = isolated_database(os.environ['QUERY_HISTORY_TEST_DATABASE_URL'])
+        self.engine = self.database.__enter__()
+        self.addCleanup(self.database.__exit__, None, None, None)
+        with self.engine.begin() as connection:
+            connection.execute(text('CREATE SCHEMA state'))
         QueryExecution.__table__.create(self.engine)
         self.sessions = sessionmaker(self.engine)
         self.store = QueryHistoryStore(self.sessions)
-    def tearDown(self):
-        self.engine.dispose()
-        with self.admin_engine.begin() as connection:
-            connection.execute(text(f'DROP SCHEMA {self.schema} CASCADE'))
-        self.admin_engine.dispose()
 
     def test_percentiles_filters_idempotence_and_detail(self):
         values = [execution(elapsed_ms=n, source='assistant') for n in [100,200,300]]

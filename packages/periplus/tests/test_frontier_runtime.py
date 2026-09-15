@@ -12,7 +12,8 @@ from uuid import uuid4
 
 from periplus.crawl.control.domain_policies.service import ensure_default_domain_policy
 
-from sqlalchemy import select, create_engine
+from sqlalchemy import select
+from schema_fixture import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from frontier_fixtures import policy_snapshot

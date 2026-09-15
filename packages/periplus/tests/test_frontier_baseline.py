@@ -8,7 +8,8 @@ from uuid import uuid4
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import inspect, text
+from postgres_fixture import isolated_database
 from sqlalchemy.orm import Session
 
 from periplus.operations.access.models import PublicAccessRecord
@@ -21,6 +22,7 @@ from periplus.crawl.runtime.frontier_models import AcquisitionRecord, FrontierCo
 
 @unittest.skipUnless(os.environ.get('PERIPLUS_TEST_FRONTIER_POSTGRES') == '1', 'requires isolated live Postgres')
 class FrontierBaselineTests(unittest.TestCase):
+    maxDiff = None
     def test_migration_chain_matches_current_models_preserves_controls_and_rejects_lossy_downgrade(self):
         root = Path(periplus.platform.postgres.models.__file__).parent / 'alembic/versions'
         files = sorted(root.glob('*.py'))
@@ -33,15 +35,12 @@ class FrontierBaselineTests(unittest.TestCase):
             self.assertEqual(migration.down_revision, previous)
             migrations.append(migration)
             previous = migration.revision
-        engine = create_engine(get_database_url())
-        self.addCleanup(engine.dispose)
+        database = isolated_database(get_database_url())
+        engine = database.__enter__()
+        self.addCleanup(database.__exit__, None, None, None)
         queued_id = uuid4()
-        schema = 'frontier_baseline_test_' + uuid4().hex
         with engine.begin() as connection:
-            connection.execute(text(f'CREATE SCHEMA "{schema}"'))
-            connection.execute(text(f'SET search_path TO "{schema}"'))
-            connection.dialect.default_schema_name = schema
-            context = MigrationContext.configure(connection, opts={'compare_type': True})
+            context = MigrationContext.configure(connection, opts={'compare_type': True, 'include_schemas': True})
             with Operations.context(context):
                 for migration in migrations:
                     if migration.revision == '20260910_0013':
@@ -51,6 +50,7 @@ class FrontierBaselineTests(unittest.TestCase):
                         for name in ('collection_limit', 'interest_limit', 'acquisition_limit', 'admission_limit'):
                             connection.execute(text(f'ALTER TABLE frontier_control ALTER COLUMN {name} SET DEFAULT 1'))
                         connection.execute(text('ALTER TABLE frontier_control ALTER COLUMN captures_per_minute SET DEFAULT 0'))
+                        connection.execution_options(schema_translate_map={"control": None, "state": None})
                         with Session(connection) as session:
                             policy = AccessPolicy().model_dump(mode="json")
                             policy["crawl"].pop("queue_limit")
@@ -77,8 +77,10 @@ class FrontierBaselineTests(unittest.TestCase):
                             session.commit()
                         connection.execute(text('UPDATE frontier_control SET attempt_allowance=100, started_attempts=100, capture_time_allowance_ms=172800000, charged_capture_ms=172800000'))
                     migration.upgrade()
+                    if migration.revision == "20260916_0027":
+                        connection.execution_options(schema_translate_map=None)
                 self.assertEqual(compare_metadata(context, Base.metadata), [])
-                self.assertEqual(set(inspect(connection).get_table_names()), set(Base.metadata.tables))
+                self.assertEqual({f"{schema}.{name}" for schema in ("control", "state") for name in inspect(connection).get_table_names(schema=schema)}, set(Base.metadata.tables))
                 self.assertFalse(any('graph' in name for name in Base.metadata.tables))
                 with Session(connection) as session:
                     ensure_frontier_control(session)
@@ -93,13 +95,17 @@ class FrontierBaselineTests(unittest.TestCase):
                     self.assertEqual(control.capture_timeout_ms, 45000)
                     self.assertEqual(session.get(AcquisitionRecord, queued_id).status, 'queued')
                     self.assertEqual(session.get(AcquisitionRecord, queued_id).dns_not_found_count, 0)
-                    self.assertNotIn('started_attempts', {column['name'] for column in inspect(connection).get_columns('frontier_control')})
+                    self.assertNotIn('started_attempts', {column['name'] for column in inspect(connection).get_columns('frontier_control', schema='state')})
                     control.paused = True
                     session.flush()
                     ensure_frontier_control(session)
                     self.assertTrue(session.get(FrontierControlRecord, 1).paused)
                     session.commit()
+                boundary = migrations[-1]
+                boundary.downgrade()
+                self.assertEqual(set(inspect(connection).get_table_names()), {t.name for t in Base.metadata.tables.values()})
+                self.assertEqual(connection.scalar(text('SELECT dispatch_limit FROM public.frontier_control WHERE id=1')), 7)
+                boundary.upgrade()
+                self.assertEqual(compare_metadata(context, Base.metadata), [])
                 with self.assertRaisesRegex(RuntimeError, 'Reclaimed acquisition references'):
                     next(m for m in migrations if m.revision == '20260910_0014').downgrade()
-            connection.execute(text('SET search_path TO public'))
-            connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))

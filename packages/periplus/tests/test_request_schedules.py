@@ -1,7 +1,8 @@
 from datetime import UTC, datetime, timedelta
 import unittest
 from unittest.mock import patch
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
+from schema_fixture import create_engine
 from sqlalchemy.orm import sessionmaker
 from periplus.crawl.control.collections.schemas import CollectionSpec
 from periplus.crawl.control.collections.models import CollectionRecord

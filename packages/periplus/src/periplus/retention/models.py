@@ -12,6 +12,7 @@ from periplus.platform.postgres import Base
 
 class WriteClaimRecord(Base):
     __tablename__ = "write_claims"
+    __table_args__ = {"schema": "state"}
 
     kind: Mapped[str] = mapped_column(Text, primary_key=True)
     identity: Mapped[str] = mapped_column(Text, primary_key=True)
@@ -21,6 +22,7 @@ class WriteClaimRecord(Base):
 
 class CaptureRetirementRecord(Base):
     __tablename__ = "capture_retirements"
+    __table_args__ = {"schema": "state"}
     capture_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
     requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

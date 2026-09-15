@@ -8,7 +8,7 @@ import unittest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
-ROLES = ("api", "admin", "public", "crawler", "ingestor", "materializer", "query")
+ROLES = ("api", "admin", "public", "crawler", "ingestor", "query")
 
 
 @unittest.skipUnless(shutil.which("helm"), "Helm is required for chart contract tests")
@@ -63,7 +63,7 @@ class HelmScalingTests(unittest.TestCase):
     def test_operational_replication_is_shared_by_core_roles(self):
         for replicas in (1, 3, 5):
             docs = self.render({"config": {"nats": {"operationalReplicas": replicas}}})
-            for role in ("api", "crawler", "ingestor", "materializer", "janitor", "setup"):
+            for role in ("api", "crawler", "ingestor", "janitor", "setup"):
                 doc = next(d for d in docs if d["kind"] in ("Deployment", "Job") and d["metadata"]["name"].endswith("-" + role))
                 env = {v["name"]: v.get("value") for v in doc["spec"]["template"]["spec"]["containers"][0]["env"]}
                 self.assertEqual(env["PERIPLUS_NATS_OPERATIONAL_REPLICAS"], str(replicas))
@@ -74,7 +74,7 @@ class HelmScalingTests(unittest.TestCase):
         documents = self.render()
         self.assertFalse(any(d["kind"] in ("ScaledObject", "PodMonitor") for d in documents))
         deployments = [d for d in documents if d["kind"] == "Deployment"]
-        self.assertEqual(len(deployments), 8)
+        self.assertEqual(len(deployments), 7)
         for deployment in deployments:
             self.assertIn("replicas", deployment["spec"])
 
@@ -89,7 +89,7 @@ class HelmScalingTests(unittest.TestCase):
             deployment = next(d for d in documents if d["kind"] == "Deployment" and d["metadata"]["name"] == spec["scaleTargetRef"]["name"])
             self.assertNotIn("replicas", deployment["spec"])
             self.assertEqual(spec["minReplicaCount"], 2)
-            self.assertLessEqual(spec["maxReplicaCount"], 10)
+            self.assertLessEqual(spec["maxReplicaCount"], 16 if scaler["metadata"]["labels"]["app.kubernetes.io/component"] == "ingestor" else 10)
             self.assertEqual(spec["advanced"]["horizontalPodAutoscalerConfig"]["behavior"]["scaleDown"]["stabilizationWindowSeconds"], 300)
             trigger = spec["triggers"][0]
             if trigger["type"] == "prometheus":
@@ -101,7 +101,7 @@ class HelmScalingTests(unittest.TestCase):
                 self.assertIn('time() - 60', query)
                 self.assertNotIn('or vector(0)', query)
         monitors = [d for d in documents if d["kind"] == "PodMonitor"]
-        self.assertEqual(len(monitors), 6)
+        self.assertEqual(len(monitors), 5)
         for monitor in monitors:
             labels = {r['targetLabel']: r['replacement'] for r in monitor['spec']['podMetricsEndpoints'][0]['relabelings']}
             self.assertEqual(labels['namespace'], 'scaling-ns')
@@ -109,7 +109,7 @@ class HelmScalingTests(unittest.TestCase):
 
     def test_query_credentials_and_local_navigation_limits_are_isolated(self):
         docs = self.render({'crawler': {'duckdb': {'threads': 3}}})
-        for role in ('api','crawler','ingestor','materializer','query','janitor','setup'):
+        for role in ('api','crawler','ingestor','query','janitor','setup'):
             doc = next(d for d in docs if d['kind'] in ('Deployment','Job') and d['metadata']['name'].endswith('-'+role))
             container = doc['spec']['template']['spec']['containers'][0]
             env = {v['name']:v for v in container['env']}
@@ -125,11 +125,12 @@ class HelmScalingTests(unittest.TestCase):
                 self.assertNotIn('PERIPLUS_CONTROL_DATABASE_URL', env)
                 self.assertNotIn('PERIPLUS_NATS_URL', env)
                 self.assertNotIn('envFrom', container)
-            if role in ('crawler','ingestor','janitor'):
+            if role in ('crawler','janitor'):
                 self.assertNotIn('PERIPLUS_CLICKHOUSE_PASSWORD', env)
 
     def test_invalid_limits_and_missing_dependencies_fail_render(self):
         for values in (
+            {'materializer': {'image': 'obsolete'}},
             {'query': {'autoscaling': {'enabled': True}}},
             {'query': {'autoscaling': {'minReplicas': 0}}},
             {'api': {'autoscaling': {'enabled': True, 'minReplicas': 5, 'maxReplicas': 2}}},
@@ -168,11 +169,6 @@ class HelmScalingTests(unittest.TestCase):
                     labels = f'namespace="scaling-ns",periplus_release="scaling-test",periplus_component="{role}",pod="{pod}"' + extra
                     series.append({"series": metric + "{" + labels + "}", "values": values})
             if role == "ingestor":
-                add("periplus_repository_ingestion_jobs_pending", "300+0x8")
-                add("periplus_repository_ingestion_jobs_ack_pending", "100+0x8")
-                add("periplus_repository_ingestion_queue_observed_timestamp_seconds", "0+15x8")
-                expected = 400
-            elif role == "materializer":
                 add("periplus_materialization_queue_messages", "6+0x8", ',state="pending"')
                 add("periplus_materialization_queue_messages", "2+0x8", ',state="ack_pending"')
                 add("periplus_materialization_queue_observed_timestamp_seconds", "0+15x8")

@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 import unittest
 
 from pydantic import ValidationError
-from sqlalchemy import create_engine
+from schema_fixture import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from periplus.crawl.control.collections.schemas import CollectionSpec
@@ -128,7 +128,7 @@ class PublicAccessPostgresTests(unittest.TestCase):
         with engine.begin() as connection:
             connection.execute(text(f'CREATE SCHEMA "{schema}"'))
         try:
-            scoped = engine.execution_options(schema_translate_map={None: schema})
+            scoped = engine.execution_options(schema_translate_map={"control": schema})
             PublicAccessRecord.__table__.create(scoped)
             sessions = sessionmaker(scoped, expire_on_commit=False)
             policy = AccessPolicy()

@@ -2,7 +2,6 @@
 {{- $workers := list
   (dict "name" "crawler" "replicas" .Values.crawler.replicas "healthPort" 9099 "metricsPort" 9090 "resources" .Values.crawler.resources)
   (dict "name" "ingestor" "replicas" .Values.ingestor.replicas "healthPort" 9092 "metricsPort" 9091 "resources" .Values.ingestor.resources)
-  (dict "name" "materializer" "replicas" .Values.materializer.replicas "healthPort" 9096 "metricsPort" 9093 "resources" .Values.materializer.resources)
   (dict "name" "janitor" "replicas" 1 "healthPort" 9095 "metricsPort" 9094 "resources" .Values.janitor.resources)
 -}}
 {{- range $index, $worker := $workers }}
@@ -49,7 +48,7 @@ spec:
       {{- include "periplus.corePodSpec" $root | nindent 6 }}
       containers:
         - name: {{ $worker.name }}
-          image: {{ include "periplus.coreImage" $root | quote }}
+          image: {{ ternary (include "periplus.ingestorImage" $root) (include "periplus.coreImage" $root) (eq $worker.name "ingestor") | quote }}
           imagePullPolicy: {{ $root.Values.images.core.pullPolicy }}
           command: [periplus-worker, {{ $worker.name }}]
           ports:
@@ -60,7 +59,7 @@ spec:
           {{- include "periplus.envFrom" $root | nindent 10 }}
           env:
             {{- include "periplus.coreEnv" $root | nindent 12 }}
-            {{- if eq $worker.name "materializer" }}
+            {{- if eq $worker.name "ingestor" }}
             {{- include "periplus.clickhouseWriterEnv" $root | nindent 12 }}
             - name: PERIPLUS_CLICKHOUSE_QUERY_USER
               valueFrom:

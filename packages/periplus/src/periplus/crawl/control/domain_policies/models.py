@@ -20,6 +20,7 @@ class DomainPolicy(Base):
         CheckConstraint("maximum_concurrency >= 1", name="ck_domain_policies_concurrency"),
         CheckConstraint("minimum_request_interval_seconds >= 0", name="ck_domain_policies_interval"),
         Index("ix_domain_policies_enabled", "enabled"),
+        {"schema": "control"},
     )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)

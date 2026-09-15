@@ -68,6 +68,16 @@ def coordinate(api, mode, release, targets, timeout):
         if (PAUSE in annotations or annotations.get('autoscaling.keda.sh/paused') == 'true') and annotations.get(OWNER) != 'true':
             raise RuntimeError('An operator-paused scaler requires operator resolution before upgrading')
     if mode == 'stop':
+        roles = {target['role'] for target in targets.values()}
+        # A removed Deployment is absent from the new target list. Never claim
+        # it drained just because the new release no longer names its role.
+        for pod in api.pods(release):
+            metadata = pod['metadata']
+            component = metadata.get('labels', {}).get('app.kubernetes.io/component')
+            if (component not in roles
+                    and any(owner.get('kind') == 'ReplicaSet' for owner in metadata.get('ownerReferences', []))
+                    and pod.get('status', {}).get('phase') not in ('Succeeded', 'Failed')):
+                raise RuntimeError(f'Drain the removed runtime deployment before setup: {component}')
         for name, scaler in scalers.items():
             if scaler:
                 api.scaler(name, {'metadata': {'annotations': {PAUSE: '0', OWNER: 'true'}}})

@@ -1,6 +1,7 @@
 """Archive reconciliation plans work; every replica executes bounded batches."""
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 import logging
 import os
@@ -201,7 +202,9 @@ async def coordinator(jetstream, leases, monitor, stop):
             await asyncio.sleep(2)
 
 
-async def consume(jetstream, stop, lane: int):
+async def consume(
+    jetstream, stop, lane: int, *, idle: Callable[[], Awaitable[None]]
+):
     control = BuildControl()
     archive = Archive(object_store_from_env())
     client = ClickHouseClient(ClickHouseConfig.from_env())
@@ -215,6 +218,8 @@ async def consume(jetstream, stop, lane: int):
             try:
                 messages = await subscription.fetch(batch=1, timeout=1)
             except (NatsTimeoutError, TimeoutError):
+                if not stop.is_set():
+                    await idle()
                 continue
             for message in messages:
                 claimed = await asyncio.to_thread(
@@ -268,13 +273,6 @@ async def consume(jetstream, stop, lane: int):
     finally:
         await subscription.unsubscribe()
         client.close()
-
-
-async def run_rebuilds(jetstream, leases, monitor, stop):
-    async with asyncio.TaskGroup() as tasks:
-        tasks.create_task(coordinator(jetstream, leases, monitor, stop))
-        # Local bounds are deliberate. More replicas add real execution lanes.
-        tasks.create_task(consume(jetstream, stop, 0))
 
 
 async def ensure_material_consumer(jetstream):

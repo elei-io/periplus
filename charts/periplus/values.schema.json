@@ -117,29 +117,9 @@
         },
         "autoscaling": {
           "$ref": "#/definitions/scaling"
-        }
-      }
-    },
-    "materializer": {
-      "type": "object",
-      "properties": {
-        "resources": {
-          "type": "object",
-          "properties": {
-            "requests": {
-              "type": "object"
-            },
-            "limits": {
-              "type": "object"
-            }
-          }
         },
-        "replicas": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "autoscaling": {
-          "$ref": "#/definitions/scaling"
+        "image": {
+          "type": "string"
         }
       }
     },
@@ -294,7 +274,8 @@
           "maximum": 3600
         }
       }
-    }
+    },
+    "materializer": false
   },
   "definitions": {
     "scaling": {

@@ -82,7 +82,7 @@ async def storage(request: Request):
             return list(
                 session.execute(
                     text(
-                        "SELECT relname AS name, pg_total_relation_size(relid) AS bytes, n_live_tup AS estimated_rows "
+                        "SELECT schemaname || '.' || relname AS name, pg_total_relation_size(relid) AS bytes, n_live_tup AS estimated_rows "
                         "FROM pg_stat_user_tables ORDER BY pg_total_relation_size(relid) DESC"
                     )
                 ).mappings()

@@ -15,7 +15,6 @@ class WorkerCliTests(unittest.TestCase):
             {
                 "crawler": "periplus.crawl.crawler",
                 "ingestor": "periplus.ingestion.ingestor",
-                "materializer": "periplus.materialization.materializer",
                 "janitor": "periplus.operations.janitor",
             },
         )
@@ -26,9 +25,9 @@ class WorkerCliTests(unittest.TestCase):
             "periplus.entrypoints.worker.import_module",
             return_value=SimpleNamespace(run=runner),
         ) as import_module:
-            asyncio.run(cli.run("materializer"))
+            asyncio.run(cli.run("ingestor"))
 
-        import_module.assert_called_once_with("periplus.materialization.materializer")
+        import_module.assert_called_once_with("periplus.ingestion.ingestor")
         runner.assert_awaited_once_with()
 
     def test_unknown_role_is_rejected_by_the_command(self) -> None:

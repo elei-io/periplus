@@ -78,7 +78,7 @@ spec:
       port: {{ .Values.public.service.port }}
       targetPort: http
 {{- $root := . }}
-{{- range $worker := list (dict "name" "crawler" "port" 9090) (dict "name" "ingestor" "port" 9091) (dict "name" "materializer" "port" 9093) (dict "name" "janitor" "port" 9094) }}
+{{- range $worker := list (dict "name" "crawler" "port" 9090) (dict "name" "ingestor" "port" 9091) (dict "name" "janitor" "port" 9094) }}
 ---
 apiVersion: v1
 kind: Service

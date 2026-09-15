@@ -22,7 +22,8 @@ class PostgresClaimTests(unittest.TestCase):
         with base.begin() as connection:
             connection.execute(text(f'CREATE SCHEMA {schema}'))
         engine = create_engine(session.get_database_url(), connect_args={
-            'options': POSTGRES_TRANSACTION_OPTIONS + f' -c search_path={schema}'})
+            'options': POSTGRES_TRANSACTION_OPTIONS + f' -c search_path={schema}'},
+            execution_options={'schema_translate_map': {'state': schema}})
         try:
             WriteClaimRecord.__table__.create(engine)
             barrier = Barrier(2)

@@ -10,6 +10,7 @@ class QueryExecution(Base):
     __table_args__ = (
         Index("ix_query_executions_started", "started_at"),
         Index("ix_query_executions_pattern_started", "query_fingerprint", "started_at"),
+        {"schema": "state"},
     )
     execution_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
     request_id: Mapped[UUID | None] = mapped_column(Uuid)

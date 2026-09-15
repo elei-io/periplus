@@ -69,6 +69,18 @@ class UpgradeCoordinationTests(unittest.TestCase):
         self.assertEqual(self.cluster.deployments['test-api']['spec']['replicas'], 0)
         self.assertEqual(self.cluster.scalers['test-crawler']['metadata']['annotations'][upgrade.PAUSE], '0')
 
+    def test_removed_runtime_blocks_setup_before_any_mutation(self):
+        self.cluster.running = [{
+            'metadata': {
+                'labels': {'app.kubernetes.io/component': 'removed-worker'},
+                'ownerReferences': [{'kind': 'ReplicaSet'}],
+            },
+            'status': {'phase': 'Running'},
+        }]
+        with self.assertRaisesRegex(RuntimeError, 'Drain the removed runtime'):
+            self.run_phase('stop')
+        self.assertEqual(self.cluster.changes, [])
+
     def test_operator_pause_is_preserved_before_any_mutation(self):
         self.cluster.scalers['test-crawler']['metadata']['annotations'][upgrade.PAUSE] = '3'
         with self.assertRaisesRegex(RuntimeError, 'operator-paused'):

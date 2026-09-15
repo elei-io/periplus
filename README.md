@@ -26,7 +26,7 @@ distinct API service tokens using `openssl rand -hex 32`.
 make sync
 make check
 make compose-up
-docker compose up -d --scale periplus-materializer=2
+docker compose up -d --scale periplus-ingestor=2
 ```
 
 Public application: http://localhost:8080. Admin: http://localhost:8081.
@@ -36,7 +36,7 @@ Admin credentials stay in its server-side gateway; public queries use a separate
 read-only ClickHouse account. Neither frontend connects directly to a database.
 
 The Python backend in `packages/periplus` supplies API, query, crawler, archive
-ingestor, materializer, setup and janitor roles. `periplus-admin` is the operator
+shared ingestor, setup and janitor roles. `periplus-admin` is the operator
 Vite app; `periplus-public` is the public Next.js app. Console, shell and SDK
 packages are HTTP clients. Use [the Python SDK](packages/periplus-python-sdk/README.md)
 or `npm run periplus -- 'SELECT capture_id FROM public_v1.capture LIMIT 10'`.

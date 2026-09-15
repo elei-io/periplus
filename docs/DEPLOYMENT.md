@@ -10,12 +10,12 @@ the initial historical rebuild remains unverified.
 See the [retained archive handoff](ARCHIVE_ADOPTION.md).
 
 Compose runs Postgres, NATS JetStream, raw S3, ClickHouse, setup, API, query,
-crawler, archive ingestor, materializer, janitor, admin and public. Configure the
+crawler, shared ingestor, janitor, admin and public. Configure the
 three API tokens and CDP endpoint in `.env` using `.env.example`, then:
 
 ```sh
 make compose-up
-docker compose up -d --scale periplus-materializer=2
+docker compose up -d --scale periplus-ingestor=2
 ```
 
 Admin: localhost:8081; public: localhost:8080; API: localhost:8000;
@@ -41,7 +41,7 @@ from a verified archive manifest, and prove query readiness before serving it.
 The destructive development migrations do not provide an old-data conversion
 bridge. The local cutover's one-time conversion evidence is outside runtime code.
 
-Ordinary parser changes need old and new materializer images concurrently until
+Ordinary parser changes need old and new ingestor images concurrently until
 the new candidate catches up and is published; see [REBUILDS.md](REBUILDS.md).
 An image rollback cannot undo control-schema changes. Explicit maintenance
 upgrades can use the chart's existing drain/setup coordination; preserve its
@@ -67,3 +67,42 @@ asynchronous resolver does not apply the pod search suffix to a short hostname;
 using `periplus-api` there caused gateway 502s despite healthy API pods. Compose
 continues to use its Docker service name. Unexpected gateway HTML is summarized
 as an HTTP status in the admin rather than rendered as raw error-page text.
+
+A public-view-only maintenance release may set `setup.refreshPublicViews: true`
+to install the current public contract on protected builds with compatible
+material columns. This changes view projections, never parsed material or build
+checkpoints. All query traffic must drain first through upgrade coordination.
+Keep `ingestor.image` pinned to the serving recipe: `public.sql` is included
+in the recipe hash, so replacing these workers would strand existing builds.
+Future rebuilds must use workers for their selected recipe; move that pin only
+as part of a planned rebuild. Recovery with preserved older software restores
+its older public contract; rerun the current maintenance setup to expose the
+current contract. Clear the refresh flag before any incompatible material change.
+
+## Shared-worker and Postgres namespace release
+
+This release moves the 19 existing application tables into `control` and `state`;
+`public.alembic_version` remains migration bookkeeping. It removes the separate
+materializer deployment, CLI role, health/metrics ports and image setting. The
+remaining `ingestor` deployment has ClickHouse writer credentials and handles
+imports, live projection and rebuilds. Set `ingestor.image` when pinning a recipe; the removed `materializer` values
+block is rejected by chart validation.
+
+This is a coordinated schema upgrade, not a rolling schema-compatible release.
+Before running setup, drain **every old runtime**, including the removed
+materializer deployment and its autoscaler. The new chart's target list no longer
+contains that removed role; coordination refuses to proceed if its old pods
+are still running. For Compose, stop the old stack, run setup with the
+new image, then start with `--remove-orphans`. For Helm, explicitly stop/remove the
+obsolete role before the maintenance upgrade; use `upgradeCoordination.enabled`
+for the remaining roles. Migrate before starting the new API/workers. Do not
+leave an older pinned ingestor image running against the newly named tables.
+
+Autoscaling stays disabled by default. The shared pool's optional ceiling is 16,
+with two fixed replicas initially. Sixteen is the historical shard concurrency
+per build, not a measured cluster capacity: requests reserve 0.5 CPU/1 GiB per pod,
+limits allow 2 CPU/4 GiB, plus rollout surge. Public queries, ClickHouse merges and
+other services need capacity too. Increase replicas gradually while measuring
+completed captures/second, source lag, ClickHouse merge pressure and query latency.
+Crawlers remain separate because CDP/network acquisition has different resource
+and politeness limits. Combining imports and projection alone does not create CPU.

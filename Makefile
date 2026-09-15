@@ -1,4 +1,4 @@
-.PHONY: sync check setup archive-verify api crawler ingestor materializer janitor db-revision compose-up compose-down compose-reset
+.PHONY: sync check setup archive-verify api crawler ingestor janitor db-revision compose-up compose-down compose-reset
 
 sync:
 	cd packages/periplus && uv sync
@@ -29,9 +29,6 @@ crawler:
 
 ingestor:
 	cd packages/periplus && uv run periplus-worker ingestor
-
-materializer:
-	cd packages/periplus && uv run periplus-worker materializer
 
 janitor:
 	cd packages/periplus && uv run periplus-worker janitor

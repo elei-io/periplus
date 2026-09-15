@@ -1,7 +1,8 @@
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 import unittest
-from sqlalchemy import create_engine, delete, select
+from sqlalchemy import delete, select
+from schema_fixture import create_engine
 from uuid import uuid4
 from sqlalchemy.orm import sessionmaker
 from periplus.crawl.runtime.frontier_models import AcquisitionRecord, FrontierControlRecord, InterestRecord

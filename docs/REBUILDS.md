@@ -10,7 +10,16 @@ ranges cover later arrivals. Pausing a build pauses historical scheduling only.
 The API creates a candidate with a recipe digest, target names and page size
 (1–128 captures). A matching worker preserves its source/lock bundle, creates the
 manifest and installs hidden tables/views. One planner per recipe publishes batch
-UUIDs; all workers running that recipe execute the shared queue.
+UUIDs; all ingestor replicas running that recipe execute the shared queue.
+
+Each replica has one material/import execution slot and a separate planner loop.
+An available material batch takes priority over an import step. An import already
+in progress finishes its bounded step before polling material work again. Live
+and historical ranges continue sharing the existing recipe queue; this change
+does not add strict priority between those two kinds of material batches. Under
+sustained material backlog, Common Crawl imports intentionally wait. Native
+capture admission remains governed by frontier controls and does not wait for
+materialization; pause or reduce crawling if raw-to-material lag is undesirable.
 
 There is at most one historical and one live batch per shard per build: 32
 outstanding records, independent of total corpus size. Workers record batch ID,
@@ -51,7 +60,7 @@ continue executing its old recipe. Never disable the recipe check to bypass this
 2. Start fresh Postgres, ClickHouse and NATS. Configure the archive read-only and
    use the software recipe recorded in the manifest.
 3. Run `periplus-setup --restore-manifest <repository-key>` once against the empty
-   control database, then start materializer workers. An exact retry with the same
+   control database, then start shared ingestor workers. An exact retry with the same
    bootstrap manifest is safe; conflicting restore intent is rejected.
 4. Wait until the serving build has a verification timestamp and zero source lag
    and failed batches. Initial bootstrap queries may otherwise see partial recovery.

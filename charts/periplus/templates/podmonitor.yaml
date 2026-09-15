@@ -1,6 +1,6 @@
 {{- if .Values.podMonitor.enabled }}
 {{- $root := . }}
-{{- range $role := list "api" "query" "crawler" "ingestor" "materializer" "janitor" }}
+{{- range $role := list "api" "query" "crawler" "ingestor" "janitor" }}
 ---
 apiVersion: monitoring.coreos.com/v1
 kind: PodMonitor

@@ -1,5 +1,5 @@
 """Disposable operational database; no test touches configured control state."""
-from sqlalchemy import create_engine
+from schema_fixture import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 from unittest.mock import patch

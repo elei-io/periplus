@@ -31,6 +31,7 @@ class CollectionRecord(Base):
             "status IN ('active', 'paused', 'settled')", name="ck_collection_status"
         ),
         Index("ix_collection_service", "status", "service_after", "service_expires_at"),
+        {"schema": "control"},
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -82,10 +83,11 @@ class CollectionResultRecord(Base):
     __table_args__ = (
         Index("ix_collection_results_page", "collection_id", "recorded_at", "id"),
         Index("ix_collection_results_capture", "capture_id"),
+        {"schema": "control"},
     )
     id: Mapped[UUID] = mapped_column(primary_key=True)
     collection_id: Mapped[UUID] = mapped_column(
-        ForeignKey("collections.id"), index=True
+        ForeignKey("control.collections.id"), index=True
     )
     capture_id: Mapped[UUID] = mapped_column()
     requested_url: Mapped[str] = mapped_column(Text)

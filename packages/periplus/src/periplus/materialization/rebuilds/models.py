@@ -19,6 +19,7 @@ from periplus.platform.postgres.base import Base
 
 class BuildRecord(Base):
     __tablename__ = "material_builds"
+    __table_args__ = {"schema": "state"}
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
     phase: Mapped[str] = mapped_column(String(24))
     recipe: Mapped[str] = mapped_column(String(64))
@@ -39,8 +40,9 @@ class BuildRecord(Base):
 
 class RangeRecord(Base):
     __tablename__ = "material_build_ranges"
+    __table_args__ = {"schema": "state"}
     build_id: Mapped[UUID] = mapped_column(
-        ForeignKey("material_builds.id"), primary_key=True
+        ForeignKey("state.material_builds.id"), primary_key=True
     )
     shard: Mapped[int] = mapped_column(Integer, primary_key=True)
     upper: Mapped[int] = mapped_column(BigInteger)
@@ -53,9 +55,10 @@ class BatchRecord(Base):
     __tablename__ = "material_batches"
     __table_args__ = (
         UniqueConstraint("build_id", "shard", "lane", name="uq_material_active_range"),
+        {"schema": "state"},
     )
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
-    build_id: Mapped[UUID] = mapped_column(ForeignKey("material_builds.id"), index=True)
+    build_id: Mapped[UUID] = mapped_column(ForeignKey("state.material_builds.id"), index=True)
     shard: Mapped[int] = mapped_column(Integer)
     lane: Mapped[str] = mapped_column(String(16))
     start: Mapped[int] = mapped_column(BigInteger)
@@ -72,6 +75,7 @@ class BatchRecord(Base):
 
 class PublicationRecord(Base):
     __tablename__ = "material_publications"
+    __table_args__ = {"schema": "state"}
     api_version: Mapped[str] = mapped_column(String(32), primary_key=True)
-    build_id: Mapped[UUID] = mapped_column(ForeignKey("material_builds.id"))
+    build_id: Mapped[UUID] = mapped_column(ForeignKey("state.material_builds.id"))
     revision: Mapped[int] = mapped_column(Integer, default=0)

@@ -173,37 +173,37 @@ class ImportWorker:
         )
 
 
-async def run(*, stop: asyncio.Event, monitor: HealthMonitor, leases, client) -> None:
-    control = ImportControl(SessionLocal)
-    remote = CommonCrawlClient()
-    worker = ImportWorker(
-        control, remote, object_store_from_env(), ArchivePublisher(client=client)
-    )
-    try:
-        while not stop.is_set():
-            try:
-                # One provider import lane protects the public CC index from
-                # multiplied concurrency as ingestor replicas are added.
-                async with operation_leases(
-                    leases, ["common-crawl"], phase="archive-import", acquire_timeout=0
-                ) as guard:
-                    while not stop.is_set() and not guard.lost:
-                        jobs = await asyncio.to_thread(control.list, runnable=True)
-                        if not jobs:
-                            break
-                        await worker.step(jobs[0])
-                        monitor.subsystem_ready("archive-imports")
-                monitor.subsystem_ready("archive-imports")
-            except OperationLeaseUnavailable:
-                monitor.subsystem_ready("archive-imports")
-            except Exception:
-                log.exception("archive import control unavailable")
-                monitor.subsystem_unavailable(
-                    "archive-imports", "archive import control unavailable"
-                )
-            try:
-                await asyncio.wait_for(stop.wait(), timeout=2)
-            except TimeoutError:
-                pass
-    finally:
-        remote.close()
+class ImportLane:
+    """One bounded step, offered only when the shared material queue is idle."""
+
+    def __init__(self, *, leases, client, monitor: HealthMonitor):
+        self.leases, self.monitor = leases, monitor
+        self.control = ImportControl(SessionLocal)
+        self.remote = CommonCrawlClient()
+        self.worker = ImportWorker(
+            self.control,
+            self.remote,
+            object_store_from_env(),
+            ArchivePublisher(client=client),
+        )
+
+    async def step(self) -> None:
+        try:
+            # Global provider pacing is independent of the replica's work slot.
+            async with operation_leases(
+                self.leases, ["common-crawl"], phase="archive-import", acquire_timeout=0
+            ) as guard:
+                jobs = await asyncio.to_thread(self.control.list, runnable=True)
+                if jobs and not guard.lost:
+                    await self.worker.step(jobs[0])
+            self.monitor.subsystem_ready("archive-imports")
+        except OperationLeaseUnavailable:
+            self.monitor.subsystem_ready("archive-imports")
+        except Exception:
+            log.exception("archive import control unavailable")
+            self.monitor.subsystem_unavailable(
+                "archive-imports", "archive import control unavailable"
+            )
+
+    def close(self) -> None:
+        self.remote.close()

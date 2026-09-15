@@ -1,7 +1,7 @@
 """Parallel ranges, live progress, exact ownership and publication fences."""
 from datetime import UTC, datetime, timedelta
 import unittest
-from sqlalchemy import create_engine
+from schema_fixture import create_engine
 from sqlalchemy.orm import sessionmaker
 from periplus.materialization.rebuilds.models import BuildRecord, RangeRecord, BatchRecord, PublicationRecord
 from periplus.materialization.rebuilds.control import BuildControl, RebuildConflict, BOOTSTRAP_ID

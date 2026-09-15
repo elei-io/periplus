@@ -29,7 +29,7 @@ class FrontierPostgresTests(unittest.TestCase):
         self.schema = "frontier_test_" + uuid4().hex
         with self.base_engine.begin() as connection:
             connection.execute(text(f'CREATE SCHEMA "{self.schema}"'))
-        self.engine = self.base_engine.execution_options(schema_translate_map={None: self.schema})
+        self.engine = self.base_engine.execution_options(schema_translate_map={"control": self.schema, "state": self.schema})
         for table in TABLES:
             table.create(self.engine)
         self.sessions = sessionmaker(self.engine, expire_on_commit=False)
@@ -81,7 +81,8 @@ class FrontierPostgresTests(unittest.TestCase):
         from periplus.crawl.runtime.frontier_models import FrontierOutboxRecord
         for operation in ('publish', 'retry'):
             with self.subTest(operation=operation):
-                self.collection()
+                admission = self.store.admit(self.collection(), f'https://{operation}.example/', self.context, self.policy)
+                self.store.dispatch(admission.acquisition_id)
                 delivery = self.store.claim_outbox(batch=1)[0]
                 entered = Event()
                 def finish():
@@ -106,15 +107,14 @@ class FrontierPostgresTests(unittest.TestCase):
 
     def test_default_delivery_claims_and_release_use_database_clock(self):
         from unittest.mock import patch
-        self.collection()
+        admission = self.store.admit(self.collection(), 'https://clock.example/', self.context, self.policy)
+        self.store.dispatch(admission.acquisition_id)
         with patch('periplus.crawl.runtime.frontier_store.datetime') as clock:
             clock.now.side_effect = AssertionError('process clock must not own delivery timing')
             self.assertIsNotNone(self.store.claim_collection())
             delivery = self.store.claim_outbox(batch=1)[0]
             self.assertTrue(self.store.mark_outbox_published(delivery))
-            receipts = self.store.claim_ingestion_receipts()
-            self.assertEqual(len(receipts), 1)
-            self.assertTrue(self.store.defer_ingestion_receipt(receipts[0], 'pending'))
+            self.assertEqual(self.store.claim_outbox(), [])
             self.assertEqual(self.store.expired_dispatches(), ())
 
     def test_collection_release_cannot_accept_a_claim_expired_during_row_lock_wait(self):
@@ -330,8 +330,8 @@ class FrontierPostgresTests(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=4) as pool:
             batches = list(pool.map(claim, range(4)))
         messages = [delivery.message_id for batch in batches for delivery in batch]
-        self.assertEqual(len(messages), 36)
-        self.assertEqual(len(set(messages)), 36)
+        self.assertEqual(len(messages), 12)
+        self.assertEqual(len(set(messages)), 12)
         self.assertEqual(self.store.claim_outbox(now=self.now), [])
 
     def test_puback_then_marker_commit_failure_replays_without_second_attempt(self):
@@ -360,10 +360,10 @@ class FrontierPostgresTests(unittest.TestCase):
             session.flush()
             raise RuntimeError('injected publication marker commit failure')
 
-        def failing_mark(delivery):
+        def failing_mark(delivery, **kwargs):
             event.listen(self.sessions.class_, 'before_commit', fail_commit)
             try:
-                return mark(delivery, now=self.now)
+                return mark(delivery, now=self.now, **kwargs)
             finally:
                 event.remove(self.sessions.class_, 'before_commit', fail_commit)
 
@@ -386,7 +386,7 @@ class FrontierPostgresTests(unittest.TestCase):
         self.assertNotEqual(replay.claim_token, capture.claim_token)
         with patch.object(self.store, 'claim_outbox', return_value=[replay]), \
                 patch.object(self.store, 'mark_outbox_published',
-                             side_effect=lambda delivery: mark(delivery, now=later)):
+                             side_effect=lambda delivery, **kwargs: mark(delivery, now=later, **kwargs)):
             asyncio.run(publish_outbox_once(self.store, jetstream, ingestion))
         self.assertEqual(jetstream.publish.await_args_list[0], jetstream.publish.await_args_list[1])
         self.assertFalse(self.store.begin_attempt(work.acquisition_id, work.generation, now=later))
@@ -496,25 +496,13 @@ class FrontierPostgresTests(unittest.TestCase):
             interests = list(session.scalars(select(InterestRecord)))
         self.assertEqual(sorted(interest.budget_state for interest in interests), ["consumed", "reserved"])
 
-    def test_receipt_workers_claim_disjoint_published_evidence(self):
+    def test_customer_intent_does_not_create_corpus_mirror_deliveries(self):
+        from periplus.crawl.control.collections.models import CollectionRecord
         for _ in range(6):
             self.collection()
-        for delivery in self.store.claim_outbox(now=self.now):
-            self.store.mark_outbox_published(delivery, now=self.now)
-        gate = Barrier(2)
-        def claim(_):
-            gate.wait(timeout=10)
-            return self.store.claim_ingestion_receipts(batch=4, now=self.now)
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            batches = list(pool.map(claim, range(2)))
-        messages = [delivery.message_id for batch in batches for delivery in batch]
-        self.assertEqual(len(messages), 6)
-        self.assertEqual(len(set(messages)), 6)
-        self.assertEqual(self.store.claim_ingestion_receipts(now=self.now), [])
-
-
-
-
+        self.assertEqual(self.store.claim_outbox(now=self.now), [])
+        with self.sessions() as session:
+            self.assertEqual(len(list(session.scalars(select(CollectionRecord)))), 6)
 
     def test_exclusion_change_and_capture_start_serialize_without_cancelling_started_work(self):
         from periplus.crawl.control.collections.frontier_controls import ReplaceFrontierSettings
@@ -623,7 +611,7 @@ class FrontierPostgresTests(unittest.TestCase):
         self.assertEqual(sorted(results), [0, 1])
         self.assertEqual(self.store.control_view().retained_acquisitions, 0)
 
-    def test_concurrent_collection_cleanup_requires_durable_handoff_and_deletes_once(self):
+    def test_concurrent_collection_cleanup_prunes_execution_once_and_keeps_intent(self):
         from datetime import timedelta
         from periplus.crawl.runtime.frontier_models import FrontierOutboxRecord
         identity = self.collection()
@@ -638,9 +626,9 @@ class FrontierPostgresTests(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=2) as pool:
             results = list(pool.map(cleanup, range(2)))
         self.assertEqual(sorted(results), [0, 1])
-        self.assertIsNone(self.store.get_collection(identity))
+        self.assertIsNotNone(self.store.get_collection(identity).execution_pruned_at)
 
-    def test_concurrent_schedule_ticks_create_one_request_and_outbox(self):
+    def test_concurrent_schedule_ticks_create_one_request_without_corpus_outbox(self):
         from datetime import timedelta
         from periplus.crawl.control.schedules.models import RequestDefinitionRecord, ScheduleRecord
         from periplus.crawl.control.schedules.schemas import DefinitionInput, ScheduleInput
@@ -663,5 +651,8 @@ class FrontierPostgresTests(unittest.TestCase):
         self.assertEqual(schedules.schedules()[0].execution_count, 1)
         with self.sessions() as session:
             rows = list(session.scalars(select(FrontierOutboxRecord)))
-            self.assertEqual(len(rows), 1)
-            self.assertEqual(rows[0].payload['specification']['origin']['schedule_id'], str(schedule.id))
+            self.assertEqual(rows, [])
+            from periplus.crawl.control.collections.models import CollectionRecord
+            collections = list(session.scalars(select(CollectionRecord)))
+            self.assertEqual(len(collections), 1)
+            self.assertEqual(collections[0].spec['origin']['schedule_id'], str(schedule.id))
