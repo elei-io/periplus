@@ -35,6 +35,7 @@ class FrontierControlRecord(Base):
             name="ck_frontier_counts",
         ),
         CheckConstraint("dispatch_limit > 0", name="ck_frontier_limits"),
+        {"schema": "state"},
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, default=1)
@@ -69,6 +70,7 @@ class AcquisitionRecord(Base):
         ),
         Index("ix_frontier_eligible", "status", "eligible_at", "created_at"),
         Index("ix_frontier_recent", "capture_key", "status", "completed_at"),
+        {"schema": "state"},
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -137,14 +139,15 @@ class InterestRecord(Base):
             "status IN ('queued', 'awaiting_result', 'selecting', 'settled', 'cancelled')",
             name="ck_frontier_interest_status",
         ),
+        {"schema": "state"},
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     collection_id: Mapped[UUID] = mapped_column(
-        ForeignKey("collections.id"), index=True
+        ForeignKey("control.collections.id"), index=True
     )
     acquisition_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("frontier_acquisitions.id"), index=True
+        ForeignKey("state.frontier_acquisitions.id"), index=True
     )
     completed_status: Mapped[str | None] = mapped_column(Text)
     completed_evidence: Mapped[bool] = mapped_column(default=False)
@@ -167,14 +170,15 @@ class FrontierOutboxRecord(Base):
         Index(
             "ix_frontier_outbox_ready", "published_at", "not_before", "claim_expires_at"
         ),
+        {"schema": "state"},
     )
 
     message_id: Mapped[str] = mapped_column(Text, primary_key=True)
     acquisition_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("frontier_acquisitions.id"), index=True
+        ForeignKey("state.frontier_acquisitions.id"), index=True
     )
     collection_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("collections.id"), index=True
+        ForeignKey("control.collections.id"), index=True
     )
     kind: Mapped[str] = mapped_column(Text)
     payload: Mapped[dict[str, Any]] = mapped_column(json_type)

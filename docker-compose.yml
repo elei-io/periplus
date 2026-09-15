@@ -280,34 +280,6 @@ services:
           "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9092/healthz', timeout=2).read()",
         ]
     environment:
-      <<:
-        [
-          *periplus-control-environment,
-          *periplus-nats-environment,
-          *periplus-repository-environment,
-        ]
-    depends_on:
-      periplus-setup:
-        condition: service_completed_successfully
-      periplus-nats:
-        condition: service_healthy
-    restart: unless-stopped
-
-  periplus-materializer:
-    <<: *periplus-core
-    command: periplus-worker materializer
-    deploy:
-      replicas: 1
-    healthcheck:
-      <<: *periplus-healthcheck
-      test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9096/healthz', timeout=2).read()",
-        ]
-    environment:
       PERIPLUS_CLICKHOUSE_QUERY_USER: ${PERIPLUS_CLICKHOUSE_QUERY_USER:-periplus_query}
       <<:
         [

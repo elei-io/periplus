@@ -26,6 +26,7 @@ class ContentPolicy(Base):
         UniqueConstraint("scheme", "host", "path_prefix", "path_mode", name="uq_content_policies_match"),
         Index("ix_content_policies_enabled", "enabled"),
         Index("ix_content_policies_host", "host"),
+        {"schema": "control"},
     )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)

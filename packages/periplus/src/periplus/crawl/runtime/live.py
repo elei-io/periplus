@@ -260,7 +260,7 @@ def count_attempt_starts(session, *, since: datetime, until: datetime) -> int:
     return session.scalar(text("""
         WITH recent AS (
             SELECT id, attempt_started_at, prior_results, uncertain_attempts, outcome
-            FROM frontier_acquisitions
+            FROM state.frontier_acquisitions
             WHERE attempt_count > 0 AND (completed_at IS NULL OR completed_at >= :since)
         ), starts AS (
             SELECT id, attempt_started_at AS started_at FROM recent

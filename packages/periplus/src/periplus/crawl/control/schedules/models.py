@@ -9,6 +9,7 @@ from periplus.platform.postgres.types import json_type, utc_now
 
 class RequestDefinitionRecord(Base):
     __tablename__ = "request_definitions"
+    __table_args__ = {"schema": "control"}
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     name: Mapped[str] = mapped_column(Text)
     specification: Mapped[dict] = mapped_column(json_type)
@@ -19,9 +20,12 @@ class RequestDefinitionRecord(Base):
 
 class ScheduleRecord(Base):
     __tablename__ = "request_schedules"
-    __table_args__ = (Index("ix_request_schedule_due", "enabled", "next_at"),)
+    __table_args__ = (
+        Index("ix_request_schedule_due", "enabled", "next_at"),
+        {"schema": "control"},
+    )
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    definition_id: Mapped[UUID] = mapped_column(ForeignKey("request_definitions.id"))
+    definition_id: Mapped[UUID] = mapped_column(ForeignKey("control.request_definitions.id"))
     configuration: Mapped[dict] = mapped_column(json_type)
     enabled: Mapped[bool] = mapped_column(default=True)
     version: Mapped[int] = mapped_column(default=1)

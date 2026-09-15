@@ -8,7 +8,7 @@ Public access controls are independent and unchanged.
 ## Collection
 
 Scrape each worker pod's metrics port separately (crawler 9090, ingestor 9091,
-materializer 9093, janitor 9094), API /metrics and query /metrics on their private
+janitor 9094), API /metrics and query /metrics on their private
 HTTP ports. Use Kubernetes endpoint/pod discovery, not a load-balanced service IP.
 Query /metrics is unauthenticated like API metrics: never route it through public
 ingress. Public /api/metrics requires the existing query-service Bearer credential;

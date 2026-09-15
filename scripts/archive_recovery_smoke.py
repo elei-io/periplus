@@ -98,6 +98,8 @@ def run():
     compose = [
         "docker",
         "compose",
+        "--project-name",
+        "periplus-recovery-" + sha256(str(output).encode()).hexdigest()[:12],
         "-f",
         str(ROOT / "tests/integration/archive-recovery/compose.yaml"),
     ]
@@ -152,17 +154,17 @@ def run():
     command("down", "--volumes", "--remove-orphans")
     command("up", "-d", "postgres", "clickhouse", "nats")
     command("run", "--rm", "setup")
-    assert pg("SELECT count(*) FROM collections") == "0"
+    assert pg("SELECT count(*) FROM control.collections") == "0"
     assert ch("SELECT count() FROM material.captures") == "0"
     # Four events per batch makes ownership and restart progress observable.
-    pg("UPDATE material_builds SET page_size=4")
+    pg("UPDATE state.material_builds SET page_size=4")
     command("up", "-d", "--no-deps", "--scale", "worker=2", "worker")
     workers = command("ps", "-q", "worker").splitlines()
     deadline = time.monotonic() + 90
     owner = None
     while time.monotonic() < deadline:
         active = pg(
-            "SELECT worker_id FROM material_batches WHERE status='running' LIMIT 1"
+            "SELECT worker_id FROM state.material_batches WHERE status='running' LIMIT 1"
         )
         if active:
             owner = next((worker for worker in workers if worker[:12] in active), None)
@@ -175,12 +177,12 @@ def run():
     subprocess.run(["docker", "kill", owner], check=True, capture_output=True)
     report(stage="worker_killed_during_claim", container=owner[:12])
     time.sleep(2)
-    assert int(pg("SELECT count(*) FROM material_batches WHERE owner IS NOT NULL")) > 0
+    assert int(pg("SELECT count(*) FROM state.material_batches WHERE owner IS NOT NULL")) > 0
     command("up", "-d", "--no-deps", "--scale", "worker=2", "worker")
     deadline = time.monotonic() + 750
     while time.monotonic() < deadline:
         state = pg(
-            "SELECT phase||':'||coalesce(blocker,'')||':'||(verified_at IS NOT NULL)::text FROM material_builds"
+            "SELECT phase||':'||coalesce(blocker,'')||':'||(verified_at IS NOT NULL)::text FROM state.material_builds"
         )
         if state == "serving::true":
             break
@@ -196,8 +198,8 @@ def run():
     assert (
         ch(f"SELECT count() FROM material.captures WHERE capture_id='{retired}'") == "0"
     )
-    assert pg("SELECT count(*) FROM collection_results") == "0"
-    assert pg("SELECT count(*) FROM collections") == "0"
+    assert pg("SELECT count(*) FROM control.collection_results") == "0"
+    assert pg("SELECT count(*) FROM control.collections") == "0"
     assert (
         ch(
             "SELECT count() FROM (SELECT capture_id,count() AS n FROM material.captures GROUP BY capture_id HAVING n!=1)"
@@ -237,9 +239,9 @@ def run():
             time.sleep(1)
         raise AssertionError(label)
     candidate=control(f"i=c.create(2,{key!r}); b=c.get(i); c.change(i,b.revision,paused=True); print(i)").splitlines()[-1]
-    until(lambda:pg(f"SELECT phase FROM material_builds WHERE id='{candidate}'")=='building','candidate preparation')
+    until(lambda:pg(f"SELECT phase FROM state.material_builds WHERE id='{candidate}'")=='building','candidate preparation')
     time.sleep(3)
-    historical=pg(f"SELECT sum(cursor) FROM material_build_ranges WHERE build_id='{candidate}'")
+    historical=pg(f"SELECT sum(cursor) FROM state.material_build_ranges WHERE build_id='{candidate}'")
     live_id=UUID(int=999999)
     live_body=RawHtmlRepository(archive.store).put('<html><body><h1>Live during backfill</h1></body></html>',
         source_url='https://recovery.invalid/live',visit_id=live_id,observed_at=datetime.now(UTC),content_type='text/html')
@@ -250,14 +252,14 @@ def run():
     archive.commit(live_capture)  # Deliberately publish no NATS notification.
     database='material_'+UUID(candidate).hex
     until(lambda:ch(f"SELECT count() FROM {database}.captures WHERE capture_id='{live_id}'")=='1','live work while history paused')
-    assert pg(f"SELECT sum(cursor) FROM material_build_ranges WHERE build_id='{candidate}'")==historical
+    assert pg(f"SELECT sum(cursor) FROM state.material_build_ranges WHERE build_id='{candidate}'")==historical
     report(stage='paused_history_live_capture_without_notification',build=candidate)
     broken=captures[str(UUID(int=900200))]
     body_path=output/'archive'/broken.payload.object_key
     original=body_path.read_bytes()
     body_path.unlink()
     control(f"c.action(UUID({candidate!r}),'resume')")
-    until(lambda:int(pg(f"SELECT count(*) FROM material_batches WHERE build_id='{candidate}' AND status='failed'"))>0,'missing payload must fail')
+    until(lambda:int(pg(f"SELECT count(*) FROM state.material_batches WHERE build_id='{candidate}' AND status='failed'"))>0,'missing payload must fail')
     rejected=inspect(f"from uuid import UUID; from periplus.materialization.rebuilds.control import BuildControl,RebuildConflict\ntry: BuildControl().action(UUID({candidate!r}),'activate')\nexcept RebuildConflict: print('blocked')")
     assert rejected.splitlines()[-1]=='blocked'
     body_path.write_bytes(b'corrupt')
@@ -268,30 +270,30 @@ def run():
     control(f"c.action(UUID({candidate!r}),'retry')")
     # Read failure may retain an exact claim until its safe expiry. Exercise the
     # ordinary retry path with its real clock, without deleting claims manually.
-    until(lambda:pg(f"SELECT phase FROM material_builds WHERE id='{candidate}'")=='ready','repaired batch retry',seconds=750)
+    until(lambda:pg(f"SELECT phase FROM state.material_builds WHERE id='{candidate}'")=='ready','repaired batch retry',seconds=750)
     control(f"c.action(UUID({candidate!r}),'activate')")
-    assert pg("SELECT build_id FROM material_publications WHERE api_version='public_v1'")==candidate
+    assert pg("SELECT build_id FROM state.material_publications WHERE api_version='public_v1'")==candidate
     assert int(ch(f'SELECT count() FROM query_{UUID(candidate).hex}.capture'))==actual+1
     report(stage='missing_and_corrupt_payload_blocked_then_repaired',build=candidate)
     cancelled=control(f"i=c.create(1,{key!r}); b=c.get(i); c.change(i,b.revision,paused=True); print(i)").splitlines()[-1]
-    until(lambda:pg(f"SELECT phase FROM material_builds WHERE id='{cancelled}'")=='building','cancel candidate preparation')
+    until(lambda:pg(f"SELECT phase FROM state.material_builds WHERE id='{cancelled}'")=='building','cancel candidate preparation')
     control(f"c.action(UUID({cancelled!r}),'cancel')")
-    assert pg("SELECT build_id FROM material_publications WHERE api_version='public_v1'")==candidate
+    assert pg("SELECT build_id FROM state.material_publications WHERE api_version='public_v1'")==candidate
     command('stop','worker')
-    pg(f"UPDATE material_builds SET drain_after=now() WHERE id='{cancelled}'")
+    pg(f"UPDATE state.material_builds SET drain_after=now() WHERE id='{cancelled}'")
     command('up','-d','--no-deps','--scale','worker=2','worker')
-    until(lambda:pg(f"SELECT phase FROM material_builds WHERE id='{cancelled}'")=='cancelled','cancelled target reclamation')
+    until(lambda:pg(f"SELECT phase FROM state.material_builds WHERE id='{cancelled}'")=='cancelled','cancelled target reclamation')
     assert ch(f"SELECT count() FROM system.databases WHERE name='material_{UUID(cancelled).hex}'")=='0'
     replacement=control(f"print(c.create(128,{key!r}))").splitlines()[-1]
-    until(lambda:pg(f"SELECT phase FROM material_builds WHERE id='{replacement}'")=='ready','replacement build')
+    until(lambda:pg(f"SELECT phase FROM state.material_builds WHERE id='{replacement}'")=='ready','replacement build')
     control(f"c.action(UUID({replacement!r}),'activate')")
     assert int(ch(f'SELECT count() FROM query_{UUID(replacement).hex}.capture'))==actual+1
     command('stop','worker')
-    pg("UPDATE material_builds SET drain_after=now() WHERE phase='draining'")
+    pg("UPDATE state.material_builds SET drain_after=now() WHERE phase='draining'")
     command('up','-d','--no-deps','--scale','worker=2','worker')
-    until(lambda:pg("SELECT phase FROM material_builds WHERE id='00000000-0000-0000-0000-000000000001'")=='retired','previous target reclamation')
+    until(lambda:pg("SELECT phase FROM state.material_builds WHERE id='00000000-0000-0000-0000-000000000001'")=='retired','previous target reclamation')
     assert ch("SELECT count() FROM system.databases WHERE name='material'")=='0'
-    assert pg('SELECT count(*) FROM collections')=='0'
+    assert pg('SELECT count(*) FROM control.collections')=='0'
     report(stage='cancellation_publication_and_physical_reclamation_verified',cleanup_clock='accelerated_only_after_all_workers_stopped',serving=replacement)
     (output/'lifecycle-result.json').write_text(json.dumps({'status':'passed','serving':replacement,'captures':actual+1},indent=2))
 

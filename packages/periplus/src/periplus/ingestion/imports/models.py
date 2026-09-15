@@ -8,6 +8,7 @@ from periplus.platform.postgres.base import Base
 
 class ImportRecord(Base):
     __tablename__ = "archive_imports"
+    __table_args__ = {"schema": "state"}
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
     specification: Mapped[dict] = mapped_column(JSON)
     progress: Mapped[dict] = mapped_column(JSON)

@@ -51,24 +51,37 @@ direct-reference reads or archive-only sequential verification. See [STORAGE.md]
 
 ## Postgres
 
+`control` groups customer intent, results and editable policies. `state` groups
+execution, retries, checkpoints, publication and short-lived diagnostics. No
+`staging` schema or Postgres copy of derived material is installed. Workers write
+bounded, verified batches directly to ClickHouse.
+
+These are ownership boundaries, not instructions to truncate `state`: pending
+outbox evidence, import accounting and retirement work must complete under their
+existing lifecycle rules. `state.frontier_control` intentionally keeps its settings
+and counters under one row lock; splitting that lock is a separate crawler change.
+
+
 | Tables | Durable meaning |
 | --- | --- |
-| `collections` | Requested selection, budgets, status, outcome and progress |
-| `collection_results` | Interest/result ID, collection ID, capture ID, requested URL, mode, outcome, selection context, recorded/archived timestamps and archive position |
-| `request_definitions`, `request_schedules` | Editable recurring intent |
-| `domain_policies`, `content_policies`, `frontier_control` | Crawl behavior and current controls |
-| `frontier_acquisitions`, `frontier_interests` | Bounded current shared frontier and per-collection execution |
-| `frontier_outbox` | Frozen operational capture record until its archive publication is confirmed |
-| `archive_imports` | Operator import request, source checkpoints, cancellation, retries and accounting |
-| `material_builds` | Build/recipe/target IDs, phase, pause, blocker, manifest and verification cut |
-| `material_build_ranges` | Sixteen historical and live cursor pairs per build |
-| `material_batches` | Outstanding bounded batches, lease owner, attempt and error; deleted on completion |
-| `material_publications` | `public_v1 -> serving build`, revision |
-| `write_claims` | Expiring exact capture/body write exclusion |
-| `capture_retirements` | Requested/completed archive tombstone work and errors |
-| `public_access`, `query_executions` | Product access settings and private query execution history |
+| `control.collections` | Requested selection, budgets, status, outcome and progress |
+| `control.collection_results` | Interest/result ID, collection ID, capture ID, requested URL, mode, outcome, selection context, recorded/archived timestamps and archive position |
+| `control.request_definitions`, `control.request_schedules` | Editable recurring intent |
+| `control.domain_policies`, `control.content_policies` | Editable crawl policies |
+| `state.frontier_control` | One frontier lock row: live counts, dispatch settings, pause and cleanup cursors |
+| `state.frontier_acquisitions`, `state.frontier_interests` | Bounded current shared frontier and per-collection execution |
+| `state.frontier_outbox` | Frozen operational capture record until its archive publication is confirmed |
+| `state.archive_imports` | Operator import request, source checkpoints, cancellation, retries and accounting |
+| `state.material_builds` | Build/recipe/target IDs, phase, pause, blocker, manifest and verification cut |
+| `state.material_build_ranges` | Sixteen historical and live cursor pairs per build |
+| `state.material_batches` | Outstanding bounded batches, lease owner, attempt and error; deleted on completion |
+| `state.material_publications` | `public_v1 -> serving build`, revision |
+| `state.write_claims` | Expiring exact capture/body write exclusion |
+| `state.capture_retirements` | Requested/completed archive tombstone work and errors |
+| `control.public_access` | Product access settings |
+| `state.query_executions` | Private query execution history, retained for 30 days |
 
-`collection_results` replaces both analytical fulfillments and acquisition-reason
+`control.collection_results` replaces both analytical fulfillments and acquisition-reason
 mirrors. It describes the business relationship to a capture. The frozen dispatch
 participants remain temporary operational context on the shared acquisition.
 Janitor cleanup removes completed frontier execution without deleting the

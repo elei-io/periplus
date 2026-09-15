@@ -49,7 +49,7 @@ class QueryHistoryStore:
             session.execute(text("SET LOCAL statement_timeout = '5s'"))
             def rows(sql):
                 return [dict(row) for row in session.execute(text(sql), params).mappings()]
-            base = f"FROM query_executions WHERE {FILTER}"
+            base = f"FROM state.query_executions WHERE {FILTER}"
             summary = rows(f"SELECT {STATS} {base}")[0]
             trend = rows(f"SELECT date_trunc('day', started_at AT TIME ZONE 'UTC') AS day, {STATS} {base} GROUP BY 1 ORDER BY 1")
             patterns = rows(f"""SELECT coalesce(query_fingerprint, 'unparsed') AS pattern_key,
@@ -67,7 +67,7 @@ class QueryHistoryStore:
             failures = rows(f"SELECT coalesce(error_code, outcome) AS name, count(*) AS count {base} AND outcome <> 'success' GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 20")
             def usage(column):
                 return rows(f"""SELECT value AS name, count(*) AS count FROM
-                    (SELECT {column} FROM query_executions WHERE {FILTER}) q,
+                    (SELECT {column} FROM state.query_executions WHERE {FILTER}) q,
                     LATERAL jsonb_array_elements_text(q.{column}) value
                     GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 20""")
             return Dashboard(summary=summary, trend=trend, patterns=patterns, plans=plans, pattern_count=count,
@@ -78,7 +78,7 @@ class QueryHistoryStore:
         with self.sessions.begin() as session:
             session.execute(text("SET LOCAL statement_timeout = '5s'"))
             rows = list(session.execute(text(f"""SELECT execution_id, started_at, source, outcome, error_code,
-                elapsed_ms, result_rows, truncated FROM query_executions WHERE {FILTER}
+                elapsed_ms, result_rows, truncated FROM state.query_executions WHERE {FILTER}
                 ORDER BY started_at DESC, execution_id DESC LIMIT 51 OFFSET :offset"""),
                 dict(since=now-timedelta(days=days), until=now, source=source, operation=operation, pattern=pattern, offset=offset)).mappings())
             return ExecutionPage(executions=[dict(r) for r in rows[:50]], has_more=len(rows)>50)

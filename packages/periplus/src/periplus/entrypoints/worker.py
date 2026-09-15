@@ -15,14 +15,12 @@ from periplus.platform.config import get_str
 WorkerRole = Literal[
     "crawler",
     "ingestor",
-    "materializer",
     "janitor",
 ]
 
 WORKER_MODULES: dict[WorkerRole, str] = {
     "crawler": "periplus.crawl.crawler",
     "ingestor": "periplus.ingestion.ingestor",
-    "materializer": "periplus.materialization.materializer",
     "janitor": "periplus.operations.janitor",
 }
 

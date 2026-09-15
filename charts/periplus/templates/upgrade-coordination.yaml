@@ -2,7 +2,7 @@
 {{- $root := . }}
 {{- $name := printf "%s-upgrade" (include "periplus.fullname" .) }}
 {{- $targets := dict }}
-{{- range $role := list "api" "query" "crawler" "ingestor" "materializer" "janitor" "admin" "public" }}
+{{- range $role := list "api" "query" "crawler" "ingestor" "janitor" "admin" "public" }}
 {{- $settings := index $root.Values $role }}
 {{- $component := $role }}
 {{- $replicas := 1 }}
@@ -11,7 +11,7 @@
 {{- $replicas = $settings.autoscaling.minReplicas }}
 {{- end }}
 {{- $image := include "periplus.coreImage" $root }}
-{{- if eq $role "materializer" }}{{- $image = include "periplus.materializerImage" $root }}{{- end }}
+{{- if eq $role "ingestor" }}{{- $image = include "periplus.ingestorImage" $root }}{{- end }}
 {{- if eq $role "admin" }}{{- $image = include "periplus.adminImage" $root }}{{- end }}
 {{- if eq $role "public" }}{{- $image = include "periplus.publicImage" $root }}{{- end }}
 {{- $_ := set $targets (printf "%s-%s" (include "periplus.fullname" $root) $component) (dict "role" $component "replicas" $replicas "image" $image) }}

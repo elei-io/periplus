@@ -155,28 +155,11 @@ crawler:
       cpu: 2
       memory: 4Gi
 ingestor:
-  autoscaling:
-    enabled: false
-    minReplicas: 2
-    maxReplicas: 10
-    metric: cpu
-    threshold: '70'
-    query: ''
-    behavior: {}
-  replicas: 2
-  resources:
-    requests:
-      cpu: 500m
-      memory: 1Gi
-    limits:
-      cpu: 2
-      memory: 4Gi
-materializer:
   image: "" # Pin the serving recipe independently during public-only releases.
   autoscaling:
     enabled: false
     minReplicas: 2
-    maxReplicas: 10
+    maxReplicas: 16
     metric: cpu
     threshold: '70'
     query: ''

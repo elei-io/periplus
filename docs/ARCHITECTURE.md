@@ -16,7 +16,7 @@ Common Crawl import -> ingestor ---------------+-> immutable raw archive
                                                         |
                                              optional NATS notification
                                                         |
-                         archive journal -> bounded materializer batches
+                         archive journal -> shared ingestor (bounded batches)
                                                         |
                                                 ClickHouse material
                                                         |
@@ -26,16 +26,19 @@ Common Crawl import -> ingestor ---------------+-> immutable raw archive
 The raw capture says what was observed: URL, observation time and precision,
 HTTP status, completeness, content identity and source provenance. It does not
 say who requested it, what they paid, which retry ran, or which collection it
-fulfilled. Those associations belong in Postgres `collection_results`.
+fulfilled. Those associations belong in Postgres `control.collection_results`.
 A WARC source record carries archival provenance, not customer intent.
 
 The crawler writes payload bytes before freezing its capture in the transactional
 frontier outbox. Its relay commits the capture into the raw journal and announces
 it through NATS. Collection traversal does not wait for ClickHouse. Ingestors
-process recoverable archive-import jobs; they use the same archive publisher.
+share one execution slot between live/historical projection and recoverable
+archive-import steps; imports use the same archive publisher. A replica polls the
+material queue first and admits one import step only on an idle poll. The global
+Common Crawl lease still bounds provider traffic across every replica.
 There is no separate ClickHouse ingestion/evidence database.
 
-Materializers reconcile raw journal positions even when every notification is
+Shared ingestors reconcile raw journal positions even when every notification is
 missing. One planner per software recipe schedules bounded historical and live
 ranges. Every matching worker can execute batches. Postgres checkpoints advance
 only after verified ClickHouse writes. Completed batch records are removed;

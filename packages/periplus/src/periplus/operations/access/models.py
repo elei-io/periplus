@@ -5,6 +5,7 @@ from periplus.platform.postgres.types import json_type
 
 class PublicAccessRecord(Base):
     __tablename__ = "public_access"
+    __table_args__ = {"schema": "control"}
     id: Mapped[int] = mapped_column(primary_key=True)
     version: Mapped[int] = mapped_column(default=1)
     configuration: Mapped[dict] = mapped_column(json_type)

@@ -32,22 +32,8 @@ ingestor:
   autoscaling:
     enabled: true
     minReplicas: 2
-    maxReplicas: 10
-    metric: cpu
-    threshold: "70"
-  resources:
-    requests:
-      cpu: "1"
-      memory: 1Gi
-    limits:
-      cpu: "2"
-      memory: 4Gi
-      ephemeral-storage: 4Gi
-materializer:
-  autoscaling:
-    enabled: true
-    minReplicas: 2
-    maxReplicas: 10
+    # Ceiling only: account for ClickHouse/query headroom and 16 history shards.
+    maxReplicas: 16
     metric: cpu
     threshold: "70"
   resources:

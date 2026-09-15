@@ -55,7 +55,7 @@ services:
       clickhouse: {condition: service_healthy}
   worker:
     <<: *runtime
-    command: [periplus-worker, materializer]
+    command: [periplus-worker, ingestor]
     depends_on:
       setup: {condition: service_completed_successfully}
   inspect:

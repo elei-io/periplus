@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from periplus.crawl.control.domain_policies.service import ensure_default_domain_policy
 
-from sqlalchemy import create_engine
+from schema_fixture import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 

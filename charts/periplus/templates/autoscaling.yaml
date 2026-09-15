@@ -1,5 +1,5 @@
 {{- $root := . -}}
-{{- range $role := list "api" "admin" "public" "crawler" "ingestor" "materializer" "query" }}
+{{- range $role := list "api" "admin" "public" "crawler" "ingestor" "query" }}
 {{- $settings := index $root.Values $role }}
 {{- $scaling := $settings.autoscaling }}
 {{- if $scaling.enabled }}

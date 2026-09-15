@@ -21,7 +21,6 @@ _alive_metric = Gauge("periplus_worker_alive", "Worker event loop heartbeat is f
 WorkerRole = Literal[
     "crawler",
     "ingestor",
-    "materializer",
     "janitor",
 ]
 
