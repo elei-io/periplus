@@ -14,7 +14,7 @@ from periplus.materialization.dom.nodes import parse_document
 from periplus.materialization.dom.links import links_from_elements
 from periplus.materialization.html_content import html_content
 from periplus.platform.clickhouse import ClickHouseClient
-from periplus.platform.clickhouse.client import EncodedRow
+from periplus.platform.clickhouse.client import EncodedRow, INSERT_TARGET_BYTES
 from periplus.retention.identities import write_claims
 
 MAX_INPUT_BYTES = 96 * 1024 * 1024
@@ -279,38 +279,17 @@ class MaterialStore:
         completed = self.complete_many(captures)
         identities = {c.payload.document_id for c in captures if c.payload and c.capture_id not in completed}
         missing = identities - self.digests("html_documents", list(identities)).keys()
-        group, size = [], 0
+        groups, group, size = [], [], 0
         for capture in captures:
             payload = capture.payload
             amount = payload.byte_length if payload and payload.document_id in missing else 0
             if group and size + amount > BATCH_INPUT_BYTES:
-                self._materialize_group(group, archive, completed, missing)
+                groups.append(group)
                 group, size = [], 0
             group.append(capture)
             size += amount
         if group:
-            self._materialize_group(group, archive, completed, missing)
-        completed = self.complete_many(captures)
-        for capture in captures:
-            if not archive.retired(capture.capture_id) and capture.capture_id not in completed:
-                raise RuntimeError("Capture verification failed")
-        return len(captures)
-
-    def _materialize_group(self, captures, archive, completed, missing):
-        # One source claim transaction protects a byte-bounded group. The owned
-        # copy outlives the read claim; publication has its own fresh fence.
-        needs = [c for c in captures if c.payload and c.payload.document_id in missing
-                 and c.capture_id not in completed
-                 and c.payload.media_type.lower() in ("text/html", "application/xhtml+xml")]
-        sources = {}
-        if needs:
-            with write_claims({"content": [c.payload.content_id for c in needs]}):
-                for capture in needs:
-                    try:
-                        if not archive.retired(capture.capture_id) and capture.payload.document_id not in sources:
-                            sources[capture.payload.document_id] = self._read_source(capture, archive)
-                    except Exception as exc:
-                        raise MaterialInputError(capture.capture_id, exc) from exc
+            groups.append(group)
         documents, prepared, size = {}, [], 0
 
         def flush():
@@ -341,6 +320,43 @@ class MaterialStore:
             prepared.clear()
             size = 0
 
+        for group in groups:
+            # Do not retain ordinary output while decoding an oversized source.
+            if any(c.payload and c.payload.byte_length > BATCH_INPUT_BYTES for c in group):
+                flush()
+            for capture, document, row in self._project_group(group, archive, completed, missing, documents):
+                amount = row_bytes(row) + (row_bytes(document) if document else 0)
+                if prepared and size + amount > INSERT_TARGET_BYTES:
+                    flush()
+                if document is not None:
+                    documents[capture.payload.document_id] = document
+                prepared.append((capture, row))
+                size += amount
+                if size >= INSERT_TARGET_BYTES:
+                    flush()
+                del document, row
+        flush()
+        completed = self.complete_many(captures)
+        for capture in captures:
+            if not archive.retired(capture.capture_id) and capture.capture_id not in completed:
+                raise RuntimeError("Capture verification failed")
+        return len(captures)
+
+    def _project_group(self, captures, archive, completed, missing, documents):
+        # Source ownership is bounded independently of the pending output block.
+        needs = [c for c in captures if c.payload and c.payload.document_id in missing
+                 and c.payload.document_id not in documents
+                 and c.capture_id not in completed
+                 and c.payload.media_type.lower() in ("text/html", "application/xhtml+xml")]
+        sources = {}
+        if needs:
+            with write_claims({"content": [c.payload.content_id for c in needs]}):
+                for capture in needs:
+                    try:
+                        if not archive.retired(capture.capture_id) and capture.payload.document_id not in sources:
+                            sources[capture.payload.document_id] = self._read_source(capture, archive)
+                    except Exception as exc:
+                        raise MaterialInputError(capture.capture_id, exc) from exc
         for capture in captures:
             try:
                 if archive.retired(capture.capture_id):
@@ -349,15 +365,10 @@ class MaterialStore:
                 if capture.capture_id in completed:
                     continue
                 document, row = self.project(capture, archive, documents, sources, missing)
-                prepared.append((capture, row))
-                size += row_bytes(row) + (
-                    row_bytes(document) if document else 0
-                )
-                if size >= 8 * 1024 * 1024:
-                    flush()
+                yield capture, document, row
+                del document, row
             except Exception as exc:
                 raise MaterialInputError(capture.capture_id, exc) from exc
-        flush()
 
     def retire(self, capture: Capture, archive: Archive) -> None:
         if not archive.retired(capture.capture_id):

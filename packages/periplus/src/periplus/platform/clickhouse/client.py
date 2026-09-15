@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, JsonValue, SecretStr, field_validato
 
 from periplus.platform.config import get_str
 
-INSERT_TARGET_BYTES = 8 * 1024 * 1024
+INSERT_TARGET_BYTES = 96 * 1024 * 1024
 MAX_INSERT_BYTES = 128 * 1024 * 1024
 
 
