@@ -1,5 +1,6 @@
 """Evaluate due schedules and create ordinary requests atomically."""
 from sqlalchemy import select
+from periplus.operations.access.service import AccessDenied
 from periplus.crawl.control.collections.models import CollectionRecord
 from periplus.crawl.control.schedules.models import RequestDefinitionRecord, ScheduleRecord
 from periplus.crawl.control.schedules.schemas import ScheduleInput, aware, next_tick
@@ -33,7 +34,11 @@ def create_due_requests(store, now=None):
                 row.last_result = "crawler_paused"
                 continue
             definition = session.get(RequestDefinitionRecord, row.definition_id)
-            request = store._launch(session, control, definition, row)
+            try:
+                request = store._launch(session, control, definition, row)
+            except AccessDenied as exc:
+                row.last_result = exc.detail["code"]
+                continue
             row.last_request_id = request.id
             row.execution_count += 1
             row.last_result = "created"

@@ -36,3 +36,12 @@ test("submission accepts expanded policy choices within backend bounds", () => {
   assert.equal(spec.max_depth, 5)
   assert.equal(spec.page_limit, 5000)
 })
+
+
+test("a bare website works without changing explicit URL paths or queries", () => {
+  assert.deepEqual(publicCollectionSpec({...base, input: " example.com/articles?x=1 "}).seed_urls, ["https://example.com/articles?x=1"])
+  assert.deepEqual(publicCollectionSpec({...base, input: "http://example.com/a?x=1"}).seed_urls, ["http://example.com/a?x=1"])
+  for (const input of ["not a website", "ftp://example.com", "https://name:secret@example.com", "https://"]) {
+    assert.throws(() => publicCollectionSpec({...base, input}), /website URL/)
+  }
+})

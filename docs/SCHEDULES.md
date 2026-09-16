@@ -52,7 +52,28 @@ service and freezes its result through the existing selection checkpoint.
 Postgres owns only editable `request_definitions` and `request_schedules` control
 state, including the count, next tick, latest request identity and latest tick
 result. There is no schedule-execution history table or new queue. Durable request
-intent and outcomes continue to belong to ClickHouse.
+intent, result associations and outcomes belong to Postgres.
+
+## Public repeat collections
+
+The public collection form defaults to one run. Advanced options offer “Check
+for updates” every day, week, or 30 days. `POST /collections` accepts an optional
+`repeat_interval_seconds` of 86400, 604800 or 2592000. The first collection,
+reusable definition, interval schedule and consumed public admission allowance
+commit in one transaction. The first run counts as execution one; the next run
+is anchored one interval after acceptance. Deterministic definition/schedule IDs
+from the submitted collection ID make identical retries reuse the same work.
+Reusing an ID with changed intent or cadence is rejected. After the initial
+collection retires, its retained schedule still prevents resubmission from
+creating another recurring request.
+
+Each scheduled public run rechecks current public access, allowed request options,
+queue capacity and rate limits in the creation transaction. Denied ticks are
+recorded as skipped and considered again at the next interval. Existing overlap,
+politeness and downtime rules apply; this is a repeat cadence, not a guarantee
+that every page is refreshed by a deadline. Operators manage these definitions
+and pause schedules through the existing admin interface. Public callers cannot
+edit or pause other users’ schedules.
 
 ## Replacing background exploration
 

@@ -59,6 +59,12 @@ export interface CollectionQueue {
 }
 
 export interface CurrentCollection extends CollectionBase {
+  schedule: {
+    enabled: boolean
+    interval_seconds: number | null
+    next_at: string | null
+    last_request_id: string | null
+  } | null
   queue: CollectionQueue
   last_progress_at: string | null
   admission: AdmissionWait
@@ -117,8 +123,11 @@ export interface CollectionHistoryPage {
 export type CollectionChange =
   { action: "pause" | "resume" | "cancel" } | { priority: number }
 
+export type RepeatInterval = 86400 | 604800 | 2592000
+
 export interface CreateCollection {
   id: string
   specification: CollectionSpec
   priority: number
+  repeat_interval_seconds?: RepeatInterval | null
 }

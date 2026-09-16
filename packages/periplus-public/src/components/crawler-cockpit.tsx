@@ -49,7 +49,12 @@ export function CrawlerCockpit({ initialId, initialDescription }: { initialId?: 
   const seenRows = useRef(new Set<string>())
   const [reading, setReading] = useState(false)
   const requestForm = useRef<HTMLElement>(null)
-  useEffect(() => { if (form) requestForm.current?.focus() }, [form])
+  useEffect(() => {
+    if (form) {
+      requestForm.current?.focus({ preventScroll: true })
+      requestForm.current?.scrollIntoView({ block: "start" })
+    }
+  }, [form])
   const live = useQuery({ queryKey: ["crawler-live"], queryFn: ({ signal }) => read<LiveView>("/api/frontier/live", signal), refetchInterval: motion ? 5000 : false, retry: false })
   const captures = useCaptureStream(true, motion && !reading)
   const current = live.data?.current

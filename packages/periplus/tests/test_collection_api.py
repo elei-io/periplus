@@ -29,6 +29,9 @@ class CollectionApiTests(unittest.TestCase):
         from periplus.operations.access.models import PublicAccessRecord
         from periplus.operations.access.schemas import AccessPolicy
         PublicAccessRecord.__table__.create(self.engine)
+        from periplus.crawl.control.schedules.models import RequestDefinitionRecord, ScheduleRecord
+        RequestDefinitionRecord.__table__.create(self.engine)
+        ScheduleRecord.__table__.create(self.engine)
         self.sessions = sessionmaker(self.engine, expire_on_commit=False)
         with self.sessions.begin() as session:
             session.add(FrontierControlRecord(id=1))
@@ -486,3 +489,104 @@ class CollectionApiTests(unittest.TestCase):
         self.assertEqual(replay.status_code, 201, replay.text)
         self.assertEqual(replay.json()["specification"]["deadline_at"], value["specification"]["deadline_at"])
         self.assertEqual(self.client.post("/collections", json=self.payload | {"specification": payload["specification"] | {"deadline_at": value["specification"]["deadline_at"]}}).status_code, 422)
+
+    def test_repeat_submission_is_atomic_idempotent_and_runs_immediately(self):
+        from sqlalchemy import select
+        from periplus.crawl.control.schedules.models import RequestDefinitionRecord, ScheduleRecord
+        from periplus.crawl.control.schedules.schemas import aware
+        from periplus.operations.access.models import PublicAccessRecord
+        payload = self.payload | {"repeat_interval_seconds": 604800}
+        first = self.client.post("/collections", json=payload)
+        self.assertEqual(first.status_code, 201, first.text)
+        replay = self.client.post("/collections", json=payload)
+        self.assertEqual(replay.status_code, 201, replay.text)
+        self.assertEqual(first.json()["specification"], replay.json()["specification"])
+        self.assertEqual(first.json()["schedule"]["interval_seconds"], 604800)
+        self.assertTrue(first.json()["schedule"]["enabled"])
+        self.assertIsNotNone(first.json()["schedule"]["next_at"])
+        with self.sessions() as session:
+            definition, = session.scalars(select(RequestDefinitionRecord))
+            schedule, = session.scalars(select(ScheduleRecord))
+            self.assertEqual(definition.specification["request_class"], "public")
+            self.assertIsNone(definition.specification["origin"])
+            self.assertEqual(schedule.execution_count, 1)
+            self.assertEqual(str(schedule.last_request_id), payload["id"])
+            self.assertEqual((aware(schedule.next_at) - aware(schedule.last_tick_at)).total_seconds(), 604800)
+            self.assertEqual(first.json()["specification"]["origin"]["schedule_id"], str(schedule.id))
+            self.assertEqual(session.get(PublicAccessRecord, 1).windows["crawl"]["count"], 1)
+        self.assertEqual(self.client.post("/collections", json=payload | {"repeat_interval_seconds": 86400}).status_code, 422)
+        self.assertEqual(self.client.post("/collections", json=self.payload).status_code, 422)
+        changed = payload | {"specification": {"seed_urls": ["https://other.example/"]}}
+        self.assertEqual(self.client.post("/collections", json=changed).status_code, 422)
+
+    def test_repeat_runs_recheck_public_policy_and_preserve_overlap_suppression(self):
+        from datetime import timedelta
+        from periplus.crawl.control.collections.models import CollectionRecord
+        from periplus.crawl.control.schedules.service import ScheduleStore
+        from periplus.crawl.runtime.request_schedules import create_due_requests
+        from periplus.operations.access.service import AccessStore
+        from periplus.operations.access.schemas import AccessPolicy
+        payload = self.payload | {"repeat_interval_seconds": 86400}
+        self.assertEqual(self.client.post("/collections", json=payload).status_code, 201)
+        store = ScheduleStore(self.sessions)
+        from periplus.crawl.control.schedules.schemas import aware
+        due = aware(store.schedules()[0].next_at)
+        self.assertEqual(create_due_requests(store, due), [])
+        self.assertEqual(store.schedules()[0].last_result, "previous_request_active")
+        with self.sessions.begin() as session:
+            session.get(CollectionRecord, UUID(payload["id"])).status = "settled"
+        policy = AccessPolicy()
+        policy.crawl.enabled = False
+        access = AccessStore(self.sessions)
+        access.save(policy, 1)
+        self.assertEqual(self.client.post("/collections", json=payload).status_code, 201)
+        self.assertEqual(create_due_requests(store, due + timedelta(days=1)), [])
+        self.assertEqual(store.schedules()[0].last_result, "feature_disabled")
+        self.assertEqual(store.schedules()[0].execution_count, 1)
+        policy.crawl.enabled = True
+        access.save(policy, 2)
+        second, = create_due_requests(store, due + timedelta(days=2))
+        self.assertNotEqual(str(second), payload["id"])
+        self.assertEqual(store.schedules()[0].execution_count, 2)
+        with self.sessions() as session:
+            self.assertEqual(session.get(CollectionRecord, second).spec["request_class"], "public")
+
+    def test_repeat_creation_rejects_invalid_or_disallowed_intent_without_schedule(self):
+        from sqlalchemy import select
+        from periplus.crawl.control.schedules.models import RequestDefinitionRecord, ScheduleRecord
+        from periplus.operations.access.service import AccessStore
+        from periplus.operations.access.schemas import AccessPolicy
+        for interval in (0, 60, 3600, -1, 86401):
+            response = self.client.post("/collections", json=self.payload | {"repeat_interval_seconds": interval})
+            self.assertEqual(response.status_code, 422, response.text)
+        payload = self.payload | {"repeat_interval_seconds": 86400}
+        self.assertEqual(self.client.post("/collections", json=payload | {"priority": 1}).status_code, 403)
+        self.assertEqual(self.client.post("/collections", json=payload | {"specification": {"seed_urls": ["https://example.com/"], "page_limit": 999}}).status_code, 422)
+        policy = AccessPolicy()
+        policy.crawl.enabled = False
+        AccessStore(self.sessions).save(policy, 1)
+        self.assertEqual(self.client.post("/collections", json=payload).status_code, 403)
+        with self.sessions() as session:
+            self.assertEqual(list(session.scalars(select(RequestDefinitionRecord))), [])
+            self.assertEqual(list(session.scalars(select(ScheduleRecord))), [])
+
+    def test_failed_repeat_commit_rolls_back_first_run_definition_schedule_and_quota(self):
+        from sqlalchemy import event, select
+        from periplus.crawl.control.collections.models import CollectionRecord
+        from periplus.crawl.control.collections.schemas import CollectionSpec
+        from periplus.crawl.control.schedules.models import RequestDefinitionRecord, ScheduleRecord
+        from periplus.crawl.control.schedules.service import ScheduleStore
+        from periplus.operations.access.models import PublicAccessRecord
+        def fail_commit(session):
+            raise RuntimeError("write failed")
+        event.listen(self.sessions, "before_commit", fail_commit)
+        try:
+            with self.assertRaisesRegex(RuntimeError, "write failed"):
+                ScheduleStore(self.sessions).create_recurring(UUID(self.payload["id"]), CollectionSpec(
+                    seed_urls=("https://example.com/",), request_class="public"), 86400)
+        finally:
+            event.remove(self.sessions, "before_commit", fail_commit)
+        with self.sessions() as session:
+            for model in (CollectionRecord, RequestDefinitionRecord, ScheduleRecord):
+                self.assertEqual(list(session.scalars(select(model))), [])
+            self.assertEqual(session.get(PublicAccessRecord, 1).windows, {})

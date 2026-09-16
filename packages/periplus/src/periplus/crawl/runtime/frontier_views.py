@@ -27,12 +27,20 @@ from periplus.crawl.runtime.collection_queue import (
 )
 
 
+class CollectionScheduleView(BaseModel):
+    enabled: bool
+    interval_seconds: int | None
+    next_at: datetime | None
+    last_request_id: UUID | None
+
+
 class CollectionView(BaseModel):
     source: Literal["current"] = "current"
     id: UUID
     specification: CollectionExecutionSpec
     status: Literal["active", "paused", "settled"]
     priority: int
+    schedule: CollectionScheduleView | None = None
     reserved_pages: int
     consumed_pages: int
     seeds_settled: bool
@@ -147,6 +155,27 @@ def collection_views(
             )
             for record in records
         }
+        schedule_ids = {
+            view.specification.origin.schedule_id
+            for view in views.values()
+            if view.specification.origin and view.specification.origin.schedule_id
+        }
+        if schedule_ids:
+            from periplus.crawl.control.schedules.models import ScheduleRecord
+            from periplus.crawl.control.schedules.schemas import ScheduleInput
+
+            schedules = {
+                row.id: row
+                for row in session.scalars(select(ScheduleRecord).where(ScheduleRecord.id.in_(schedule_ids)))
+            }
+            for view in views.values():
+                origin = view.specification.origin
+                row = schedules.get(origin.schedule_id) if origin else None
+                if row is not None:
+                    cadence = ScheduleInput.model_validate(row.configuration)
+                    view.schedule = CollectionScheduleView(enabled=row.enabled,
+                        interval_seconds=cadence.interval_seconds, next_at=_aware(row.next_at) if row.next_at else None,
+                        last_request_id=row.last_request_id)
         for record in records:
             if record.spec.get("seed_description"):
                 state = DiscoveryState.model_validate(record.discovery_state or {})

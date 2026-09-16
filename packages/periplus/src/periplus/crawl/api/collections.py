@@ -39,6 +39,7 @@ class CreateCollection(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     specification: CollectionSpec
     priority: int = Field(default=0, ge=-10, le=10)
+    repeat_interval_seconds: Literal[86400, 604800, 2592000] | None = None
 
 
 class CollectionPage(BaseModel):
@@ -75,28 +76,36 @@ async def create(payload: CreateCollection, request: Request):
         )
     try:
         validate_follow_sql(spec.follow_sql)
-        existing = await asyncio.to_thread(
-            request.app.state.frontier.get_collection, payload.id
-        )
-        if existing is None:
-            if request.state.api_role == "public":
-                from periplus.operations.access.service import AccessStore
+        if payload.repeat_interval_seconds is not None:
+            from periplus.crawl.control.schedules.service import ScheduleStore
 
-                await asyncio.to_thread(
-                    AccessStore(request.app.state.frontier_sessions).admit,
-                    "crawl",
-                    specification=spec,
-                )
             await asyncio.to_thread(
-                request.app.state.frontier.create_collection,
-                payload.id,
-                spec,
-                priority=payload.priority,
+                ScheduleStore(request.app.state.frontier_sessions).create_recurring,
+                payload.id, spec, payload.repeat_interval_seconds, priority=payload.priority,
             )
-        elif CollectionExecutionSpec.model_validate(existing.spec).model_dump(
-            mode="json", exclude={"deadline_at"}
-        ) != spec.model_dump(mode="json"):
-            raise ValueError("collection identity reused with different intent")
+        else:
+            existing = await asyncio.to_thread(
+                request.app.state.frontier.get_collection, payload.id
+            )
+            if existing is None:
+                if request.state.api_role == "public":
+                    from periplus.operations.access.service import AccessStore
+
+                    await asyncio.to_thread(
+                        AccessStore(request.app.state.frontier_sessions).admit,
+                        "crawl",
+                        specification=spec,
+                    )
+                await asyncio.to_thread(
+                    request.app.state.frontier.create_collection,
+                    payload.id,
+                    spec,
+                    priority=payload.priority,
+                )
+            elif CollectionExecutionSpec.model_validate(existing.spec).model_dump(
+                mode="json", exclude={"deadline_at"}
+            ) != spec.model_dump(mode="json"):
+                raise ValueError("collection identity reused with different intent")
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     views = await _views(request, identity=payload.id)

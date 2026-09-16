@@ -1,7 +1,14 @@
 import type { CollectionSpec } from "../types/collections.ts"
 
 export function publicCollectionSpec(input: { kind: "url" | "description"; input: string; depth: number; scope: "internal" | "external" | "both"; maxPages: number; maxLinks: number; sections: string; retentionSeconds?: number | null }): CollectionSpec {
-  const value = input.input.trim()
+  let value = input.input.trim()
+  if (input.kind === "url" && value) {
+    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) value = `https://${value}`
+    try {
+      const url = new URL(value)
+      if (!["http:", "https:"].includes(url.protocol) || !url.hostname || url.username || url.password) throw new Error()
+    } catch { throw new Error("Enter a website URL, such as example.com or https://example.com/articles.") }
+  }
   if (!value) throw new Error("Provide a starting URL or description.")
   if (!Number.isInteger(input.depth) || input.depth < 0 || input.depth > 100 || !Number.isInteger(input.maxPages) || input.maxPages < 1 || input.maxPages > 100000) throw new Error("Request values exceed supported bounds.")
   if (input.retentionSeconds != null && (!Number.isInteger(input.retentionSeconds) || input.retentionSeconds < 1 || input.retentionSeconds > 315360000)) throw new Error("Choose a valid retention period.")
