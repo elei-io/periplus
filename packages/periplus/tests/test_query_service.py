@@ -59,7 +59,7 @@ class QueryServiceTests(unittest.TestCase):
         helpers = self.http.get('/query/helpers', headers=self.headers).json()
         self.assertEqual(helpers['helpers'], [])
         self.assertEqual({item['name'] for item in helpers['relations']},
-            {'public_v1.capture','public_v1.page','public_v1.html_element','public_v1.link','public_v1.html_json_ld'})
+            {'public_v1.capture','public_v1.page','public_v1.html_element','public_v1.link','public_v1.html_jsonld','public_v1.html_metadata'})
         for path in ('/query/helpers','/query/report','/graph-runs/'):
             self.assertEqual(self.http.post(path, headers=self.headers).status_code, 404)
         self.assertEqual(self.http.post('/query/exec', headers=self.headers,

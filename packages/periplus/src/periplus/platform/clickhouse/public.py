@@ -2,7 +2,7 @@
 from importlib.resources import files
 from periplus.platform.clickhouse.client import ClickHouseClient
 
-PUBLIC_RELATIONS = frozenset({"capture", "html_element", "link", "page", "html_json_ld"})
+PUBLIC_RELATIONS = frozenset({"capture", "html_element", "link", "page", "html_jsonld", "html_metadata"})
 
 
 def install_public_schema(client: ClickHouseClient, material: str = "material", database: str = "public_v1") -> None:

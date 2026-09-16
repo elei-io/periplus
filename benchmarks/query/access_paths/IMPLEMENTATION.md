@@ -16,7 +16,7 @@ same hexadecimal String representation as the physical sorting key.
 
 No custom query rewrite is added. The reader's native
 `optimize_functions_to_subcolumns=0` setting preserves the indexed class expression.
-Public `capture` includes canonical text and element count; `html_json_ld` exposes
+Public `capture` includes canonical text and element count; `html_jsonld` exposes
 structured script content. Canonical document storage stays internal.
 Existing element, capture, link and page columns retain their meanings.
 

@@ -90,7 +90,7 @@ class NativeAccessPathsTests(unittest.TestCase):
             for key in ('node_index','parent_index','subtree_end_index','sibling_index','depth','tag','namespace','attributes','text_direct'):
                 self.assertEqual(found[key], original[key])
         self.assertEqual(self.material.content(self.doc['document_id']), dict(self.doc))
-        self.assertEqual(self.query("SELECT name, types FROM public_v1.html_json_ld WHERE name='Blueair 3450i' AND has(types,'Product')"),
+        self.assertEqual(self.query("SELECT name, types FROM public_v1.html_jsonld WHERE name='Blueair 3450i' AND has(types,'Product')"),
                          [{'name': 'Blueair 3450i', 'types': ['Product']}])
         self.assertEqual(self.query("SELECT text FROM public_v1.html_element WHERE hasAll(splitByWhitespace(attributes['class']), ['usa-header','usa-header--basic']) SETTINGS optimize_functions_to_subcolumns=0"), [{'text':'猫😀 snow!'}])
         self.assertEqual(self.query("SELECT count() AS n FROM public_v1.html_element WHERE hasAll(splitByWhitespace(attributes['class']), ['hp-icon','beta']) SETTINGS optimize_functions_to_subcolumns=0"), [{'n':0}])
@@ -99,12 +99,27 @@ class NativeAccessPathsTests(unittest.TestCase):
         self.assertIn('classes', str(plan))
         for sql, index in (
             ("SELECT tag FROM {db}.html_element WHERE attributes['viewBox']='0 0 126.719 115.379'", 'attribute_values'),
-            ("SELECT name FROM {db}.html_json_ld WHERE name='Blueair 3450i'", 'name_exact'),
+            ("SELECT name FROM {db}.html_jsonld WHERE name='Blueair 3450i'", 'name_exact'),
             ("SELECT url FROM {db}.capture WHERE url='https://example.test/'", 'url_exact'),
             ("SELECT document_id FROM {db}.capture WHERE hasAllTokens(lower(text), ['snow'])", 'words'),
         ):
             plan = self.client.query('EXPLAIN indexes=1 '+sql.format(db=self.public)+' SETTINGS optimize_functions_to_subcolumns=0')
             self.assertIn(index, str(plan))
+
+    def test_metadata_preserves_repeated_meta_elements(self):
+        source = '<meta name="description" content="first"><meta name="description" content="second"><meta property="og:title" content="Example"><meta charset="UTF-8">'
+        nodes, elements = parse_document(source)
+        parsed = html_content(self.doc['document_id'], nodes, elements)
+        parsed.pop('content_sha256')
+        self.doc = output_row(dict(document_id=self.doc['document_id'], content_id='a' * 64,
+                                   representation='rendered_html', encoding='utf-8', **parsed))
+        self.material._insert_verified('html_documents', {self.doc['document_id']: self.doc})
+        self.assertEqual(self.query('SELECT count() AS n FROM public_v1.html_metadata'), [{'n': 0}])
+        self.publish_capture()
+        self.assertEqual(self.query("SELECT content FROM public_v1.html_metadata WHERE name='description' ORDER BY node_index"),
+                         [{'content': 'first'}, {'content': 'second'}])
+        self.assertEqual(self.query("SELECT content FROM public_v1.html_metadata WHERE property='og:title'"), [{'content': 'Example'}])
+        self.assertEqual(self.query("SELECT charset FROM public_v1.html_metadata WHERE charset!=''"), [{'charset': 'UTF-8'}])
 
     def test_conflicting_partial_output_never_publishes(self):
         insert_elements(self.client, self.database, [self.doc])
@@ -149,7 +164,7 @@ class NativeAccessPathsTests(unittest.TestCase):
         cases = [
             ("SELECT text FROM public_v1.html_element WHERE has(splitByWhitespace(attributes['class']),'hp-icon')", [['alpha']]),
             ("SELECT tag FROM public_v1.html_element WHERE attributes['viewBox']='0 0 126.719 115.379'", [['svg']]),
-            ("SELECT name FROM public_v1.html_json_ld WHERE has(types,'Product') AND name='Blueair 3450i'", [['Blueair 3450i']]),
+            ("SELECT name FROM public_v1.html_jsonld WHERE has(types,'Product') AND name='Blueair 3450i'", [['Blueair 3450i']]),
             ("SELECT url FROM public_v1.capture WHERE url='https://example.test/'", [['https://example.test/']]),
             ('SELECT count(*) FROM public_v1.capture', [[1]]),
         ]

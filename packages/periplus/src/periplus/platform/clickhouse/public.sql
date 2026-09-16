@@ -25,9 +25,17 @@ DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
 SELECT url FROM public_v1.capture
 UNION DISTINCT SELECT target_url AS url FROM public_v1.link;
 
-CREATE OR REPLACE VIEW public_v1.html_json_ld
+CREATE OR REPLACE VIEW public_v1.html_jsonld
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
 SELECT j.document_id AS document_id, j.node_index, j.json, j.types, j.name
 FROM material.json_ld j
 WHERE j.document_id IN (SELECT document_id FROM material.html_documents)
   AND j.document_id IN (SELECT document_id FROM material.captures WHERE completeness='complete');
+
+CREATE OR REPLACE VIEW public_v1.html_metadata
+DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
+SELECT document_id, node_index, attributes['name'] AS name,
+       attributes['property'] AS property, attributes['http-equiv'] AS http_equiv,
+       attributes['charset'] AS charset, attributes['content'] AS content
+FROM public_v1.html_element
+WHERE tag='meta' AND namespace='http://www.w3.org/1999/xhtml';

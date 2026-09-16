@@ -155,7 +155,7 @@ not as a second stored copy. Retiring the final reference removes the completion
 row before child rows, including unfinished writes that never produced a capture.
 This is an application publication protocol, not a cross-table ACID transaction.
 
-`public_v1.page`, `capture`, `link`, `html_element`, and `html_json_ld`
+`public_v1.page`, `capture`, `link`, `html_element`, `html_jsonld`, and `html_metadata`
 are the public SQL contract. The query API binds these names to one selected
 build. Captures expose complete parsed HTML; failed/non-HTML observations remain
 internal. Element/script views require a completed document and a complete
@@ -166,10 +166,16 @@ an explicit smaller counting surface; it does not rewrite the original query.
 `capture.text` is the canonical concatenated text; `html_element.text` is full
 subtree text, distinct from `text_direct`. Word indexes tokenize explicit
 `lower(text)` with `splitByNonAlpha`; class tokens preserve punctuation.
-`html_json_ld` preserves valid parsed JSON script text and extracts only top-level
+`html_jsonld` preserves valid parsed JSON script text and extracts only top-level
 string `name` and string/string-array `@type`. It does not expand JSON-LD contexts,
 walk `@graph`, or infer schema.org semantics. Invalid or excessively deep JSON
 remains accessible through the original script element/archive.
+
+`html_metadata` exposes one row per HTML `<meta>` element, with its document/node
+identity and `name`, `property`, `http_equiv`, `charset`, and `content` attributes.
+Repeated tags remain separate; absent attributes read as empty strings, matching
+the element attribute map. It is a view over visible elements, not another stored
+projection. Use `html_element` for titles and other head elements.
 
 The query-only account disables `optimize_functions_to_subcolumns` because that
 transformation defeated the measured class-expression text index. This is a native
