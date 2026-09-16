@@ -17,6 +17,7 @@ def recipe_files() -> dict[str, bytes]:
         *root.joinpath("materialization/dom").glob("*.py"),
         root / "materialization/html_content.py",
         root / "materialization/storage.py",
+        root / "materialization/element_rows.py",
         root / "materialization/schema.sql",
         root / "platform/clickhouse/public.sql",
         root / "ingestion/captures.py",

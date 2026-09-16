@@ -2,7 +2,7 @@
 from importlib.resources import files
 from periplus.platform.clickhouse.client import ClickHouseClient
 
-PUBLIC_RELATIONS = frozenset({"capture", "html_element", "link", "page"})
+PUBLIC_RELATIONS = frozenset({"capture", "html_element", "link", "page", "document", "json_ld"})
 
 
 def install_public_schema(client: ClickHouseClient, material: str = "material", database: str = "public_v1") -> None:
@@ -42,6 +42,7 @@ def install_query_user(client: ClickHouseClient) -> None:
         "max_memory_usage_for_user=4294967296 READONLY, "
         "max_threads=2 READONLY, max_memory_usage=536870912 READONLY, "
         "max_rows_to_read=10000000 READONLY, max_bytes_to_read=1073741824 READONLY, "
+        "optimize_functions_to_subcolumns=0 READONLY, "
         "output_format_json_quote_64bit_integers=0 READONLY, "
         "cancel_http_readonly_queries_on_client_close=1 READONLY, "
         "timeout_before_checking_execution_speed=0 READONLY")

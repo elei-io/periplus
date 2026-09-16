@@ -107,3 +107,19 @@ is written beneath `.artifacts/archive-recovery/`; generated files are not commi
 The canonical proof result and remaining scale limits belong in
 [VALIDATION.md](VALIDATION.md). Unit tests additionally cover journal races, lost
 responses, permanent failures, retry, pause, cancellation and publication fences.
+
+## Native element layout
+
+A build now contains documents, physical elements, JSON-LD scripts and captures.
+The writer retains exact content/capture claims across bounded inserts and final
+verification. A document row is written only after its element and JSON-LD rows
+are verified; public views keep completeness membership filters. An interrupted
+insert can leave private rows. Retry compares identities and deterministic
+projection digests, then inserts only missing rows; it does not rely on a bounded
+ClickHouse deduplication window. Retirement also reclaims unpublished child rows.
+
+Changing from the document-array recipe requires the normal hidden rebuild and
+publication lifecycle. Never refresh new views against old tables. Recipe routing
+continues to isolate old workers/builds. The archive contract and Postgres/NATS
+ownership do not change. The archive-only drill verifies element counts and unique
+identities as well as captures after worker death and recovery.

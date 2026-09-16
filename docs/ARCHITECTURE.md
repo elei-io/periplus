@@ -7,7 +7,7 @@ Periplus has three kinds of persistence and one delivery system:
 | Raw object archive | Immutable capture facts, payloads, tombstones, recovery manifests and software | Yes |
 | Postgres | Customer requests, policies, current execution, collection results, import/rebuild controls and publication | Fresh empty Postgres is sufficient for corpus recovery; restore its backup to recover the business |
 | NATS JetStream/KV | Work delivery, operation leases, crawler presence and domain permits | No; reconcile delivery from Postgres and the raw journal |
-| ClickHouse | Derived captures, documents and public SQL views | No; rebuild from the archive |
+| ClickHouse | Derived captures, documents, elements, JSON-LD and public SQL views | No; rebuild from the archive |
 
 ```text
 Collection / schedule -> Postgres frontier -> crawler -> CDP

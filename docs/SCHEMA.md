@@ -114,30 +114,72 @@ Each build owns one material database and one public-view database:
 ```text
 material[_<build>].captures
   capture_id UUID (sort key), evidence_digest,
-  requested_url, effective_url, captured_at, timestamp_precision,
+  requested_url, effective_url, url (normalized, exact text index), captured_at, timestamp_precision,
   http_status, completeness, content_id?, document_id?,
   payload sizes/representation/encoding/object key,
   source provider/dataset/record ID, archive_record_key,
   links Array(Tuple(node_index, raw_href, target_url)), output_digest
 
 material[_<build>].html_documents
-  document_id FixedString(32) (sort key), content_id,
-  representation, encoding, document_text,
-  elements Array(Tuple(node/parent/subtree/sibling/depth/tag/namespace/
-                       attributes/direct-text/text-offsets)), output_digest
+  document_id String (hexadecimal, sort key), content_id FixedString(32),
+  representation, encoding, document_text, element_count, output_digest
+  native word index on lower(document_text)
+
+material[_<build>].html_elements
+  (document_id String, node_index UInt32) (sort key),
+  parent/subtree/sibling/depth/tag/namespace, attributes,
+  text_direct, text_start, text_end, text (complete subtree), output_digest
+  native class-token, attribute-key/value, direct/subtree-word indexes
+
+material[_<build>].json_ld
+  (document_id String, node_index UInt32) (sort key),
+  json (original script text), types Array(String), name String, output_digest
+  native exact type/name indexes
 ```
 
-Both are [MergeTree tables](https://clickhouse.com/docs/engines/table-engines/mergetree-family/mergetree); sorting keys do not enforce uniqueness. URL and content projections on captures provide
-alternate access paths. Application-level exact claims, deterministic output and
-post-insert verification make retries safe; correctness does not depend on
-background deduplication, `FINAL`, or an eventual upsert merge.
+All four are MergeTree tables; sorting keys do not enforce uniqueness. Public
+hexadecimal document identities are stored in that same form, so ordinary equality
+predicates reach the sorting key without a `hex()` expression. Content/evidence
+and projection digests remain binary. Captures have native exact indexes on document ID and normalized URL. Small parts use the
+measured 256 MiB Compact-part threshold. No document-hash partitioning, custom
+dictionary service or broad projection copies are introduced.
 
-`public_v1.capture`, `html_element`, `link`, and `page` are the public SQL
-contract. The query API binds these names to one selected build. Captures expose
-complete parsed HTML; failed/non-HTML observations can exist internally without
-pretending to be complete public HTML. The table DDL is
-`packages/periplus/src/periplus/materialization/schema.sql`; views are in
-`platform/clickhouse/public.sql` within that package.
+Application-level exact claims, deterministic output and post-insert verification
+make retries safe. Elements and JSON-LD scripts are inserted first in bounded
+RowBinary blocks. Each row carries its complete document projection digest,
+which repeats and compresses across the document rather than adding an independent
+random hash per element. Retries verify existing node identities/digests and insert
+only missing rows. Only after both sets are verified is the document completion
+row inserted; captures follow. The element array exists only during parsing/reuse,
+not as a second stored copy. Retiring the final reference removes the completion
+row before child rows, including unfinished writes that never produced a capture.
+This is an application publication protocol, not a cross-table ACID transaction.
+
+`public_v1.capture`, `html_element`, `link`, `page`, `document`, and `json_ld`
+are the public SQL contract. The query API binds these names to one selected
+build. Captures expose complete parsed HTML; failed/non-HTML observations remain
+internal. Element/script views require a completed document and a complete
+capture. These membership checks deliberately remain: a whole-corpus element
+`COUNT(*)` is still not a metadata-only operation. `document.element_count` gives
+an explicit smaller counting surface; it does not rewrite the original query.
+
+`document.text` is the canonical concatenated text; `html_element.text` is full
+subtree text, distinct from `text_direct`. Word indexes tokenize explicit
+`lower(text)` with `splitByNonAlpha`; class tokens preserve punctuation.
+`json_ld` preserves valid parsed JSON script text and extracts only top-level
+string `name` and string/string-array `@type`. It does not expand JSON-LD contexts,
+walk `@graph`, or infer schema.org semantics. Invalid or excessively deep JSON
+remains accessible through the original script element/archive.
+
+The query-only account disables `optimize_functions_to_subcolumns` because that
+transformation defeated the measured class-expression text index. This is a native
+reader setting, not a Python SQL rewrite or a server-wide setting. Actual public
+SQL and native EXPLAIN selection are covered by local integration tests.
+
+The table DDL is `packages/periplus/src/periplus/materialization/schema.sql`;
+views are in `platform/clickhouse/public.sql` within that package. This schema
+requires a new recipe/build from the archive; do not install it over an existing
+build's tables. See [the implementation notes](../benchmarks/query/access_paths/IMPLEMENTATION.md).
 
 There is no `ingest.*`, collection, fulfillment, acquisition-reason, frontier,
 work queue or business table in ClickHouse.

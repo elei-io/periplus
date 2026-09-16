@@ -1,7 +1,7 @@
 # Query boundary
 
 Corpus SQL runs on ClickHouse through the isolated query service. The public
-namespace is `public_v1`: capture, html_element, link and page. The service obtains
+namespace is `public_v1`: capture, html_element, link, page, document and json_ld. The service obtains
 a short-lived publication binding through the authenticated control API and
 rewrites only that namespace to the selected build's view database. One request
 uses one binding. The reader account has SELECT on approved view databases, no
@@ -19,5 +19,7 @@ the query service and the same public catalogue.
 Classify performance issues as schema/layout, optimizer behavior, or both.
 Preserve the original business query as the acceptance case. A rewrite cannot
 hide an unsuitable public schema. Use `benchmarks/query/` and record physical
-work and resource bounds before claiming a scale improvement. The current HTML
-array layout and membership views have not been validated at billion-page scale.
+work and resource bounds before claiming a scale improvement. The native indexed element layout improves selective access, but membership views,
+part fanout and full subtree-text storage have not been validated at billion-page
+scale. Whole-corpus element counts retain their visibility-filter cost. See the
+[implementation notes](../benchmarks/query/access_paths/IMPLEMENTATION.md).

@@ -112,7 +112,7 @@ class RebuildRuntime:
         # All writes fail-stop in 300s, queries in 45s. The 610s drain includes
         # admission/lease slack; no new batch can claim a draining target.
         if build.query_database == "public_v1":
-            for relation in ("capture", "html_element", "link", "page"):
+            for relation in ("capture", "html_element", "link", "page", "document", "json_ld"):
                 self.client.execute(f"DROP VIEW IF EXISTS public_v1.{relation}")
         else:
             self.client.execute(f"DROP DATABASE IF EXISTS {build.query_database} SYNC")

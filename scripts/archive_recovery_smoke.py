@@ -31,6 +31,7 @@ def run():
     parser.add_argument(
         "--output", type=Path, default=ROOT / ".artifacts/archive-recovery/drill"
     )
+    parser.add_argument("--smoke-only", action="store_true", help="Verify fresh archive-only recovery without fault injection or lifecycle drill")
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -159,27 +160,29 @@ def run():
     # Four events per batch makes ownership and restart progress observable.
     pg("UPDATE state.material_builds SET page_size=4")
     command("up", "-d", "--no-deps", "--scale", "worker=2", "worker")
-    workers = command("ps", "-q", "worker").splitlines()
-    deadline = time.monotonic() + 90
-    owner = None
-    while time.monotonic() < deadline:
-        active = pg(
-            "SELECT worker_id FROM state.material_batches WHERE status='running' LIMIT 1"
-        )
-        if active:
-            owner = next((worker for worker in workers if worker[:12] in active), None)
-            if owner:
-                break
-        time.sleep(0.1)
-    if owner is None:
-        raise AssertionError("Did not observe an active worker claim")
-    killed_at = time.monotonic()
-    subprocess.run(["docker", "kill", owner], check=True, capture_output=True)
-    report(stage="worker_killed_during_claim", container=owner[:12])
-    time.sleep(2)
-    assert int(pg("SELECT count(*) FROM state.material_batches WHERE owner IS NOT NULL")) > 0
-    command("up", "-d", "--no-deps", "--scale", "worker=2", "worker")
-    deadline = time.monotonic() + 750
+    recovery_started_at = time.monotonic()
+    if not args.smoke_only:
+        workers = command("ps", "-q", "worker").splitlines()
+        deadline = time.monotonic() + 90
+        owner = None
+        while time.monotonic() < deadline:
+            active = pg(
+                "SELECT worker_id FROM state.material_batches WHERE status='running' LIMIT 1"
+            )
+            if active:
+                owner = next((worker for worker in workers if worker[:12] in active), None)
+                if owner:
+                    break
+            time.sleep(0.1)
+        if owner is None:
+            raise AssertionError("Did not observe an active worker claim")
+        recovery_started_at = time.monotonic()
+        subprocess.run(["docker", "kill", owner], check=True, capture_output=True)
+        report(stage="worker_killed_during_claim", container=owner[:12])
+        time.sleep(2)
+        assert int(pg("SELECT count(*) FROM state.material_batches WHERE owner IS NOT NULL")) > 0
+        command("up", "-d", "--no-deps", "--scale", "worker=2", "worker")
+    deadline = time.monotonic() + (120 if args.smoke_only else 750)
     while time.monotonic() < deadline:
         state = pg(
             "SELECT phase||':'||coalesce(blocker,'')||':'||(verified_at IS NOT NULL)::text FROM state.material_builds"
@@ -214,11 +217,18 @@ def run():
     assert {row["id"]: row["digest"] for row in actual_facts} == {
         key: value.digest for key, value in captures.items()
     }
+    element_count = int(ch("SELECT count() FROM material.html_elements"))
+    assert element_count == int(ch("SELECT sum(element_count) FROM material.html_documents"))
+    assert ch("SELECT count()-uniqExact((document_id,node_index)) FROM material.html_elements") == "0"
+    assert ch("SELECT count()-uniqExact((document_id,node_index)) FROM material.json_ld") == "0"
     report(
+        mode="smoke" if args.smoke_only else "fault_injection",
+        elements=element_count,
+        duplicate_elements=0,
         stage="archive_only_recovery_verified",
         captures=actual,
         original_captures=len(captures) - 255,
-        elapsed_after_kill_seconds=round(time.monotonic() - killed_at, 2),
+        recovery_seconds=round(time.monotonic() - recovery_started_at, 2),
         manifest=key,
         business_rows=0,
         duplicate_captures=0,
@@ -227,6 +237,8 @@ def run():
     (output / "result.json").write_text(
         json.dumps({"captures": actual, "manifest": key, "status": "passed"}, indent=2)
     )
+    if args.smoke_only:
+        return
     # Actual worker lifecycle on the same isolated stores. Timed crash recovery
     # above uses the full lease. Cleanup clocks below move only after all writers
     # stop; this tests physical reclamation without pretending to test its clock.

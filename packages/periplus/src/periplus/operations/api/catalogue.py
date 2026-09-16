@@ -180,7 +180,7 @@ async def download(
         rows = (
             await request.app.state.crawl_results._read(
                 f"SELECT object_key, storage_encoding, byte_length AS content_bytes, lower(hex(content_id)) AS digest "
-                f"FROM {database}.captures WHERE document_id=unhex({{digest:String}}) LIMIT 1",
+                f"FROM {database}.captures WHERE document_id={{digest:String}} LIMIT 1",
                 {"digest": document_id},
             )
         )["data"]

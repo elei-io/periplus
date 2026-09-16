@@ -2,6 +2,9 @@
 
 See [the measured ClickHouse baseline](CLICKHOUSE_BASELINE.md) for the completed
 retained-corpus run, feature gaps, physical work and next optimization order.
+The subsequent [native access-path experiment](access_paths/REPORT.md) compares
+document arrays, actual element tables, indexes and projections on growing real
+cohorts, including correctness, storage, writes and part-count overhead.
 
 The 24 original cases were recovered unchanged from local branch
 `codex/query-business-case-optimizations`; `origin.json` pins the source commit.

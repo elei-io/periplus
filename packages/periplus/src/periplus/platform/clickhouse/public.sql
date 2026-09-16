@@ -1,26 +1,20 @@
 CREATE DATABASE IF NOT EXISTS public_v1;
 CREATE OR REPLACE VIEW public_v1.capture
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
-WITH cutFragment(trimBoth(coalesce(nullIf(c.effective_url, ''), c.requested_url))) AS observed_url,
-     extract(observed_url, '^[Hh][Tt][Tt][Pp][Ss]?://[^/?#]+') AS authority,
-     replaceRegexpOne(lower(authority), '^(http://.+):80$|^(https://.+):443$', '\\1\\2') AS normalized_authority,
-     substring(observed_url, length(authority) + 1) AS suffix
-SELECT c.capture_id, concat(normalized_authority, if(suffix = '' OR startsWith(suffix, '?'), '/', ''), suffix) AS url,
+SELECT c.capture_id, c.url,
        c.captured_at, c.http_status AS http_status_code,
-       lower(hex(c.document_id)) AS document_id,
+       c.document_id AS document_id,
        c.byte_length, c.encoding
 FROM material.captures c INNER JOIN material.html_documents d ON c.document_id=d.document_id
 WHERE c.completeness='complete';
 CREATE OR REPLACE VIEW public_v1.html_element
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
-SELECT lower(hex(d.document_id)) AS document_id,
-       e.node_index AS node_index, e.parent_index AS parent_index,
-       e.subtree_end_index AS subtree_end_index, e.sibling_index AS sibling_index,
-       e.depth AS depth, e.tag AS tag, e.namespace AS namespace,
-       e.attributes AS attributes, e.text_direct AS text_direct,
-       substringUTF8(d.document_text, e.text_start+1, e.text_end-e.text_start) AS text
-FROM material.html_documents d ARRAY JOIN d.elements AS e
-WHERE d.document_id IN (SELECT document_id FROM material.captures WHERE completeness='complete');
+SELECT e.document_id AS document_id,
+       e.node_index, e.parent_index, e.subtree_end_index, e.sibling_index,
+       e.depth, e.tag, e.namespace, e.attributes, e.text_direct, e.text
+FROM material.html_elements e
+WHERE e.document_id IN (SELECT document_id FROM material.html_documents)
+  AND e.document_id IN (SELECT document_id FROM material.captures WHERE completeness='complete');
 CREATE OR REPLACE VIEW public_v1.link
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
 SELECT c.capture_id, l.node_index AS node_index, l.target_url AS target_url, l.raw_href AS raw_href
@@ -30,3 +24,15 @@ CREATE OR REPLACE VIEW public_v1.page
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
 SELECT url FROM public_v1.capture
 UNION DISTINCT SELECT target_url AS url FROM public_v1.link;
+
+CREATE OR REPLACE VIEW public_v1.document
+DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
+SELECT d.document_id AS document_id, d.document_text AS text, d.element_count
+FROM material.html_documents d
+WHERE d.document_id IN (SELECT document_id FROM material.captures WHERE completeness='complete');
+CREATE OR REPLACE VIEW public_v1.json_ld
+DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
+SELECT j.document_id AS document_id, j.node_index, j.json, j.types, j.name
+FROM material.json_ld j
+WHERE j.document_id IN (SELECT document_id FROM material.html_documents)
+  AND j.document_id IN (SELECT document_id FROM material.captures WHERE completeness='complete');

@@ -13,6 +13,8 @@ from periplus.ingestion.objects.document import ExactDocumentRepository
 from periplus.materialization.dom.nodes import parse_document
 from periplus.materialization.dom.links import links_from_elements
 from periplus.materialization.html_content import html_content
+from periplus.materialization.element_rows import insert_elements, insert_json_ld
+from periplus.urls import normalize_url
 from periplus.platform.clickhouse import ClickHouseClient
 from periplus.platform.clickhouse.client import EncodedRow, INSERT_TARGET_BYTES
 from periplus.retention.identities import write_claims
@@ -65,6 +67,7 @@ def capture_row(capture: Capture, document: dict | None, links: list, archive_re
             capture_id=str(capture.capture_id),
             evidence_digest=capture.digest,
             requested_url=capture.requested_url,
+            url=normalize_url(capture.effective_url or capture.requested_url),
             effective_url=capture.effective_url,
             captured_at=capture.captured_at.isoformat()
             if capture.captured_at
@@ -95,7 +98,7 @@ class MaterialStore:
         self.client, self.database = client, material_database(database)
 
     def validate(self) -> None:
-        for table in ("captures", "html_documents"):
+        for table in ("captures", "html_documents", "html_elements", "json_ld"):
             self.client.execute(
                 f"SELECT output_digest FROM {self.database}.{table} LIMIT 0"
             )
@@ -107,10 +110,10 @@ class MaterialStore:
             raise ValueError("Unknown material relation")
         key = "capture_id" if table == "captures" else "document_id"
         predicates = [
-            f"{{id{i}:UUID}}" if table == "captures" else f"unhex({{id{i}:String}})"
+            f"{{id{i}:UUID}}" if table == "captures" else f"{{id{i}:String}}"
             for i in range(len(identities))
         ]
-        selection = f"toString({key})" if table == "captures" else f"lower(hex({key}))"
+        selection = f"toString({key})" if table == "captures" else key
         rows = self.client.query(
             f"SELECT {selection} AS id, lower(hex(output_digest)) AS digest FROM "
             f"{self.database}.{table} WHERE {key} IN ({','.join(predicates)})",
@@ -123,15 +126,26 @@ class MaterialStore:
 
     def content(self, identity: str) -> dict | None:
         rows = self.client.query(
-            f"SELECT * REPLACE(lower(hex(document_id)) AS document_id, "
-            f"lower(hex(content_id)) AS content_id, lower(hex(output_digest)) AS output_digest) "
-            f"FROM {self.database}.html_documents WHERE document_id=unhex({{id:String}}) LIMIT 2",
+            f"SELECT * REPLACE(lower(hex(content_id)) AS content_id, lower(hex(output_digest)) AS output_digest) "
+            f"FROM {self.database}.html_documents AS source WHERE source.document_id={{id:String}} LIMIT 2",
             parameters={"id": identity},
             max_response_bytes=256 * 1024 * 1024,
         )["data"]
         if len(rows) > 1:
             raise ValueError("Duplicate material document")
-        return rows[0] if rows else None
+        if not rows:
+            return None
+        document = rows[0]
+        expected = document.pop("element_count")
+        document["elements"] = self.client.query(
+            f"SELECT node_index, parent_index, subtree_end_index, sibling_index, depth, "
+            f"tag, namespace, attributes, text_direct, text_start, text_end "
+            f"FROM {self.database}.html_elements WHERE document_id={{id:String}} ORDER BY node_index",
+            parameters={"id": identity}, max_response_bytes=256 * 1024 * 1024,
+        )["data"]
+        if len(document["elements"]) != expected:
+            raise ValueError("Material document element set is incomplete")
+        return document
 
     def complete_many(self, captures: list[Capture]) -> set[UUID]:
         if not captures:
@@ -139,7 +153,7 @@ class MaterialStore:
         predicates = ','.join(f'{{id{i}:UUID}}' for i in range(len(captures)))
         rows = self.client.query(
             f"SELECT toString(capture_id) AS id, lower(hex(evidence_digest)) AS digest, "
-            f"lower(hex(document_id)) AS document FROM {self.database}.captures "
+            f"document_id AS document FROM {self.database}.captures "
             f"WHERE capture_id IN ({predicates})",
             parameters={f'id{i}': str(c.capture_id) for i, c in enumerate(captures)},
         )["data"]
@@ -255,10 +269,16 @@ class MaterialStore:
             rows[key]["output_digest"] != digest for key, digest in existing.items()
         ):
             raise ValueError("Conflicting material output")
-        self.client.insert_rows(
-            f"{self.database}.{table}",
-            [row for key, row in rows.items() if key not in existing],
-        )
+        missing = [row for key, row in rows.items() if key not in existing]
+        if table == "html_documents":
+            # The document row is the completion marker. Partial element inserts stay private.
+            insert_elements(self.client, self.database, missing)
+            insert_json_ld(self.client, self.database, missing)
+            missing = [
+                {**{k: v for k, v in row.items() if k != "elements"},
+                 "element_count": len(row["elements"])} for row in missing
+            ]
+        self.client.insert_rows(f"{self.database}.{table}", missing)
         if self.digests(table, list(rows)) != {
             key: row["output_digest"] for key, row in rows.items()
         }:
@@ -373,8 +393,6 @@ class MaterialStore:
     def retire(self, capture: Capture, archive: Archive) -> None:
         if not archive.retired(capture.capture_id):
             raise ValueError("Capture retirement is not archived")
-        if not self.digests("captures", [str(capture.capture_id)]):
-            return
         with write_claims(
             {
                 "capture": [str(capture.capture_id)],
@@ -388,11 +406,13 @@ class MaterialStore:
             if capture.payload:
                 document = capture.payload.document_id
                 count = self.client.query(
-                    f"SELECT count() AS n FROM {self.database}.captures WHERE document_id=unhex({{id:String}})",
+                    f"SELECT count() AS n FROM {self.database}.captures WHERE document_id={{id:String}}",
                     parameters={"id": document},
                 )["data"][0]["n"]
                 if count == 0:
-                    self.client.execute(
-                        f"ALTER TABLE {self.database}.html_documents DELETE WHERE document_id=unhex({{id:String}}) SETTINGS mutations_sync=2",
-                        parameters={"id": document},
-                    )
+                    # Remove the visibility marker before reclaiming even a partial element set.
+                    for table in ("html_documents", "html_elements", "json_ld"):
+                        self.client.execute(
+                            f"ALTER TABLE {self.database}.{table} DELETE WHERE document_id={{id:String}} SETTINGS mutations_sync=2",
+                            parameters={"id": document},
+                        )

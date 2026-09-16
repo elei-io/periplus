@@ -19,6 +19,8 @@ class QueryHelperTests(unittest.TestCase):
                 "text_direct", "text"],
             "public_v1.link": ["capture_id", "node_index", "target_url", "raw_href"],
             "public_v1.page": ["url"],
+            "public_v1.document": ["document_id", "text", "element_count"],
+            "public_v1.json_ld": ["document_id", "node_index", "json", "types", "name"],
         })
         self.assertEqual(helpers.schema_version, "public_v1")
 
