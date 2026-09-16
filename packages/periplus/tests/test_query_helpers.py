@@ -13,14 +13,13 @@ class QueryHelperTests(unittest.TestCase):
         }
         self.assertEqual(actual, {
             "public_v1.capture": ["capture_id", "url", "captured_at",
-                "http_status_code", "document_id", "byte_length", "encoding"],
+                "http_status_code", "document_id", "byte_length", "encoding", "text", "element_count"],
             "public_v1.html_element": ["document_id", "node_index", "parent_index",
                 "subtree_end_index", "sibling_index", "depth", "tag", "namespace", "attributes",
                 "text_direct", "text"],
             "public_v1.link": ["capture_id", "node_index", "target_url", "raw_href"],
             "public_v1.page": ["url"],
-            "public_v1.document": ["document_id", "text", "element_count"],
-            "public_v1.json_ld": ["document_id", "node_index", "json", "types", "name"],
+            "public_v1.html_json_ld": ["document_id", "node_index", "json", "types", "name"],
         })
         self.assertEqual(helpers.schema_version, "public_v1")
 

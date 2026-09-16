@@ -1,7 +1,7 @@
 # Query boundary
 
 Corpus SQL runs on ClickHouse through the isolated query service. The public
-namespace is `public_v1`: capture, html_element, link, page, document and json_ld. The service obtains
+namespace is `public_v1`: page, capture, link, html_element and html_json_ld. The service obtains
 a short-lived publication binding through the authenticated control API and
 rewrites only that namespace to the selected build's view database. One request
 uses one binding. The reader account has SELECT on approved view databases, no

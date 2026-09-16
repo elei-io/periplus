@@ -54,11 +54,10 @@ def query_helpers(schema: str = PUBLIC_SCHEMA) -> QueryHelpers:
     if schema != PUBLIC_SCHEMA:
         raise ValueError("Unsupported public schema")
     descriptions = {
-        "capture": "Archived HTML observations with stable capture and document identities.",
+        "capture": "Observations of page content over time, including text and element count.",
         "html_element": "DOM elements, attributes and text spans, identified within a document.",
         "link": "Link occurrences resolved against the captured page URL.",
-        "document": "Canonical document text and element count, shared across captures.",
-        "json_ld": "Valid JSON-LD scripts with top-level type/name handles; no context or graph expansion.",
+        "html_json_ld": "Valid JSON-LD scripts with top-level type/name handles; no context or graph expansion.",
         "page": "Page URLs present as captures or link destinations.",
     }
     return QueryHelpers(

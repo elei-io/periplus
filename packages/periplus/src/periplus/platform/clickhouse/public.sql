@@ -4,7 +4,7 @@ DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
 SELECT c.capture_id, c.url,
        c.captured_at, c.http_status AS http_status_code,
        c.document_id AS document_id,
-       c.byte_length, c.encoding
+       c.byte_length, c.encoding, d.document_text AS text, d.element_count
 FROM material.captures c INNER JOIN material.html_documents d ON c.document_id=d.document_id
 WHERE c.completeness='complete';
 CREATE OR REPLACE VIEW public_v1.html_element
@@ -25,12 +25,7 @@ DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
 SELECT url FROM public_v1.capture
 UNION DISTINCT SELECT target_url AS url FROM public_v1.link;
 
-CREATE OR REPLACE VIEW public_v1.document
-DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
-SELECT d.document_id AS document_id, d.document_text AS text, d.element_count
-FROM material.html_documents d
-WHERE d.document_id IN (SELECT document_id FROM material.captures WHERE completeness='complete');
-CREATE OR REPLACE VIEW public_v1.json_ld
+CREATE OR REPLACE VIEW public_v1.html_json_ld
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
 SELECT j.document_id AS document_id, j.node_index, j.json, j.types, j.name
 FROM material.json_ld j

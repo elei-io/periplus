@@ -90,7 +90,7 @@ class NativeAccessPathsTests(unittest.TestCase):
             for key in ('node_index','parent_index','subtree_end_index','sibling_index','depth','tag','namespace','attributes','text_direct'):
                 self.assertEqual(found[key], original[key])
         self.assertEqual(self.material.content(self.doc['document_id']), dict(self.doc))
-        self.assertEqual(self.query("SELECT name, types FROM public_v1.json_ld WHERE name='Blueair 3450i' AND has(types,'Product')"),
+        self.assertEqual(self.query("SELECT name, types FROM public_v1.html_json_ld WHERE name='Blueair 3450i' AND has(types,'Product')"),
                          [{'name': 'Blueair 3450i', 'types': ['Product']}])
         self.assertEqual(self.query("SELECT text FROM public_v1.html_element WHERE hasAll(splitByWhitespace(attributes['class']), ['usa-header','usa-header--basic']) SETTINGS optimize_functions_to_subcolumns=0"), [{'text':'猫😀 snow!'}])
         self.assertEqual(self.query("SELECT count() AS n FROM public_v1.html_element WHERE hasAll(splitByWhitespace(attributes['class']), ['hp-icon','beta']) SETTINGS optimize_functions_to_subcolumns=0"), [{'n':0}])
@@ -99,9 +99,9 @@ class NativeAccessPathsTests(unittest.TestCase):
         self.assertIn('classes', str(plan))
         for sql, index in (
             ("SELECT tag FROM {db}.html_element WHERE attributes['viewBox']='0 0 126.719 115.379'", 'attribute_values'),
-            ("SELECT name FROM {db}.json_ld WHERE name='Blueair 3450i'", 'name_exact'),
+            ("SELECT name FROM {db}.html_json_ld WHERE name='Blueair 3450i'", 'name_exact'),
             ("SELECT url FROM {db}.capture WHERE url='https://example.test/'", 'url_exact'),
-            ("SELECT document_id FROM {db}.document WHERE hasAllTokens(lower(text), ['snow'])", 'words'),
+            ("SELECT document_id FROM {db}.capture WHERE hasAllTokens(lower(text), ['snow'])", 'words'),
         ):
             plan = self.client.query('EXPLAIN indexes=1 '+sql.format(db=self.public)+' SETTINGS optimize_functions_to_subcolumns=0')
             self.assertIn(index, str(plan))
@@ -149,9 +149,9 @@ class NativeAccessPathsTests(unittest.TestCase):
         cases = [
             ("SELECT text FROM public_v1.html_element WHERE has(splitByWhitespace(attributes['class']),'hp-icon')", [['alpha']]),
             ("SELECT tag FROM public_v1.html_element WHERE attributes['viewBox']='0 0 126.719 115.379'", [['svg']]),
-            ("SELECT name FROM public_v1.json_ld WHERE has(types,'Product') AND name='Blueair 3450i'", [['Blueair 3450i']]),
+            ("SELECT name FROM public_v1.html_json_ld WHERE has(types,'Product') AND name='Blueair 3450i'", [['Blueair 3450i']]),
             ("SELECT url FROM public_v1.capture WHERE url='https://example.test/'", [['https://example.test/']]),
-            ('SELECT count(*) FROM public_v1.document', [[1]]),
+            ('SELECT count(*) FROM public_v1.capture', [[1]]),
         ]
         for sql, expected in cases:
             with self.subTest(sql=sql):
@@ -182,11 +182,13 @@ class NativeAccessPathsTests(unittest.TestCase):
             for capture in captures:
                 self.material.materialize_many([capture],archive)
             self.material.materialize_many(captures,archive)
-            self.assertEqual(self.query('SELECT count() AS n FROM public_v1.document'), [{'n':1}])
+            self.assertEqual(self.query('SELECT text, element_count FROM public_v1.capture ORDER BY url'),
+                             [{'text': '猫go😀', 'element_count': len(parse_document('<p>猫<a href="next">go</a>😀</p>')[1])}] * 2)
+            self.assertEqual(self.query('SELECT uniqExact(document_id) AS n FROM public_v1.capture'), [{'n':1}])
             self.assertEqual(self.query("SELECT l.target_url FROM public_v1.link l WHERE l.capture_id IN (SELECT capture_id FROM public_v1.capture WHERE url='https://example.test/b/')"), [{'target_url':'https://example.test/b/next'}])
             archive.retire(captures[0].capture_id)
             self.material.retire(captures[0],archive)
-            self.assertEqual(self.query('SELECT count() AS n FROM public_v1.document'), [{'n':1}])
+            self.assertEqual(self.query('SELECT uniqExact(document_id) AS n FROM public_v1.capture'), [{'n':1}])
             archive.retire(captures[1].capture_id)
             self.material.retire(captures[1],archive)
             for table in ('html_documents','html_elements','json_ld','captures'):
@@ -216,7 +218,7 @@ class NativeAccessPathsTests(unittest.TestCase):
             archive.commit_many(captures)
             self.material.materialize_many(captures,archive)
             self.assertNotEqual(captures[0].payload.document_id, captures[1].payload.document_id)
-            rows = self.query("SELECT c.url,e.text FROM public_v1.capture c JOIN public_v1.html_element e USING(document_id) WHERE e.tag='p' ORDER BY c.url")
+            rows = self.query("SELECT c.url,e.text AS text FROM public_v1.capture c JOIN public_v1.html_element e USING(document_id) WHERE e.tag='p' ORDER BY c.url")
             self.assertEqual(rows,[{'url':case[3],'text':case[4]} for case in cases])
             self.assertEqual(self.query('SELECT count() AS n FROM public_v1.capture WHERE url NOT IN (SELECT url FROM public_v1.page)'), [{'n':0}])
 

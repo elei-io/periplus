@@ -155,18 +155,18 @@ not as a second stored copy. Retiring the final reference removes the completion
 row before child rows, including unfinished writes that never produced a capture.
 This is an application publication protocol, not a cross-table ACID transaction.
 
-`public_v1.capture`, `html_element`, `link`, `page`, `document`, and `json_ld`
+`public_v1.page`, `capture`, `link`, `html_element`, and `html_json_ld`
 are the public SQL contract. The query API binds these names to one selected
 build. Captures expose complete parsed HTML; failed/non-HTML observations remain
 internal. Element/script views require a completed document and a complete
 capture. These membership checks deliberately remain: a whole-corpus element
-`COUNT(*)` is still not a metadata-only operation. `document.element_count` gives
+`COUNT(*)` is still not a metadata-only operation. `capture.element_count` gives
 an explicit smaller counting surface; it does not rewrite the original query.
 
-`document.text` is the canonical concatenated text; `html_element.text` is full
+`capture.text` is the canonical concatenated text; `html_element.text` is full
 subtree text, distinct from `text_direct`. Word indexes tokenize explicit
 `lower(text)` with `splitByNonAlpha`; class tokens preserve punctuation.
-`json_ld` preserves valid parsed JSON script text and extracts only top-level
+`html_json_ld` preserves valid parsed JSON script text and extracts only top-level
 string `name` and string/string-array `@type`. It does not expand JSON-LD contexts,
 walk `@graph`, or infer schema.org semantics. Invalid or excessively deep JSON
 remains accessible through the original script element/archive.
@@ -184,8 +184,11 @@ build's tables. See [the implementation notes](../benchmarks/query/access_paths/
 There is no `ingest.*`, collection, fulfillment, acquisition-reason, frontier,
 work queue or business table in ClickHouse.
 
-Public captures expose only `capture_id`, `url`, `captured_at`, `http_status_code`,
-`document_id`, `byte_length`, and `encoding`. The URL uses the effective URL when
+Public captures expose `capture_id`, `url`, `captured_at`, `http_status_code`,
+`document_id`, `byte_length`, `encoding`, `text`, and `element_count`.
+Text and element count describe each capture's observed content. Identical content
+may appear in multiple captures; aggregate by `document_id` when counting unique
+content. Canonical document storage is internal, not a separate public entity. The URL uses the effective URL when
 present, falling back to the requested URL; scheme/authority case, default ports,
 empty paths and fragments are normalized. Query strings remain opaque.
 `page.url` includes these same URLs and link destinations. HTML elements expose

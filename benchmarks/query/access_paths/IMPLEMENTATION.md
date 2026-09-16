@@ -16,7 +16,8 @@ same hexadecimal String representation as the physical sorting key.
 
 No custom query rewrite is added. The reader's native
 `optimize_functions_to_subcolumns=0` setting preserves the indexed class expression.
-New public `document` and `json_ld` views expose the smaller useful access surfaces.
+Public `capture` includes canonical text and element count; `html_json_ld` exposes
+structured script content. Canonical document storage stays internal.
 Existing element, capture, link and page columns retain their meanings.
 
 ## Publication and retries
@@ -43,7 +44,7 @@ retirement is not provided by this change.
 
 - Public whole-corpus element `COUNT(*)` still traverses visibility membership.
   The experimental report explicitly left that problem unresolved. Do not remove
-  the guard or claim metadata-only counts. `sum(element_count)` on public documents
+  the guard or claim metadata-only counts. `sum(element_count)` after grouping captures by `document_id`
   is a useful explicit alternative, not an acceptance-case substitution.
 - Global token search still consults parts; storage growth and merge capacity remain
   material. No unmeasured hash partitioning or NVMe-to-NAS lifecycle is deployed.
