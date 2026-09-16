@@ -106,8 +106,45 @@ class NativeAccessPathsTests(unittest.TestCase):
             plan = self.client.query('EXPLAIN indexes=1 '+sql.format(db=self.public)+' SETTINGS optimize_functions_to_subcolumns=0')
             self.assertIn(index, str(plan))
 
-    def test_metadata_preserves_repeated_meta_elements(self):
-        source = '<meta name="description" content="first"><meta name="description" content="second"><meta property="og:title" content="Example"><meta charset="UTF-8">'
+    def test_metadata_declarations_preserve_values_and_origin(self):
+        source = ('<html lang="en-GB"><head><title> A &amp; 雪 </title>'
+                  '<meta name="description" content=" First "><meta name="description" content="Second">'
+                  '<meta property="og:title" content="Social"><meta http-equiv="refresh" content="5; url=/next">'
+                  '<meta charset="UTF-8"><link rel="canonical alternate canonical" href="../book">'
+                  '</head><body><svg><title>Not the page title</title></svg>'
+                  '<meta name="body" content="yes"></body></html>')
+        self.publish_metadata_fixture(source)
+        rows = self.query('SELECT source,attribute,name,value FROM public_v1.html_metadata ORDER BY node_index,source,attribute,name')
+        expected = [
+            ('html','lang','lang','en-GB'), ('title',None,'title',' A & 雪 '),
+            ('meta','name','description',' First '), ('meta','name','description','Second'),
+            ('meta','property','og:title','Social'), ('meta','http-equiv','refresh','5; url=/next'),
+            ('meta','charset','charset','UTF-8'), ('link','rel','alternate','../book'),
+            ('link','rel','canonical','../book'), ('meta','name','body','yes'),
+        ]
+        self.assertEqual(rows, [dict(zip(('source','attribute','name','value'), row)) for row in expected])
+        self.assertEqual(self.query("SELECT c.url,m.value AS title FROM public_v1.capture c JOIN public_v1.html_metadata m USING(document_id) WHERE m.source='title'"),
+                         [{'url':'https://example.test/', 'title':' A & 雪 '}])
+        self.assertEqual(self.query("SELECT count() AS n FROM public_v1.html_metadata m JOIN public_v1.html_element e USING(document_id,node_index)"), [{'n':10}])
+        self.assertEqual(self.query("SELECT value FROM public_v1.html_metadata WHERE document_id='missing'"), [])
+
+    def test_metadata_missing_empty_and_multiple_declarations(self):
+        source = ('<title></title><meta name="missing"><meta name="empty" content="">'
+                  '<meta name="Name" property="Property" content="shared">'
+                  '<link rel="canonical"><link rel="icon" href=""><link rel=" \t\n\f\r ">'
+                  '<link rel="a\tb\nc\fd\re a" href="relative">'
+                  '<meta content="unlabelled">')
+        self.publish_metadata_fixture(source)
+        rows = self.query('SELECT source,attribute,name,value FROM public_v1.html_metadata ORDER BY node_index,attribute,name')
+        expected = [
+            ('title',None,'title',''), ('meta','name','missing',None), ('meta','name','empty',''),
+            ('meta','name','Name','shared'), ('meta','property','Property','shared'),
+            ('link','rel','canonical',None), ('link','rel','icon',''),
+            *[('link','rel',name,'relative') for name in 'abcde'],
+        ]
+        self.assertEqual(rows, [dict(zip(('source','attribute','name','value'), row)) for row in expected])
+
+    def publish_metadata_fixture(self, source):
         nodes, elements = parse_document(source)
         parsed = html_content(self.doc['document_id'], nodes, elements)
         parsed.pop('content_sha256')
@@ -116,10 +153,6 @@ class NativeAccessPathsTests(unittest.TestCase):
         self.material._insert_verified('html_documents', {self.doc['document_id']: self.doc})
         self.assertEqual(self.query('SELECT count() AS n FROM public_v1.html_metadata'), [{'n': 0}])
         self.publish_capture()
-        self.assertEqual(self.query("SELECT content FROM public_v1.html_metadata WHERE name='description' ORDER BY node_index"),
-                         [{'content': 'first'}, {'content': 'second'}])
-        self.assertEqual(self.query("SELECT content FROM public_v1.html_metadata WHERE property='og:title'"), [{'content': 'Example'}])
-        self.assertEqual(self.query("SELECT charset FROM public_v1.html_metadata WHERE charset!=''"), [{'charset': 'UTF-8'}])
 
     def test_conflicting_partial_output_never_publishes(self):
         insert_elements(self.client, self.database, [self.doc])

@@ -171,11 +171,35 @@ string `name` and string/string-array `@type`. It does not expand JSON-LD contex
 walk `@graph`, or infer schema.org semantics. Invalid or excessively deep JSON
 remains accessible through the original script element/archive.
 
-`html_metadata` exposes one row per HTML `<meta>` element, with its document/node
-identity and `name`, `property`, `http_equiv`, `charset`, and `content` attributes.
-Repeated tags remain separate; absent attributes read as empty strings, matching
-the element attribute map. It is a view over visible elements, not another stored
-projection. Use `html_element` for titles and other head elements.
+`html_metadata` exposes named HTML declarations as `document_id`, `node_index`,
+`source`, `attribute`, `name`, and nullable `value`. It is a view over visible
+HTML-namespace elements, without another stored projection.
+
+| source | attribute | name | value |
+| --- | --- | --- | --- |
+| title | NULL | title | Title text |
+| meta | name | Declared name | content attribute |
+| meta | property | Declared property | content attribute |
+| meta | http-equiv | Declared header name | content attribute |
+| meta | charset | charset | charset attribute |
+| link | rel | Each distinct relation token | href attribute |
+| html | lang | lang | lang attribute |
+
+Every applicable declaration is retained, including repeated nodes and multiple
+naming attributes on one meta element. Names and values retain parsed case and
+whitespace. Missing content/href is NULL; explicitly empty values and empty titles
+remain empty strings. Link relations split on HTML ASCII whitespace and identical
+tokens within one element are deduplicated; relative URLs stay relative. Declarations
+are not restricted to the head. SVG titles are excluded. Language/charset are
+explicit declarations, not detection results; http-equiv is not a received header.
+No preferred title, fallback precedence or URL resolution is inferred.
+
+```sql
+SELECT c.url, m.value AS title
+FROM public_v1.capture c
+JOIN public_v1.html_metadata m USING (document_id)
+WHERE m.source = 'title';
+```
 
 The query-only account disables `optimize_functions_to_subcolumns` because that
 transformation defeated the measured class-expression text index. This is a native

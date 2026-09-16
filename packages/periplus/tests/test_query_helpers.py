@@ -19,7 +19,7 @@ class QueryHelperTests(unittest.TestCase):
                 "text_direct", "text"],
             "public_v1.link": ["capture_id", "node_index", "target_url", "raw_href"],
             "public_v1.page": ["url"],
-            "public_v1.html_metadata": ["document_id", "node_index", "name", "property", "http_equiv", "charset", "content"],
+            "public_v1.html_metadata": ["document_id", "node_index", "source", "attribute", "name", "value"],
             "public_v1.html_jsonld": ["document_id", "node_index", "json", "types", "name"],
         })
         self.assertEqual(helpers.schema_version, "public_v1")

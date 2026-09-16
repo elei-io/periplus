@@ -12,6 +12,8 @@ Their SQL, ordering rules, user stories and former budgets remain reviewable.
 Two additional cases reproduce the user's element count and ten-row preview.
 `single-capture-links-public` is a separately named, namespace-only port of the
 original `experimental.capture/link` case; the original remains unchanged.
+`latest-capture-title-declarations` is the explicit port of the title case to
+`html_metadata.source`; its original `kind` query remains unchanged.
 The former `classification` and memory/latency budgets describe the DuckDB
 investigation; they are not current ClickHouse findings or settings overrides.
 

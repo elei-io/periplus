@@ -57,7 +57,7 @@ def query_helpers(schema: str = PUBLIC_SCHEMA) -> QueryHelpers:
         "capture": "Observations of page content over time, including text and element count.",
         "html_element": "DOM elements, attributes and text spans, identified within a document.",
         "link": "Link occurrences resolved against the captured page URL.",
-        "html_metadata": "HTML meta elements, preserving repeated tags and their original attribute values.",
+        "html_metadata": "Named HTML declarations: titles, meta tags, link relations and language; repeated declarations are preserved.",
         "html_jsonld": "Valid JSON-LD scripts with top-level type/name handles; no context or graph expansion.",
         "page": "Page URLs present as captures or link destinations.",
     }

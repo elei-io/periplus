@@ -34,8 +34,36 @@ WHERE j.document_id IN (SELECT document_id FROM material.html_documents)
 
 CREATE OR REPLACE VIEW public_v1.html_metadata
 DEFINER = CURRENT_USER SQL SECURITY DEFINER AS
-SELECT document_id, node_index, attributes['name'] AS name,
-       attributes['property'] AS property, attributes['http-equiv'] AS http_equiv,
-       attributes['charset'] AS charset, attributes['content'] AS content
-FROM public_v1.html_element
-WHERE tag='meta' AND namespace='http://www.w3.org/1999/xhtml';
+WITH elements AS (
+    SELECT document_id, node_index, tag, attributes, text_direct
+    FROM public_v1.html_element
+    WHERE namespace='http://www.w3.org/1999/xhtml'
+)
+SELECT document_id, node_index, 'title' AS source,
+       CAST(NULL AS Nullable(String)) AS attribute, 'title' AS name,
+       text_direct AS value
+FROM elements WHERE tag='title'
+UNION ALL
+SELECT document_id, node_index, 'meta', 'name', attributes['name'],
+       if(mapContains(attributes,'content'),attributes['content'],NULL)
+FROM elements WHERE tag='meta' AND mapContains(attributes,'name')
+UNION ALL
+SELECT document_id, node_index, 'meta', 'property', attributes['property'],
+       if(mapContains(attributes,'content'),attributes['content'],NULL)
+FROM elements WHERE tag='meta' AND mapContains(attributes,'property')
+UNION ALL
+SELECT document_id, node_index, 'meta', 'http-equiv', attributes['http-equiv'],
+       if(mapContains(attributes,'content'),attributes['content'],NULL)
+FROM elements WHERE tag='meta' AND mapContains(attributes,'http-equiv')
+UNION ALL
+SELECT document_id, node_index, 'meta', 'charset', 'charset', attributes['charset']
+FROM elements WHERE tag='meta' AND mapContains(attributes,'charset')
+UNION ALL
+SELECT document_id, node_index, 'link', 'rel',
+       arrayJoin(arrayDistinct(arrayFilter(token -> token != '',
+           splitByRegexp('[\\t\\n\\f\\r ]+',attributes['rel'])))),
+       if(mapContains(attributes,'href'),attributes['href'],NULL)
+FROM elements WHERE tag='link' AND mapContains(attributes,'rel')
+UNION ALL
+SELECT document_id, node_index, 'html', 'lang', 'lang', attributes['lang']
+FROM elements WHERE tag='html' AND mapContains(attributes,'lang');
