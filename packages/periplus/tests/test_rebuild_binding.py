@@ -27,3 +27,19 @@ class BindingTests(unittest.TestCase):
     def test_cte_in_other_union_branch_does_not_hide_public_table(self):
         sql = public_sql(QueryRequest(sql='SELECT capture_id FROM capture UNION ALL (WITH capture AS (SELECT capture_id FROM public_v1.capture) SELECT * FROM capture)'))
         self.assertEqual(sql.count('public_v1.capture'), 2)
+
+
+class ReclamationTests(unittest.TestCase):
+    def test_bootstrap_reclamation_removes_current_public_views_before_material(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from periplus.materialization.rebuilds.runtime import RebuildRuntime
+        from periplus.platform.clickhouse.public import PUBLIC_RELATIONS
+        runtime = object.__new__(RebuildRuntime)
+        runtime.client, runtime.control = Mock(), Mock()
+        build = SimpleNamespace(query_database='public_v1', material_database='material')
+        runtime.reclaim(build)
+        statements = [call.args[0] for call in runtime.client.execute.call_args_list]
+        self.assertEqual(set(statements[:-1]), {f'DROP VIEW IF EXISTS public_v1.{name}' for name in PUBLIC_RELATIONS})
+        self.assertEqual(statements[-1], 'DROP DATABASE IF EXISTS material SYNC')
+        runtime.control.retire.assert_called_once_with(build)
